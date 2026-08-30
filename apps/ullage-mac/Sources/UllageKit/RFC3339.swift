@@ -41,17 +41,17 @@ public enum RFC3339 {
         components.nanosecond = second == 60 ? 0 : nanosecond
         guard let date = calendar.date(from: components) else { return nil }
 
-        if second == 60 {
-            return date.addingTimeInterval(1 + Double(nanosecond) / 1_000_000_000)
-        }
-
         let roundTrip = calendar.dateComponents(
             [.year, .month, .day, .hour, .minute, .second],
             from: date
         )
         guard roundTrip.year == year, roundTrip.month == month, roundTrip.day == day,
-              roundTrip.hour == hour, roundTrip.minute == minute, roundTrip.second == second else {
+              roundTrip.hour == hour, roundTrip.minute == minute,
+              roundTrip.second == min(second, 59) else {
             return nil
+        }
+        if second == 60 {
+            return date.addingTimeInterval(1 + Double(nanosecond) / 1_000_000_000)
         }
         return date
     }

@@ -14,6 +14,7 @@ import Testing
         #expect(RFC3339.date(from: value) != nil)
     }
     #expect(RFC3339.date(from: "2026-02-30T12:34:56Z") == nil)
+    #expect(RFC3339.date(from: "2026-02-30T12:34:60Z") == nil)
     #expect(RFC3339.date(from: "2026-08-31 12:34:56Z") == nil)
     #expect(RFC3339.date(from: "2026-08-31T12:34:56.1234567890Z") == nil)
 }

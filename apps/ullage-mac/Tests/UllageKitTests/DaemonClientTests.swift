@@ -62,8 +62,13 @@ struct DaemonClientTests {
     }
 
     @Test func mapsRedirectResponsesWithoutFollowingThem() async throws {
-        StubURLProtocol.handler = {
-            response($0, status: 302, headers: ["Location": "/login"], body: "")
+        let recorder = RequestRecorder()
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            if request.url?.path == "/v1/status" {
+                return response(request, status: 302, headers: ["Location": "/login"], body: "")
+            }
+            return response(request, body: "{}")
         }
         do {
             _ = try await makeClient().status()
@@ -74,6 +79,7 @@ struct DaemonClientTests {
                 return
             }
         }
+        #expect(recorder.paths == ["/v1/status"])
     }
 
     @Test func mapsHTTPStatusCodesAndPreservesSanitizedKind() async throws {
@@ -161,6 +167,19 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         do {
             let (response, data) = try Self.handler(request)
+            if (300..<400).contains(response.statusCode),
+               let location = response.value(forHTTPHeaderField: "Location"),
+               let url = URL(string: location, relativeTo: request.url)?.absoluteURL {
+                client?.urlProtocol(
+                    self,
+                    wasRedirectedTo: URLRequest(url: url),
+                    redirectResponse: response
+                )
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+                return
+            }
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)
@@ -170,6 +189,19 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+}
+
+private final class RequestRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedPaths: [String] = []
+
+    var paths: [String] {
+        lock.withLock { recordedPaths }
+    }
+
+    func record(_ request: URLRequest) {
+        lock.withLock { recordedPaths.append(request.url?.path ?? "") }
+    }
 }
 
 private func response(
