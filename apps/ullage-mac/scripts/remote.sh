@@ -6,8 +6,8 @@ if [[ -z "${ULLAGE_MAC_SSH:-}" ]]; then
     exit 2
 fi
 
-if [[ $# -ne 1 || ( "$1" != "test" && "$1" != "build" ) ]]; then
-    echo "usage: $0 <test|build>" >&2
+if [[ $# -ne 1 || ( "$1" != "test" && "$1" != "build" && "$1" != "run" ) ]]; then
+    echo "usage: $0 <test|build|run>" >&2
     exit 2
 fi
 
@@ -26,6 +26,18 @@ rsync -a --delete --exclude .build "$package_dir/" "$ULLAGE_MAC_SSH:~/$remote_di
 
 if [[ "$1" == "build" ]]; then
     ssh "$ULLAGE_MAC_SSH" "cd ~/$remote_dir && swift build -c release --arch arm64"
-else
+elif [[ "$1" == "test" ]]; then
     ssh "$ULLAGE_MAC_SSH" "cd ~/$remote_dir && swift test"
+else
+    ssh "$ULLAGE_MAC_SSH" "cd ~/$remote_dir && swift build -c release --arch arm64"
+    ssh "$ULLAGE_MAC_SSH" "pkill -x UllageMac >/dev/null 2>&1 || true; cd ~/$remote_dir && mkdir -p build && nohup .build/release/UllageMac --mock >build/ullage-mac.log 2>&1 &"
+    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    remote_shot="$remote_dir/shots/$timestamp.png"
+    if ssh "$ULLAGE_MAC_SSH" "mkdir -p ~/$remote_dir/shots && screencapture -x ~/$remote_shot"; then
+        mkdir -p "$package_dir/build/shots"
+        rsync -a "$ULLAGE_MAC_SSH:~/$remote_shot" "$package_dir/build/shots/"
+        echo "screenshot: $package_dir/build/shots/$timestamp.png"
+    else
+        echo "warning: screencapture failed; the application is still running" >&2
+    fi
 fi
