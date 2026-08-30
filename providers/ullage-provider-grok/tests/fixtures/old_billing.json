@@ -1,0 +1,15 @@
+{
+  "billing_period": {
+    "period_start": "1787529600",
+    "period_end": "1788134400000"
+  },
+  "used_percent": "35",
+  "usage_by_product": {
+    "api": "10",
+    "legacy-labs": 25
+  },
+  "credits": { "remaining": { "val": "8.5" }, "currency_code": "USD" },
+  "pay_as_you_go": { "is_enabled": "false", "spend": "0", "cap": "10" },
+  "plan": { "tier": "SUPER_GROK_HEAVY" },
+  "future_field": { "ignored": true }
+}

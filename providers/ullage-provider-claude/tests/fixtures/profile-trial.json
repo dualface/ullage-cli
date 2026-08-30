@@ -1,0 +1,17 @@
+{
+  "account": {
+    "uuid": "00000000-0000-4000-8000-000000000001",
+    "email_address": "user@example.invalid",
+    "full_name": "Fixture User",
+    "unknown_account_field": true
+  },
+  "organization": {
+    "uuid": "00000000-0000-4000-8000-000000000002",
+    "name": "Fixture Org",
+    "organization_type": "personal",
+    "subscription_type": "claude_max",
+    "rate_limit_tier": "default_claude_max_20x",
+    "claude_code_trial_ends_at": "2026-09-01T00:00:00Z"
+  },
+  "future_profile_field": { "ignored": true }
+}

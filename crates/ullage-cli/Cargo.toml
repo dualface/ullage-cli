@@ -1,0 +1,45 @@
+[package]
+name = "ullage-cli"
+autobins = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ullage-protocol.workspace = true
+unicode-width = "0.2"
+
+[dev-dependencies]
+clap.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+ullage-auth.workspace = true
+winapi = { version = "0.3", features = [
+    "combaseapi",
+    "oaidl",
+    "objbase",
+    "oleauto",
+    "taskschd",
+    "unknwnbase",
+    "winerror",
+    "wtypes",
+    "wtypesbase",
+] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }

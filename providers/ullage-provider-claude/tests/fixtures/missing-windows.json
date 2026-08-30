@@ -1,0 +1,11 @@
+{
+  "five_hour": {
+    "utilization": null,
+    "resets_at": null
+  },
+  "seven_day": null,
+  "future_limit": {
+    "utilization": 12.5,
+    "resets_at": "2026-08-28T00:00:00Z"
+  }
+}

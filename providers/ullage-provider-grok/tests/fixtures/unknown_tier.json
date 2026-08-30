@@ -1,0 +1,13 @@
+{
+  "data": {
+    "current_period": {
+      "type": "USAGE_PERIOD_TYPE_WEEKLY",
+      "reset_at": "2026-09-14T00:00:00Z"
+    },
+    "usage_percent": 7,
+    "products": {
+      "future-product": 7
+    },
+    "tier": " QuantumMax-Preview "
+  }
+}

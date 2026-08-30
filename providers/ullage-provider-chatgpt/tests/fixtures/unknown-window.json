@@ -1,0 +1,29 @@
+{
+  "plan_type": "pro",
+  "rate_limit": {
+    "primary_window": {
+      "limit_window_seconds": 3600,
+      "used_percent": 9.0,
+      "reset_at": 1787832000
+    }
+  },
+  "credits": {
+    "has_credits": true,
+    "unlimited": false,
+    "balance": "25.5"
+  },
+  "additional_rate_limits": [
+    {
+      "limit_name": "burst",
+      "metered_feature": "codex_burst",
+      "rate_limit": {
+        "primary_window": {
+          "limit_window_seconds": 60,
+          "used_percent": 1.0,
+          "reset_at": 1787828460
+        }
+      }
+    }
+  ],
+  "rate_limit_reset_credits": { "available_count": 3 }
+}

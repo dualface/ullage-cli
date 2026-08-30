@@ -1,0 +1,45 @@
+[workspace]
+members = [
+    "crates/ullage-auth",
+    "crates/ullage-core",
+    "crates/ullage-protocol",
+    "crates/ullage-daemon",
+    "crates/ullage-cli",
+    "crates/ullage-app",
+    "providers/ullage-provider-claude",
+    "providers/ullage-provider-chatgpt",
+    "providers/ullage-provider-grok",
+    "providers/ullage-provider-cursor",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+async-trait = "0.1"
+cap-fs-ext = "=4.0.2"
+cap-std = "=4.0.2"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dbus-secret-service = { version = "=4.1.0", default-features = false }
+dbus = "=0.9.12"
+keyring = { version = "=3.6.1", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "=0.10.9"
+thiserror = "2"
+tokio = { version = "1.47.1", features = ["sync"] }
+zeroize = { version = "1.8.1", features = ["derive"] }
+
+ullage-auth = { path = "crates/ullage-auth" }
+ullage-core = { path = "crates/ullage-core" }
+ullage-protocol = { path = "crates/ullage-protocol" }
+ullage-provider-claude = { path = "providers/ullage-provider-claude" }
+ullage-provider-chatgpt = { path = "providers/ullage-provider-chatgpt" }
+ullage-provider-grok = { path = "providers/ullage-provider-grok" }
+ullage-provider-cursor = { path = "providers/ullage-provider-cursor" }

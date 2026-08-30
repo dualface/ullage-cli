@@ -1,0 +1,35 @@
+{
+  "five_hour": {
+    "utilization": 31.5,
+    "resets_at": "2026-08-27T15:00:00Z"
+  },
+  "seven_day": {
+    "utilization": 42.0,
+    "resets_at": "2026-09-02T00:00:00Z"
+  },
+  "seven_day_opus": {
+    "utilization": 18.0,
+    "resets_at": "2026-09-02T00:00:00Z"
+  },
+  "limits": [
+    {
+      "kind": "seven_day",
+      "group": "model",
+      "percent": 9.5,
+      "resets_at": "2026-09-02T00:00:00Z",
+      "scope": {
+        "model": { "display_name": "Future Model", "unknown": true }
+      },
+      "unknown_limit_field": "ignored"
+    }
+  ],
+  "extra_usage": {
+    "is_enabled": true,
+    "monthly_limit": 5000,
+    "used_credits": 1250,
+    "utilization": 25.0,
+    "currency": "usd",
+    "unknown_extra_field": "ignored"
+  },
+  "unknown_root_field": [1, 2, 3]
+}

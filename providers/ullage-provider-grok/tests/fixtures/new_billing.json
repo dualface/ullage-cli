@@ -1,0 +1,19 @@
+{
+  "data": {
+    "billing": {
+      "currentPeriod": {
+        "type": "USAGE_PERIOD_TYPE_WEEKLY",
+        "startAt": "2026-08-24T00:00:00Z",
+        "endAt": "2026-08-31T00:00:00Z"
+      },
+      "usagePercent": 42.5,
+      "productUsage": [
+        { "product": "chat", "usagePercent": 12.5 },
+        { "product": "imagine", "usagePercent": 30.0 }
+      ],
+      "prepaid": { "balance": 17.25, "currency": "USD" },
+      "onDemand": { "enabled": true, "used": 2.5, "limit": 20, "currency": "USD" },
+      "tier": "SuperGrok"
+    }
+  }
+}

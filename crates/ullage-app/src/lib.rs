@@ -1,0 +1,316 @@
+mod config;
+mod credential_backend;
+mod credentials;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+pub use config::{
+    AccountSettings, AppConfig, CONFIG_VERSION, CredentialsSettings, DaemonSettings,
+    ProviderLimitSettings, ProviderSettings, default_config_path, load,
+};
+use credential_backend::assemble_credential_store;
+use credentials::{ChatGptVault, ClaudeVault};
+use ullage_auth::CredentialStore;
+use ullage_core::{
+    Capability, ProviderDescriptor, ProviderError, ProviderId, ProviderRegistry, RegisteredProvider,
+};
+use ullage_daemon::{ControlService, DaemonEngine, JsonSnapshotStore, SystemClock};
+use ullage_protocol::CredentialBackendId;
+use ullage_provider_chatgpt::{
+    ChatGptConfig, ChatGptHttpConfig, ChatGptProvider, ReqwestChatGptApi,
+};
+use ullage_provider_grok::{GrokProvider, HttpGrokConfig, HttpGrokTransport};
+
+/// The public OAuth client the Codex CLI registers with `auth.openai.com`.
+/// ChatGPT sign-in only accepts clients that OpenAI knows about, so the value
+/// has to be a registered identifier rather than a name of our own choosing.
+const CHATGPT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+/// The callback registered for that client. OpenAI compares redirect URIs
+/// verbatim, so `localhost` cannot be spelled `127.0.0.1` here.
+const CHATGPT_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
+
+pub fn production_registry(config: &AppConfig) -> Result<ProviderRegistry, String> {
+    Ok(production_components(config)?.0)
+}
+
+fn production_components(
+    config: &AppConfig,
+) -> Result<(ProviderRegistry, CredentialBackendId), String> {
+    let (store, backend) = assemble_credential_store(&config.credentials)?;
+    Ok((
+        registry_with_credentials(&config.providers, store)?,
+        backend,
+    ))
+}
+
+pub fn registry_with_credentials(
+    _: &ProviderSettings,
+    credentials: Arc<CredentialStore>,
+) -> Result<ProviderRegistry, String> {
+    let mut registry = ProviderRegistry::default();
+    let claude_api = Arc::new(
+        ullage_provider_claude::HttpClaudeApi::new()
+            .map_err(|_| "Claude provider initialization failed")?,
+    );
+    let claude_credentials = credentials.clone();
+    registry
+        .register_factory(descriptor("claude", "Claude", true), move |account_id| {
+            let store = Arc::new(
+                ClaudeVault::new(claude_credentials.clone(), account_id)
+                    .map_err(|_| credential_init_error())?,
+            );
+            Ok(Arc::new(ullage_provider_claude::ClaudeProvider::with_api(
+                claude_api.clone(),
+                store,
+            )) as Arc<dyn RegisteredProvider>)
+        })
+        .map_err(|_| "Claude provider registration failed")?;
+
+    let chatgpt_config = ChatGptConfig::openai(CHATGPT_CLIENT_ID, CHATGPT_REDIRECT_URI);
+    let chatgpt_api = Arc::new(
+        ReqwestChatGptApi::new(ChatGptHttpConfig::openai(CHATGPT_CLIENT_ID))
+            .map_err(|_| "ChatGPT provider initialization failed")?,
+    );
+    let chatgpt_credentials = credentials.clone();
+    let mut chatgpt_descriptor = descriptor("chatgpt", "ChatGPT", false);
+    chatgpt_descriptor
+        .capabilities
+        .push(Capability::WorkspaceSelection);
+    registry
+        .register_factory(chatgpt_descriptor, move |account_id| {
+            let store = Arc::new(
+                ChatGptVault::new(chatgpt_credentials.clone(), account_id)
+                    .map_err(|_| credential_init_error())?,
+            );
+            Ok(Arc::new(ChatGptProvider::new(
+                chatgpt_config.clone(),
+                chatgpt_api.clone(),
+                store,
+            )?) as Arc<dyn RegisteredProvider>)
+        })
+        .map_err(|_| "ChatGPT provider registration failed")?;
+
+    let grok_transport = Arc::new(
+        HttpGrokTransport::new(HttpGrokConfig {
+            client_id: "b1a00492-073a-47ea-816f-4c329264a828".into(),
+            scope: "openid profile email offline_access grok-cli:access api:access \
+                     conversations:read conversations:write workspaces:read workspaces:write"
+                .into(),
+            redirect_uri: "http://127.0.0.1:1456/auth/callback".into(),
+            device_authorization_url: "https://auth.x.ai/oauth2/device/code".into(),
+            authorization_url: "https://auth.x.ai/oauth2/authorize".into(),
+            token_url: "https://auth.x.ai/oauth2/token".into(),
+            revoke_url: "https://auth.x.ai/oauth2/revoke".into(),
+            billing_url: "https://cli-chat-proxy.grok.com/v1/billing?format=credits".into(),
+            settings_url: "https://cli-chat-proxy.grok.com/v1/settings".into(),
+        })
+        .map_err(|_| "Grok provider initialization failed")?,
+    );
+    let grok_credentials = credentials.clone();
+    registry
+        .register_factory(descriptor("grok", "Grok", false), move |account_id| {
+            Ok(Arc::new(GrokProvider::with_transport_and_store_for_account(
+                grok_transport.clone(),
+                grok_credentials.clone(),
+                account_id,
+            )?) as Arc<dyn RegisteredProvider>)
+        })
+        .map_err(|_| "Grok provider registration failed")?;
+
+    let cursor_api: Arc<dyn ullage_provider_cursor::CursorApi> = Arc::new(
+        ullage_provider_cursor::HttpCursorApi::new()
+            .map_err(|_| "Cursor provider initialization failed")?,
+    );
+    registry
+        .register_factory(descriptor("cursor", "Cursor", false), move |account_id| {
+            Ok(Arc::new(
+                ullage_provider_cursor::CursorProvider::with_api_and_store_for_account(
+                    cursor_api.clone(),
+                    credentials.clone(),
+                    account_id,
+                )?,
+            ) as Arc<dyn RegisteredProvider>)
+        })
+        .map_err(|_| "Cursor provider registration failed")?;
+    Ok(registry)
+}
+
+fn descriptor(id: &str, display_name: &str, subscription_expiry: bool) -> ProviderDescriptor {
+    let mut capabilities = vec![
+        Capability::Authentication,
+        Capability::AuthenticationStatus,
+        Capability::Logout,
+        Capability::UsageQuery,
+    ];
+    if subscription_expiry {
+        capabilities.push(Capability::SubscriptionExpiry);
+    }
+    ProviderDescriptor {
+        id: ProviderId::new(id),
+        display_name: display_name.into(),
+        capabilities,
+    }
+}
+
+fn credential_init_error() -> ProviderError {
+    ProviderError::ProtocolIncompatible {
+        message: "credential account identity is invalid".into(),
+    }
+}
+
+pub async fn run_daemon() -> Result<(), String> {
+    let config = config::load(&config::default_config_path()?).await?;
+    let (registry, backend) = production_components(&config)?;
+    run_daemon_with(config, registry, backend).await
+}
+
+pub async fn run_daemon_with(
+    config: AppConfig,
+    registry: ProviderRegistry,
+    credential_backend: CredentialBackendId,
+) -> Result<(), String> {
+    let engine = DaemonEngine::new(
+        config.daemon.build(),
+        Arc::new(registry),
+        Arc::new(SystemClock),
+        Arc::new(JsonSnapshotStore::new(state_path()?)),
+    )
+    .await
+    .map_err(|_| "daemon engine initialization failed")?;
+    merge_configured_accounts(&engine, &config.accounts).await?;
+    let service = ControlService::new(engine.clone()).with_credential_backend(credential_backend);
+
+    #[cfg(unix)]
+    let server = ullage_daemon::UnixControlServer::bind(control_endpoint(), service).await?;
+    #[cfg(windows)]
+    let server = ullage_daemon::WindowsControlServer::bind(control_endpoint()?, service)?;
+
+    let running_engine = engine.clone();
+    let engine_task = tokio::spawn(async move { running_engine.run().await });
+    let signal_engine = engine.clone();
+    let signal_task = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signal_engine.shutdown();
+        }
+    });
+    let result = server.run().await;
+    engine.shutdown();
+    let _ = engine_task.await;
+    signal_task.abort();
+    result
+}
+
+async fn merge_configured_accounts(
+    engine: &DaemonEngine,
+    configured_accounts: &[AccountSettings],
+) -> Result<(), String> {
+    for account in configured_accounts {
+        let account = account.build();
+        if engine.account_config(&account.id).await.is_none()
+            && !engine.account_was_removed(&account.id).await
+        {
+            engine
+                .add_account(account)
+                .await
+                .map_err(|_| "configured account initialization failed")?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn control_endpoint() -> PathBuf {
+    std::env::var_os("ULLAGE_CONTROL_SOCKET")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .map(|path| path.join("ullage/control.sock"))
+        })
+        .unwrap_or_else(|| {
+            // SAFETY: `geteuid` has no arguments and no memory-safety preconditions.
+            let user_id = unsafe { libc::geteuid() };
+            std::env::temp_dir()
+                .join(format!("ullage-{user_id}"))
+                .join("control.sock")
+        })
+}
+
+#[cfg(windows)]
+fn control_endpoint() -> Result<PathBuf, String> {
+    if let Some(endpoint) = std::env::var_os("ULLAGE_CONTROL_PIPE") {
+        return Ok(PathBuf::from(endpoint));
+    }
+    let scope = ullage_auth::current_windows_user_scope()
+        .map_err(|_| "current Windows user identity unavailable")?;
+    Ok(PathBuf::from(format!(r"\\.\pipe\ullage-{scope}")))
+}
+
+fn state_path() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("ULLAGE_STATE_FILE") {
+        return Ok(path.into());
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(home).join("Library/Application Support/Ullage/state.json"));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(root) = std::env::var_os("XDG_STATE_HOME") {
+            return Ok(PathBuf::from(root).join("ullage/state.json"));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return Ok(PathBuf::from(home).join(".local/state/ullage/state.json"));
+        }
+    }
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+        return Ok(PathBuf::from(root).join("Ullage/state.json"));
+    }
+    Err("state path unavailable".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn removed_config_seed_stays_removed_after_engine_restart() {
+        let store = Arc::new(ullage_daemon::MemorySnapshotStore::default());
+        let configured = vec![AccountSettings {
+            id: "configured-claude".into(),
+            provider: "claude".into(),
+            label: Some("seed@example.test".into()),
+            ..AccountSettings::default()
+        }];
+        let engine = DaemonEngine::new(
+            ullage_daemon::DaemonConfig::default(),
+            Arc::new(ProviderRegistry::default()),
+            Arc::new(SystemClock),
+            store.clone(),
+        )
+        .await
+        .unwrap();
+        merge_configured_accounts(&engine, &configured)
+            .await
+            .unwrap();
+        let id = ullage_daemon::AccountId::new("configured-claude");
+        assert!(engine.remove_account(&id).await.unwrap().is_some());
+        drop(engine);
+
+        let restarted = DaemonEngine::new(
+            ullage_daemon::DaemonConfig::default(),
+            Arc::new(ProviderRegistry::default()),
+            Arc::new(SystemClock),
+            store,
+        )
+        .await
+        .unwrap();
+        merge_configured_accounts(&restarted, &configured)
+            .await
+            .unwrap();
+        assert!(restarted.account_config(&id).await.is_none());
+        assert!(restarted.account_was_removed(&id).await);
+    }
+}

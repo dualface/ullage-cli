@@ -1,0 +1,19 @@
+{
+  "account": {
+    "uuid": "00000000-0000-4000-8000-000000000003",
+    "full_name": "Fixture User",
+    "display_name": "Fixture User",
+    "email": "user@example.invalid",
+    "has_claude_max": true,
+    "has_claude_pro": false,
+    "created_at": "2026-01-01T00:00:00Z"
+  },
+  "organization": {
+    "uuid": "00000000-0000-4000-8000-000000000004",
+    "name": "Fixture Org",
+    "organization_type": "claude_max",
+    "rate_limit_tier": "default_claude_max_5x",
+    "billing_type": "stripe_subscription",
+    "claude_code_trial_ends_at": null
+  }
+}
