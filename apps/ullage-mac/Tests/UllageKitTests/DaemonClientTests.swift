@@ -94,7 +94,7 @@ struct DaemonClientTests {
 
     @Test func rejectsACompatiblePayloadWithTheWrongEnvelopeTag() async throws {
         StubURLProtocol.handler = {
-            response($0, body: #"{"result":"accounts","payload":[]}"#)
+            response($0, body: #"{"version":8,"result":"accounts","payload":[]}"#)
         }
         do {
             _ = try await makeClient().usage()
