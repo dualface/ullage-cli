@@ -1,0 +1,31 @@
+{
+  "account_id": "fixture-cursor",
+  "usage": {
+    "outcome": "complete",
+    "data": {
+      "provider": "cursor",
+      "account_label": "Fixture Cursor",
+      "plan": "pro_plus",
+      "subscription_expires_at": null,
+      "observed_at": "2026-08-31T00:00:00Z",
+      "windows": [
+        {
+          "window": { "kind": "monthly" },
+          "resets_at": "2026-09-01T00:00:00Z",
+          "measurements": [
+            { "name": "total_spend", "used": 3.0, "limit": 20.0, "unit": { "kind": "currency", "code": "USD" } },
+            { "name": "included_spend", "used": 2.0, "limit": 20.0, "unit": { "kind": "currency", "code": "USD" } },
+            { "name": "bonus_spend", "used": 1.0, "limit": null, "unit": { "kind": "currency", "code": "USD" } },
+            { "name": "total", "used": 15.0, "limit": 100.0, "unit": { "kind": "percent" } },
+            { "name": "on_demand_spend", "used": 0.0, "limit": 50.0, "unit": { "kind": "currency", "code": "USD" } },
+            { "name": "on_demand_enabled", "used": 0.0, "limit": 1.0, "unit": { "kind": "other", "id": "boolean", "label": "Enabled" } }
+          ]
+        }
+      ]
+    }
+  },
+  "last_success_at": "2026-08-31T00:00:00Z",
+  "stale": false,
+  "last_error": null,
+  "last_error_at": null
+}

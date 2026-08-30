@@ -1,0 +1,36 @@
+{
+  "account_id": "fixture-claude",
+  "usage": {
+    "outcome": "partial",
+    "data": {
+      "provider": "claude",
+      "account_label": "Fixture Claude",
+      "plan": "pro",
+      "subscription_expires_at": "2026-09-30T00:00:00.000Z",
+      "observed_at": "2026-08-31T00:00:00.000000Z",
+      "windows": [
+        {
+          "window": { "kind": "five_hours" },
+          "resets_at": "2026-08-31T05:00:00Z",
+          "measurements": [
+            { "name": "included_usage", "used": 3.0, "limit": 100.0, "unit": { "kind": "percent" } }
+          ]
+        },
+        {
+          "window": { "kind": "other", "id": "seven_day_opus", "label": "Weekly Opus" },
+          "resets_at": "2026-09-07T00:00:00Z",
+          "measurements": [
+            { "name": "included_usage", "used": 11.0, "limit": 100.0, "unit": { "kind": "percent" } }
+          ]
+        }
+      ]
+    },
+    "failures": [
+      { "scope": "seven_day_sonnet", "message": "provider network request failed" }
+    ]
+  },
+  "last_success_at": "2026-08-31T00:00:00Z",
+  "stale": true,
+  "last_error": "network",
+  "last_error_at": "2026-08-31T00:01:00Z"
+}

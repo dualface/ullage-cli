@@ -1,0 +1,47 @@
+{
+  "account_id": "fixture-grok",
+  "usage": {
+    "outcome": "complete",
+    "data": {
+      "provider": "grok",
+      "account_label": "Fixture Grok",
+      "plan": null,
+      "subscription_expires_at": null,
+      "observed_at": "2026-08-31T00:00:00Z",
+      "windows": [
+        {
+          "window": { "kind": "weekly" },
+          "resets_at": "2026-09-04T01:18:04.090314+00:00",
+          "measurements": [
+            { "name": "product:GrokBuild", "used": 61.0, "limit": null, "unit": { "kind": "percent" } }
+          ]
+        },
+        {
+          "window": { "kind": "monthly" },
+          "resets_at": null,
+          "measurements": [
+            { "name": "monthly_credits", "used": 285.0, "limit": 1000.0, "unit": { "kind": "credits" } }
+          ]
+        },
+        {
+          "window": { "kind": "other", "id": "prepaid", "label": "Extra Usage Credits" },
+          "resets_at": null,
+          "measurements": [
+            { "name": "remaining", "used": 12.34, "limit": null, "unit": { "kind": "currency", "code": "USD" } }
+          ]
+        },
+        {
+          "window": { "kind": "other", "id": "on_demand", "label": "On-demand usage" },
+          "resets_at": null,
+          "measurements": [
+            { "name": "enabled", "used": 0.0, "limit": 1.0, "unit": { "kind": "other", "id": "boolean", "label": "Enabled" } }
+          ]
+        }
+      ]
+    }
+  },
+  "last_success_at": "2026-08-31T00:00:00Z",
+  "stale": false,
+  "last_error": { "rate_limited": { "retry_after_seconds": 12 } },
+  "last_error_at": "2026-08-31T00:01:00Z"
+}
