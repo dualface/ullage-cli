@@ -27,6 +27,16 @@ public enum SummaryValue: Equatable, Sendable {
     case creditsUnlimited
     case counted(used: Double, limit: Double?)
     case disabled
+
+    public var roundedPercentage: Int? {
+        let percentage: Double
+        switch self {
+        case .remains(let value), .used(let value): percentage = value
+        default: return nil
+        }
+        guard percentage.isFinite else { return nil }
+        return Int(percentage.rounded())
+    }
 }
 
 public struct SummaryRow: Equatable, Sendable {

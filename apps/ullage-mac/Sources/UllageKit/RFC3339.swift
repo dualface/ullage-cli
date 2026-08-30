@@ -23,7 +23,8 @@ public enum RFC3339 {
               let minute = capture(5).flatMap(Int.init),
               let second = capture(6).flatMap(Int.init),
               let zone = capture(8),
-              let timeZone = timeZone(from: zone) else { return nil }
+              let timeZone = timeZone(from: zone),
+              second <= 60 else { return nil }
 
         let fraction = capture(7) ?? ""
         let nanosecond = Int(fraction.padding(toLength: 9, withPad: "0", startingAt: 0)) ?? 0
