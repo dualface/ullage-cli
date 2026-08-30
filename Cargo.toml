@@ -4,6 +4,7 @@ members = [
     "crates/ullage-core",
     "crates/ullage-protocol",
     "crates/ullage-daemon",
+    "crates/ullage-http",
     "crates/ullage-cli",
     "crates/ullage-app",
     "providers/ullage-provider-claude",

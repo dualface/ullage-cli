@@ -2,21 +2,25 @@ mod config;
 mod credential_backend;
 mod credentials;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub use config::{
-    AccountSettings, AppConfig, CONFIG_VERSION, CredentialsSettings, DaemonSettings,
+    AccountSettings, AppConfig, CONFIG_VERSION, CredentialsSettings, DaemonSettings, HttpSettings,
     ProviderLimitSettings, ProviderSettings, default_config_path, load,
 };
 use credential_backend::assemble_credential_store;
 use credentials::{ChatGptVault, ClaudeVault};
 use ullage_auth::CredentialStore;
+use ullage_cli::{ClientError, ControlClient, ServiceAction, SystemClient};
 use ullage_core::{
     Capability, ProviderDescriptor, ProviderError, ProviderId, ProviderRegistry, RegisteredProvider,
 };
 use ullage_daemon::{ControlService, DaemonEngine, JsonSnapshotStore, SystemClock};
-use ullage_protocol::CredentialBackendId;
+use ullage_http::{HttpBindConfig, HttpServer};
+use ullage_protocol::{ControlRequest, ControlResponse, CredentialBackendId};
 use ullage_provider_chatgpt::{
     ChatGptConfig, ChatGptHttpConfig, ChatGptProvider, ReqwestChatGptApi,
 };
@@ -180,6 +184,11 @@ pub async fn run_daemon_with(
     .map_err(|_| "daemon engine initialization failed")?;
     merge_configured_accounts(&engine, &config.accounts).await?;
     let service = ControlService::new(engine.clone()).with_credential_backend(credential_backend);
+    let http = if config.http.enabled {
+        Some(HttpServer::bind(http_bind_config(&config)?, service.clone()).await?)
+    } else {
+        None
+    };
 
     #[cfg(unix)]
     let server = ullage_daemon::UnixControlServer::bind(control_endpoint(), service).await?;
@@ -194,11 +203,84 @@ pub async fn run_daemon_with(
             signal_engine.shutdown();
         }
     });
-    let result = server.run().await;
+    let result = match http {
+        Some(http) => {
+            tokio::select! {
+                result = server.run() => result,
+                result = http.run() => result,
+            }
+        }
+        None => server.run().await,
+    };
     engine.shutdown();
     let _ = engine_task.await;
     signal_task.abort();
     result
+}
+
+fn http_bind_config(config: &AppConfig) -> Result<HttpBindConfig, String> {
+    let bind = config
+        .http
+        .bind
+        .parse::<SocketAddr>()
+        .map_err(|_| "http.bind is not a valid socket address".to_owned())?;
+    if !bind.ip().is_loopback() {
+        return Err("http.bind must be a loopback address".into());
+    }
+    Ok(HttpBindConfig {
+        bind,
+        allowed_origins: config.http.allowed_origins.clone(),
+        probe_min_interval: Duration::from_secs(config.http.probe_min_interval_seconds),
+        token_path: http_token_path()?,
+    })
+}
+
+pub fn http_token_path() -> Result<PathBuf, String> {
+    let state = state_path()?;
+    let parent = state
+        .parent()
+        .ok_or_else(|| "state path has no parent directory".to_owned())?;
+    Ok(parent.join("http-token"))
+}
+
+pub struct ProductionClient {
+    inner: SystemClient,
+}
+
+impl ProductionClient {
+    pub fn from_environment() -> Self {
+        Self {
+            inner: SystemClient::from_environment(),
+        }
+    }
+}
+
+impl ControlClient for ProductionClient {
+    fn send(&self, request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        self.inner.send(request)
+    }
+
+    fn run_daemon(&self) -> Result<(), ClientError> {
+        self.inner.run_daemon()
+    }
+
+    fn manage_daemon(&self, action: ServiceAction) -> Result<(), ClientError> {
+        self.inner.manage_daemon(action)
+    }
+
+    fn daemon_service_installed(&self) -> Result<bool, ClientError> {
+        self.inner.daemon_service_installed()
+    }
+
+    fn http_token(&self, rotate: bool) -> Result<String, ClientError> {
+        let path = http_token_path().map_err(ClientError::HttpToken)?;
+        let result = if rotate {
+            ullage_http::rotate_token(&path)
+        } else {
+            ullage_http::load_or_create_token(&path)
+        };
+        result.map_err(ClientError::HttpToken)
+    }
 }
 
 async fn merge_configured_accounts(

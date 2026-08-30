@@ -22,6 +22,7 @@ ullage-auth.workspace = true
 ullage-cli = { path = "../ullage-cli" }
 ullage-core.workspace = true
 ullage-daemon = { path = "../ullage-daemon" }
+ullage-http = { path = "../ullage-http" }
 ullage-protocol.workspace = true
 ullage-provider-claude.workspace = true
 ullage-provider-chatgpt.workspace = true

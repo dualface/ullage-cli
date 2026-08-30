@@ -22,6 +22,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub credentials: CredentialsSettings,
     #[serde(default)]
+    pub http: HttpSettings,
+    #[serde(default)]
     pub accounts: Vec<AccountSettings>,
 }
 
@@ -32,6 +34,7 @@ impl Default for AppConfig {
             daemon: DaemonSettings::default(),
             providers: ProviderSettings::default(),
             credentials: CredentialsSettings::default(),
+            http: HttpSettings::default(),
             accounts: Vec::new(),
         }
     }
@@ -41,6 +44,26 @@ impl Default for AppConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct CredentialsSettings {
     pub file_fallback: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HttpSettings {
+    pub enabled: bool,
+    pub bind: String,
+    pub allowed_origins: Vec<String>,
+    pub probe_min_interval_seconds: u64,
+}
+
+impl Default for HttpSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "127.0.0.1:7878".into(),
+            allowed_origins: Vec::new(),
+            probe_min_interval_seconds: 60,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +362,10 @@ mod tests {
             Some("a@example.test")
         );
         assert!(!config.credentials.file_fallback);
+        assert!(!config.http.enabled);
+        assert_eq!(config.http.bind, "127.0.0.1:7878");
+        assert!(config.http.allowed_origins.is_empty());
+        assert_eq!(config.http.probe_min_interval_seconds, 60);
 
         tokio::fs::write(&path, br#"{"version":1,"credentials":{"token":"secret"}}"#)
             .await
@@ -369,6 +396,22 @@ mod tests {
         .unwrap();
         make_private(&path);
         assert!(load(&path).await.unwrap().credentials.file_fallback);
+
+        tokio::fs::write(
+            &path,
+            br#"{"version":1,"http":{"enabled":true,"bind":"127.0.0.1:9000","allowed_origins":["https://gui.example.test"],"probe_min_interval_seconds":15}}"#,
+        )
+        .await
+        .unwrap();
+        make_private(&path);
+        let http = load(&path).await.unwrap().http;
+        assert!(http.enabled);
+        assert_eq!(http.bind, "127.0.0.1:9000");
+        assert_eq!(
+            http.allowed_origins,
+            vec!["https://gui.example.test".to_owned()]
+        );
+        assert_eq!(http.probe_min_interval_seconds, 15);
 
         tokio::fs::write(
             &path,

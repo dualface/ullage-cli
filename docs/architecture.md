@@ -12,6 +12,7 @@ ullage-app ----+--> ullage-protocol --> ullage-core --> ullage-auth
                             ^                ^
                             |                |
 ullage-daemon --------------+                |
+ullage-http -----> ullage-daemon             |
 ullage-app --------------------------------> provider-claude/chatgpt/grok/cursor
 ```
 
@@ -24,8 +25,11 @@ direction rather than every composition-root edge; the complete direct workspace
 - each `ullage-provider-*`: `ullage-core`; providers that implement authentication also use `ullage-auth`.
 - `ullage-daemon`: `ullage-auth`, `ullage-core`, and `ullage-protocol`; it owns scheduling, persistence, and local
   control transport without choosing production providers.
-- `ullage-app`: `ullage-auth`, `ullage-cli`, `ullage-core`, `ullage-daemon`, `ullage-protocol`, and all four
-  provider crates. It is the single production composition root and builds the `ullage` binary.
+- `ullage-http`: `ullage-auth`, `ullage-daemon`, and `ullage-protocol`. It is an optional loopback HTTP
+  transport over `ControlService::handle()` and does not change the control protocol.
+- `ullage-app`: `ullage-auth`, `ullage-cli`, `ullage-core`, `ullage-daemon`, `ullage-http`,
+  `ullage-protocol`, and all four provider crates. It is the single production composition root
+  and builds the `ullage` binary.
 - `ullage-cli`: `ullage-protocol`, plus `ullage-auth` on Windows for private service-marker
   creation using the same protected-DACL primitive as credential and snapshot storage.
 
@@ -39,6 +43,8 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-provider-*`: vendor-specific DTOs, API behavior, and conversion into `ullage-core`
   DTOs. Vendor DTOs must not be moved into a shared crate.
 - `ullage-daemon`: local transport and scheduling.
+- `ullage-http`: loopback HTTP query transport, bearer token file, Host/Origin checks, and
+  per-account probe cooldown. Assembled only by `ullage-app`.
 - `ullage-cli`: command-line client of the local control protocol.
 - `ullage-app`: single executable composition root for the CLI client and daemon process.
 
@@ -119,8 +125,9 @@ The `ullage` composition root loads a versioned JSON document from `ULLAGE_CONFI
 Without that override, macOS uses `~/Library/Application Support/Ullage/config.json`, Linux and
 other Unix systems use `$XDG_CONFIG_HOME/ullage/config.json` or `~/.config/ullage/config.json`, and
 Windows uses `%APPDATA%\Ullage\config.json`. Version 1 contains daemon concurrency, optional
-initial account selectors, and optional `credentials.file_fallback` (default
-false). Provider OAuth and billing endpoints are
+initial account selectors, optional `credentials.file_fallback` (default false), and optional
+`http` settings (`enabled` default false, `bind` default `127.0.0.1:7878`, `allowed_origins`
+default empty, `probe_min_interval_seconds` default 60). Provider OAuth and billing endpoints are
 compiled into the adapters and cannot be redirected through local configuration. Unknown
 fields, unsupported versions, duplicate account IDs/selectors, unsafe control characters, unknown
 providers, zero timing values, symbolic links, and files above 1 MiB are rejected. Secret
@@ -150,6 +157,41 @@ attaches the provider's own error text only on authentication and probe
 failures. Control
 protocol version 8 adds `credential_backend` on daemon status. Version 7 added the diagnostics
 opt-in (`diagnostics` / `diagnostic`) and `SetAccountLabel`.
+
+## Loopback HTTP query API
+
+`ullage-http` is an optional second transport beside the Unix socket / Windows named pipe. It is
+off unless `http.enabled` is true. The crate maps HTTP routes onto existing `ControlCommand`
+values and calls `ControlService::handle()`; `CONTROL_PROTOCOL_VERSION` stays 8.
+
+Endpoints: `GET /v1/status`, `/v1/providers`, `/v1/accounts`, `/v1/accounts/{id}`, `/v1/usage`
+(optional `?account=`), and `POST /v1/accounts/{id}/probe` (optional `?wait=false`). `/v1/usage`
+is `ControlCommand::Show` and does not call providers. Authentication, account mutation, and
+workspace commands are not exposed.
+
+Security model:
+
+- Bind address must be loopback. A non-loopback `http.bind` fails daemon startup and names that
+  setting.
+- Token: 256-bit `getrandom`, base64url, stored as `http-token` next to the state file. Unix
+  files must be current-user-owned `0600`; Windows files use the same protected DACL primitive as
+  credentials and snapshots. Permission mismatches refuse to start or rotate and are not repaired
+  in place. Comparison is constant-time. `ullage http token --rotate` replaces the file so a
+  running daemon rejects the old token on the next request.
+- Host whitelist: `127.0.0.1:<port>`, `localhost:<port>`, and the actual loopback bind address.
+  Other Host values return 403.
+- CORS: `http.allowed_origins` defaults to empty. A matching Origin is echoed with `Vary:
+  Origin`. Unmatched origins receive no `Access-Control-Allow-*` headers. The server never
+  returns `*` or `Access-Control-Allow-Credentials: true`. OPTIONS preflight is supported. CORS
+  is not the authorization gate; token and Host checks are.
+- Probe cooldown is per account (`http.probe_min_interval_seconds`, default 60) because engine
+  single-flight only merges concurrent probes.
+- Request bodies over 1 MiB or past the read timeout are rejected on that connection only.
+- HTTP `/v1` is independent of `CONTROL_PROTOCOL_VERSION`. Status payloads still carry the
+  control protocol version.
+
+This release does not offer TLS, non-loopback binds, Cookie authentication, SSE/WebSocket, or
+static page hosting. Remote use is SSH tunneling onto the loopback listener.
 
 ## User service hosting
 

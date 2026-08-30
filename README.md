@@ -21,9 +21,9 @@ Default paths:
 
 | Platform | Config | State | Control |
 |---|---|---|---|
-| Linux | `$XDG_CONFIG_HOME/ullage/config.json` or `~/.config/ullage/config.json` | `$XDG_STATE_HOME/ullage/state.json` or `~/.local/state/ullage/state.json` | `$XDG_RUNTIME_DIR/ullage/control.sock` |
-| macOS | `~/Library/Application Support/Ullage/config.json` | `~/Library/Application Support/Ullage/state.json` | `$TMPDIR/ullage-<uid>/control.sock` |
-| Windows | `%APPDATA%\Ullage\config.json` | `%LOCALAPPDATA%\Ullage\state.json` | `\\.\pipe\ullage-<user-scope>` |
+| Linux | `$XDG_CONFIG_HOME/ullage/config.json` or `~/.config/ullage/config.json` | `$XDG_STATE_HOME/ullage/state.json` or `~/.local/state/ullage/state.json`; HTTP token `http-token` beside that file | `$XDG_RUNTIME_DIR/ullage/control.sock` |
+| macOS | `~/Library/Application Support/Ullage/config.json` | `~/Library/Application Support/Ullage/state.json`; HTTP token `http-token` beside that file | `$TMPDIR/ullage-<uid>/control.sock` |
+| Windows | `%APPDATA%\Ullage\config.json` | `%LOCALAPPDATA%\Ullage\state.json`; HTTP token `http-token` beside that file | `\\.\pipe\ullage-<user-scope>` |
 
 Overrides: `ULLAGE_CONFIG_FILE`, `ULLAGE_STATE_FILE`, `ULLAGE_CONTROL_SOCKET`
 (Unix), `ULLAGE_CONTROL_PIPE` (Windows).
@@ -52,6 +52,12 @@ an empty account list.
   "providers": {},
   "credentials": {
     "file_fallback": false
+  },
+  "http": {
+    "enabled": false,
+    "bind": "127.0.0.1:7878",
+    "allowed_origins": [],
+    "probe_min_interval_seconds": 60
   },
   "accounts": [
     {
@@ -87,6 +93,50 @@ files can read them. The directory is created private (`0700` / current-user
 DACL); a permission check failure stops the daemon instead of silently
 downgrading. Old configuration files that omit the `credentials` object still
 load with the switch off.
+
+`http.enabled` is false by default. While it is off the daemon does not listen
+on any TCP port. When enabled, the daemon binds `http.bind` (loopback only;
+a non-loopback address refuses to start and names `http.bind`) and serves a
+read-only HTTP query API:
+
+```text
+GET  /v1/status
+GET  /v1/providers
+GET  /v1/accounts
+GET  /v1/accounts/{id}
+GET  /v1/usage?account={id}
+POST /v1/accounts/{id}/probe?wait=false
+```
+
+`/v1/usage` reads cached snapshots and does not contact providers. Probe
+requests for the same account within `http.probe_min_interval_seconds`
+(default 60) return `429` with `Retry-After`. Authentication, account
+mutation, and workspace commands stay on the private control socket.
+
+Requests need `Authorization: Bearer <token>`. Print or rotate the token with:
+
+```sh
+ullage http token
+ullage http token --rotate
+```
+
+The token is a 256-bit value stored as `http-token` next to the state file,
+owned by the current user (`0600` / protected DACL). A permission mismatch
+refuses to start or rotate rather than repairing the file. The HTTP server
+accepts only Host values `127.0.0.1:<port>` and `localhost:<port>` (plus the
+actual loopback bind address). `http.allowed_origins` is empty by default:
+matching origins are echoed with `Vary: Origin`; unmatched origins get no
+CORS headers. The server never returns `Access-Control-Allow-Origin: *` or
+`Access-Control-Allow-Credentials: true`. Remote access is expected to use
+an SSH tunnel; this release does not offer TLS or non-loopback binds.
+
+Error mapping is stable: missing or invalid Bearer tokens are `401`, unknown
+routes `404`, illegal parameters `400`, `AccountNotFound` `404`,
+`AuthenticationInvalid` `409`, provider or probe `RateLimited` `429` with
+`Retry-After`, `Timeout` `504`, and `Storage` `500`. Response bodies stay
+sanitized unless `?diagnose=1` is set. Request bodies larger than 1 MiB, or
+that stall past the read timeout, are rejected without affecting other
+connections.
 
 ## Daemon lifecycle
 

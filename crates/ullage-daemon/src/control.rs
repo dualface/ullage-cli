@@ -45,6 +45,10 @@ impl ControlService {
         self.engine.status().await
     }
 
+    pub async fn wait_for_shutdown(&self) {
+        self.engine.wait_for_shutdown().await
+    }
+
     pub async fn probe(
         &self,
         account_id: &AccountId,

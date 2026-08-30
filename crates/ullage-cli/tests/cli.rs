@@ -48,9 +48,20 @@ impl ControlClient for MockClient {
     fn run_daemon(&self) -> Result<(), ClientError> {
         match &self.daemon_result {
             Ok(()) => Ok(()),
-            Err(ClientError::DaemonProcess) => Err(ClientError::DaemonProcess),
-            Err(ClientError::DaemonUnavailable) => Err(ClientError::DaemonUnavailable),
-            Err(ClientError::InvalidResponse) => Err(ClientError::InvalidResponse),
+            Err(error) => Err(match error {
+                ClientError::DaemonProcess => ClientError::DaemonProcess,
+                ClientError::DaemonUnavailable => ClientError::DaemonUnavailable,
+                ClientError::InvalidResponse => ClientError::InvalidResponse,
+                ClientError::HttpToken(message) => ClientError::HttpToken(message.clone()),
+            }),
+        }
+    }
+
+    fn http_token(&self, rotate: bool) -> Result<String, ClientError> {
+        if rotate {
+            Ok("rotated-token".into())
+        } else {
+            Ok("current-token".into())
         }
     }
 
@@ -1509,6 +1520,22 @@ fn daemon_run_honors_json_output() {
 
     assert_eq!(output.code, ExitCode::Success);
     assert_eq!(output.stdout, "{\"result\":\"ack\"}\n");
+}
+
+#[test]
+fn http_token_prints_and_rotates_without_talking_to_the_daemon() {
+    let client = MockClient::new(|_| unreachable!());
+    let printed = run_from(["ullage", "http", "token"], &client);
+    assert_eq!(printed.code, ExitCode::Success);
+    assert_eq!(printed.stdout, "current-token\n");
+
+    let rotated = run_from(["ullage", "http", "token", "--rotate"], &client);
+    assert_eq!(rotated.code, ExitCode::Success);
+    assert_eq!(rotated.stdout, "rotated-token\n");
+
+    let json = run_from(["ullage", "--output", "json", "http", "token"], &client);
+    assert_eq!(json.code, ExitCode::Success);
+    assert_eq!(json.stdout, "{\"token\":\"current-token\"}\n");
 }
 
 #[test]

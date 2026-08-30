@@ -65,6 +65,8 @@ pub enum ClientError {
     InvalidResponse,
     #[error("daemon process failed")]
     DaemonProcess,
+    #[error("{0}")]
+    HttpToken(String),
 }
 
 pub trait ControlClient {
@@ -80,6 +82,11 @@ pub trait ControlClient {
 
     fn daemon_service_installed(&self) -> Result<bool, ClientError> {
         Err(ClientError::DaemonProcess)
+    }
+
+    fn http_token(&self, rotate: bool) -> Result<String, ClientError> {
+        let _ = rotate;
+        Err(ClientError::HttpToken("http token is unavailable".into()))
     }
 }
 
@@ -112,7 +119,17 @@ const CLI_AFTER_HELP: &str = "Examples:
   ullage daemon install
   ullage daemon start
   ullage auth login
-  ullage show --all";
+  ullage show --all
+  ullage http token";
+const HTTP_AFTER_HELP: &str = "Examples:
+  ullage http token
+  ullage http token --rotate";
+const HTTP_ABOUT: &str = "Print or rotate the local HTTP API token";
+const HTTP_LONG_ABOUT: &str = "Print or rotate the local HTTP API token.
+
+The token authenticates local HTTP query requests. `ullage http token` prints \
+the current token, creating a private token file if needed. `--rotate` writes \
+a new token and makes the previous value fail immediately.";
 const DAEMON_INSTALL_AFTER_HELP: &str = "Examples:
   ullage daemon install
   ullage daemon start
@@ -248,6 +265,26 @@ pub enum Command {
     ///
     /// Pass an account id, or `--all` to print every stored snapshot.
     Show(ShowArgs),
+    /// Print or rotate the local HTTP API token.
+    #[command(
+        arg_required_else_help = true,
+        after_help = HTTP_AFTER_HELP
+    )]
+    Http {
+        #[command(subcommand)]
+        command: HttpCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HttpCommand {
+    /// Print the current HTTP API token, creating it if needed.
+    #[command(about = HTTP_ABOUT, long_about = HTTP_LONG_ABOUT, after_help = HTTP_AFTER_HELP)]
+    Token {
+        /// Generate a new token and make the previous token fail immediately.
+        #[arg(long)]
+        rotate: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1192,6 +1229,9 @@ pub fn execute_with(
     {
         return login::interactive_login(client, prompt, provider.as_deref(), *method, &cli);
     }
+    if let Command::Http { command } = &cli.command {
+        return execute_http(command, client, cli.output);
+    }
     if matches!(
         cli.command,
         Command::Daemon {
@@ -1355,6 +1395,7 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
     match command {
         Command::Daemon { .. }
         | Command::Provider { .. }
+        | Command::Http { .. }
         | Command::Account {
             command: AccountCommand::List,
         } => None,
@@ -1491,6 +1532,35 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
     }
 }
 
+fn execute_http(
+    command: &HttpCommand,
+    client: &dyn ControlClient,
+    format: OutputFormat,
+) -> RunOutput {
+    let HttpCommand::Token { rotate } = command;
+    match client.http_token(*rotate) {
+        Ok(token) => match format {
+            OutputFormat::Table => success_text(&format!("{token}\n")),
+            OutputFormat::Json | OutputFormat::PrettyJson => RunOutput {
+                stdout: json_line(
+                    &serde_json::json!({ "token": token }),
+                    format == OutputFormat::PrettyJson,
+                ),
+                stderr: String::new(),
+                code: ExitCode::Success,
+            },
+        },
+        Err(ClientError::HttpToken(message)) => error_output_with_options(
+            ExitCode::Failure,
+            "http_token_failed",
+            format,
+            Some(message),
+            None,
+        ),
+        Err(_) => error_output(ExitCode::Failure, "http_token_failed", format),
+    }
+}
+
 fn to_control_command(command: &Command) -> ControlCommand {
     match command {
         Command::Daemon {
@@ -1503,7 +1573,8 @@ fn to_control_command(command: &Command) -> ControlCommand {
                 | DaemonCommand::Stop
                 | DaemonCommand::Run
                 | DaemonCommand::Uninstall,
-        } => unreachable!(),
+        }
+        | Command::Http { .. } => unreachable!(),
         Command::Provider {
             command: ProviderCommand::List,
         } => ControlCommand::ListProviders,

@@ -873,6 +873,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -2190,6 +2191,7 @@ dependencies = [
  "ullage-cli",
  "ullage-core",
  "ullage-daemon",
+ "ullage-http",
  "ullage-protocol",
  "ullage-provider-chatgpt",
  "ullage-provider-claude",
@@ -2259,6 +2261,31 @@ dependencies = [
  "tokio",
  "ullage-auth",
  "ullage-core",
+ "ullage-protocol",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ullage-http"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bytes",
+ "chrono",
+ "getrandom 0.3.4",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ullage-auth",
+ "ullage-core",
+ "ullage-daemon",
  "ullage-protocol",
  "windows-sys 0.61.2",
 ]

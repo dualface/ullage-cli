@@ -44,6 +44,7 @@ fn help_covers_exit_codes_examples_and_value_names() {
     );
     assert_after_help(&command, &["probe"], "ullage probe claude-work");
     assert_after_help(&command, &["show"], "ullage show --all");
+    assert_after_help(&command, &["http"], "ullage http token --rotate");
     assert_after_help(&command, &["daemon", "install"], "ullage daemon start");
 
     let login = find_command(&command, &["auth", "login"]);

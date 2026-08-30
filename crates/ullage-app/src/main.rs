@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use ullage_cli::{ExitCode, RunOutput, SystemClient, run_from};
+use ullage_cli::{ExitCode, RunOutput, run_from};
 
 #[tokio::main]
 async fn main() {
@@ -12,7 +12,7 @@ async fn main() {
         }
         return;
     }
-    let client = SystemClient::from_environment();
+    let client = ullage_app::ProductionClient::from_environment();
     let output = run_from(std::env::args_os(), &client);
     std::process::exit(print_output(output));
 }

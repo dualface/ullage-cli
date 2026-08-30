@@ -1,0 +1,36 @@
+[package]
+name = "ullage-http"
+autobins = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64 = "0.22"
+bytes = "1"
+getrandom = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1.11", features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", features = ["http1", "tokio"] }
+libc.workspace = true
+percent-encoding = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+ullage-auth.workspace = true
+ullage-daemon = { path = "../ullage-daemon" }
+ullage-protocol.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+ullage-core.workspace = true
