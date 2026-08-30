@@ -94,14 +94,14 @@ public final class DaemonClient: @unchecked Sendable {
         }
 
         do {
-            if let envelope = try? decoder.decode(ResponseEnvelope<Payload>.self, from: data) {
-                if let version = envelope.version, version != Self.protocolVersion {
-                    throw DaemonError.protocolMismatch(client: Self.protocolVersion, server: version)
+            if let header = try? decoder.decode(ResponseEnvelopeHeader.self, from: data) {
+                if header.version != Self.protocolVersion {
+                    throw DaemonError.protocolMismatch(client: Self.protocolVersion, server: header.version)
                 }
-                guard envelope.result == expectedResult else {
-                    throw EnvelopeResultMismatch(expected: expectedResult, actual: envelope.result)
+                guard header.result == expectedResult else {
+                    throw EnvelopeResultMismatch(expected: expectedResult, actual: header.result)
                 }
-                return envelope.payload
+                return try decoder.decode(ResponseEnvelope<Payload>.self, from: data).payload
             }
             return try decoder.decode(Payload.self, from: data)
         } catch let error as DaemonError {
@@ -143,9 +143,14 @@ final class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchec
 }
 
 private struct ResponseEnvelope<Payload: Decodable>: Decodable {
-    let version: UInt16?
+    let version: UInt16
     let result: String
     let payload: Payload
+}
+
+private struct ResponseEnvelopeHeader: Decodable {
+    let version: UInt16
+    let result: String
 }
 
 private struct ProtocolMismatchDocument: Decodable {

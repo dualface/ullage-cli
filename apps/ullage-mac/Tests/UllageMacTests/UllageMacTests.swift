@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import UllageMac
@@ -37,6 +38,16 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(moneyText(12.5, "EUR"), "€12.50")
         XCTAssertEqual(moneyText(12.5, "GBP"), "£12.50")
         XCTAssertEqual(moneyText(12.5, "SEK"), "SEK 12.50")
+    }
+
+    func testPopoverSizingClampsAndRetainsMeasuredHeight() {
+        var sizing = PopoverSizing()
+        XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 260))
+        sizing.update(preferredHeight: 700)
+        XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 520))
+        XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 520))
+        sizing.update(preferredHeight: 120)
+        XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 180))
     }
 
     @MainActor

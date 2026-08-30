@@ -48,7 +48,7 @@ struct DaemonClientTests {
 
     @Test func rejectsMismatchedProtocolVersions() async throws {
         StubURLProtocol.handler = {
-            response($0, body: #"{"version":9,"result":"snapshots","payload":[]}"#)
+            response($0, body: #"{"version":9,"result":"snapshots","payload":{"future":true}}"#)
         }
         do {
             _ = try await makeClient().usage()
@@ -56,6 +56,20 @@ struct DaemonClientTests {
         } catch let error as DaemonError {
             guard case .protocolMismatch(client: 8, server: 9) = error else {
                 Issue.record("Expected protocol mismatch, got \(error)")
+                return
+            }
+        }
+
+
+        StubURLProtocol.handler = {
+            response($0, body: #"{"result":"snapshots","payload":[]}"#)
+        }
+        do {
+            _ = try await makeClient().usage()
+            Issue.record("Expected an unversioned envelope to fail")
+        } catch let error as DaemonError {
+            guard case .decoding = error else {
+                Issue.record("Expected decoding failure, got \(error)")
                 return
             }
         }

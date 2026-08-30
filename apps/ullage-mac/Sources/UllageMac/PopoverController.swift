@@ -7,6 +7,7 @@ final class PopoverController: NSObject, NSPopoverDelegate {
     private let store: UsageStore
     private let openSettings: () -> Void
     private var hostingController: NSHostingController<RootView>?
+    private var sizing = PopoverSizing()
 
     var isShown: Bool { popover.isShown }
 
@@ -28,7 +29,7 @@ final class PopoverController: NSObject, NSPopoverDelegate {
             hostingController = controller
             popover.contentViewController = controller
         }
-        popover.contentSize = NSSize(width: 360, height: 260)
+        popover.contentSize = sizing.contentSize
         popover.show(relativeTo: rect, of: view, preferredEdge: .minY)
         store.start()
     }
@@ -43,6 +44,17 @@ final class PopoverController: NSObject, NSPopoverDelegate {
     }
 
     private func updateContentHeight(_ preferredHeight: CGFloat) {
-        popover.contentSize = NSSize(width: 360, height: min(520, max(180, preferredHeight)))
+        sizing.update(preferredHeight: preferredHeight)
+        popover.contentSize = sizing.contentSize
+    }
+}
+
+struct PopoverSizing {
+    private(set) var height: CGFloat = 260
+
+    var contentSize: NSSize { NSSize(width: 360, height: height) }
+
+    mutating func update(preferredHeight: CGFloat) {
+        height = min(520, max(180, preferredHeight))
     }
 }
