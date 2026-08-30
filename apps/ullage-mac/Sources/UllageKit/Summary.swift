@@ -35,7 +35,7 @@ public enum SummaryValue: Equatable, Sendable {
         default: return nil
         }
         guard percentage.isFinite else { return nil }
-        return Int(percentage.rounded())
+        return Int(exactly: percentage.rounded())
     }
 }
 

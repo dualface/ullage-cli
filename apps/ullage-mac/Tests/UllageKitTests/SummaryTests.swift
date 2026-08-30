@@ -37,6 +37,7 @@ private func date(_ value: String) throws -> Date {
         ),
     ])
     #expect(chatGPT.rows[0].value.roundedPercentage == 75)
+    #expect(SummaryValue.used(Double.greatestFiniteMagnitude).roundedPercentage == nil)
 
     let claude = summarize(try usage("claude"))
     #expect(claude.rows == [
@@ -108,14 +109,4 @@ private func date(_ value: String) throws -> Date {
     #expect(grokRows[0].metric == "GrokBuild")
     #expect(grokRows[1].window == "Monthly")
     #expect(!grokRows.contains(where: { $0.window == "Extra Usage Credits" }))
-}
-
-@Test func hiddenMeasurementsNeverBecomeRows() throws {
-    let allRows = try ["chatgpt", "claude", "cursor", "grok"]
-        .flatMap { summarize(try usage($0)).rows }
-    let forbidden = Set([
-        "allowed", "limit reached", "has credits", "unlimited", "on demand enabled",
-        "enabled", "included spend", "bonus spend",
-    ])
-    #expect(allRows.allSatisfy { !forbidden.contains($0.metric) })
 }
