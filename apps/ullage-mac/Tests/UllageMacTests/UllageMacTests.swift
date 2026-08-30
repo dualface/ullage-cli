@@ -5,6 +5,12 @@ import XCTest
 import UllageKit
 
 final class UllageMacTests: XCTestCase {
+    func testLoginItemRequiresApplicationBundle() {
+        XCTAssertTrue(isApplicationBundleURL(URL(fileURLWithPath: "/Applications/Ullage.app")))
+        XCTAssertTrue(isApplicationBundleURL(URL(fileURLWithPath: "/Applications/Ullage.APP")))
+        XCTAssertFalse(isApplicationBundleURL(URL(fileURLWithPath: "/tmp/UllageMac")))
+    }
+
     func testServerURLAcceptsOnlyHTTPLoopbackHosts() {
         XCTAssertNotNil(AppSettings.validatedServerURL("http://127.0.0.1:7878"))
         XCTAssertNotNil(AppSettings.validatedServerURL("http://localhost:7878"))

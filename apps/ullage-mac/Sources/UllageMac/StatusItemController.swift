@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 
 @MainActor
 final class StatusItemController: NSObject {
@@ -58,11 +59,38 @@ final class StatusItemController: NSObject {
         let menu = NSMenu()
         menu.addItem(withTitle: "Refresh", action: #selector(refresh), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
-        let launch = menu.addItem(withTitle: "Launch at Login", action: nil, keyEquivalent: "")
-        launch.isEnabled = false
+        let launch = menu.addItem(
+            withTitle: "Launch at Login",
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: ""
+        )
+        launch.target = self
+        launch.isEnabled = isApplicationBundleURL(Bundle.main.bundleURL)
+        launch.state = launch.isEnabled && SMAppService.mainApp.status == .enabled ? .on : .off
+        if !launch.isEnabled {
+            launch.toolTip = "Launch at Login requires running Ullage from an app bundle."
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Ullage", action: #selector(quit), keyEquivalent: "q").target = self
         return menu
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        guard isApplicationBundleURL(Bundle.main.bundleURL) else { return }
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled {
+                try service.unregister()
+            } else {
+                try service.register()
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Unable to Update Launch at Login"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
     }
 
     @objc private func refresh() {
@@ -89,4 +117,8 @@ final class StatusItemController: NSObject {
         store.stop()
         NSApp.terminate(nil)
     }
+}
+
+func isApplicationBundleURL(_ url: URL) -> Bool {
+    url.pathExtension.caseInsensitiveCompare("app") == .orderedSame
 }

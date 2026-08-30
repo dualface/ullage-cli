@@ -6,8 +6,8 @@ if [[ -z "${ULLAGE_MAC_SSH:-}" ]]; then
     exit 2
 fi
 
-if [[ $# -ne 1 || ( "$1" != "test" && "$1" != "build" && "$1" != "run" ) ]]; then
-    echo "usage: $0 <test|build|run>" >&2
+if [[ $# -ne 1 || ( "$1" != "test" && "$1" != "build" && "$1" != "bundle" && "$1" != "run" ) ]]; then
+    echo "usage: $0 <test|build|bundle|run>" >&2
     exit 2
 fi
 
@@ -22,12 +22,14 @@ fi
 
 remote_dir="ullage-build/$branch"
 ssh "$ULLAGE_MAC_SSH" "mkdir -p ~/$remote_dir"
-rsync -a --delete --exclude .build "$package_dir/" "$ULLAGE_MAC_SSH:~/$remote_dir/"
+rsync -a --delete --exclude .build --exclude build "$package_dir/" "$ULLAGE_MAC_SSH:~/$remote_dir/"
 
 if [[ "$1" == "build" ]]; then
     ssh "$ULLAGE_MAC_SSH" "cd ~/$remote_dir && swift build -c release --arch arm64"
 elif [[ "$1" == "test" ]]; then
     ssh "$ULLAGE_MAC_SSH" "cd ~/$remote_dir && swift test"
+elif [[ "$1" == "bundle" ]]; then
+    ssh "$ULLAGE_MAC_SSH" "cd ~/$remote_dir && make bundle"
 else
     ssh "$ULLAGE_MAC_SSH" "cd ~/$remote_dir && swift build -c release --arch arm64"
     ssh "$ULLAGE_MAC_SSH" "pkill -x UllageMac >/dev/null 2>&1 || true; cd ~/$remote_dir && mkdir -p build && nohup .build/release/UllageMac --mock >build/ullage-mac.log 2>&1 &"

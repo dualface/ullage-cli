@@ -17,6 +17,44 @@ The binary is `target/release/ullage`. There is no installer or package in this
 release. Place the binary on your `PATH` if you want the user-level service
 commands to find it at a stable location.
 
+## Ullage Mac
+
+Ullage Mac is an Apple Silicon menu bar client for macOS 14 or newer. Building
+it requires Xcode with the Swift 6 toolchain. It is a separate Swift package
+under `apps/ullage-mac`, not part of the Cargo workspace.
+
+Build the application bundle from the repository root or the package directory:
+
+```sh
+make mac
+make -C apps/ullage-mac bundle
+```
+
+Both commands create `apps/ullage-mac/build/Ullage.app`. Open the normal client,
+or run it with the bundled fixture data:
+
+```sh
+open apps/ullage-mac/build/Ullage.app
+open apps/ullage-mac/build/Ullage.app --args --mock
+ULLAGE_MOCK=1 apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac
+```
+
+The normal client reads the server URL from its Settings panel. The URL must be
+an HTTP loopback address and defaults to `http://127.0.0.1:7878`. Enable the
+daemon's HTTP interface as described under Configuration, print its bearer
+token with `ullage http token`, and paste that token into Settings. The client
+stores it in the macOS Keychain rather than `UserDefaults`.
+
+`Launch at Login` is available from the status-item menu when Ullage is running
+from the application bundle. Copy `Ullage.app` to `/Applications` or
+`~/Applications` before enabling it so the registered path remains stable.
+
+This is the mock-data stage of Ullage Mac. The real daemon HTTP integration is
+scheduled for the next stage, so use `--mock` or `ULLAGE_MOCK=1` to exercise the
+complete interface today. Intel Macs are not supported. The bundle receives an
+ad-hoc signature for local use; it has no Developer ID signature and is not
+notarized.
+
 Default paths:
 
 | Platform | Config | State | Control |

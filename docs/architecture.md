@@ -48,6 +48,21 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-cli`: command-line client of the local control protocol.
 - `ullage-app`: single executable composition root for the CLI client and daemon process.
 
+## Ullage Mac
+
+`apps/ullage-mac` is a standalone Swift package and is not a member of the Cargo workspace.
+Its `UllageKit` target owns the daemon HTTP DTOs, decoding, ordering, summary projection, and
+data-source boundary. The `UllageMac` executable target owns the AppKit application shell,
+SwiftUI views, refresh lifecycle, settings, and Keychain access. The application bundle copies
+the SwiftPM resource bundle into `Contents/Resources` so both tests and mock mode use the same
+canonical fixture files.
+
+The client accesses daemon data only through the loopback HTTP API; it does not read Rust state,
+credentials, snapshots, or the private control socket directly. Its bearer token is stored as a
+generic password in the macOS Keychain with device-local, unlocked-only accessibility. The current
+stage uses the same `UsageDataSource` boundary with bundled mock fixtures. Real HTTP behavior and
+compatibility validation belong to `20260831-mac-http-integration-task`.
+
 ## Dependency rules
 
 1. Provider implementations may depend on `ullage-core` and `ullage-auth`; shared crates may
