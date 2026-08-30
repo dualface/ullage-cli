@@ -257,6 +257,17 @@ fn validate(config: &AppConfig) -> Result<(), String> {
     if config.daemon.maximum_concurrency == 0 || config.daemon.default_provider_concurrency == 0 {
         return Err("daemon concurrency must be greater than zero".into());
     }
+    if config.http.probe_min_interval_seconds == 0 {
+        return Err("http.probe_min_interval_seconds must be greater than zero".into());
+    }
+    if config
+        .http
+        .allowed_origins
+        .iter()
+        .any(|origin| origin == "*")
+    {
+        return Err("http.allowed_origins must not contain *".into());
+    }
     let mut limited_providers = std::collections::BTreeSet::new();
     for limit in &config.daemon.provider_limits {
         if !PROVIDERS.contains(&limit.provider.as_str())
@@ -412,6 +423,31 @@ mod tests {
             vec!["https://gui.example.test".to_owned()]
         );
         assert_eq!(http.probe_min_interval_seconds, 15);
+
+        tokio::fs::write(
+            &path,
+            br#"{"version":1,"http":{"probe_min_interval_seconds":0}}"#,
+        )
+        .await
+        .unwrap();
+        make_private(&path);
+        assert!(
+            load(&path)
+                .await
+                .unwrap_err()
+                .contains("http.probe_min_interval_seconds")
+        );
+
+        tokio::fs::write(&path, br#"{"version":1,"http":{"allowed_origins":["*"]}}"#)
+            .await
+            .unwrap();
+        make_private(&path);
+        assert!(
+            load(&path)
+                .await
+                .unwrap_err()
+                .contains("http.allowed_origins")
+        );
 
         tokio::fs::write(
             &path,

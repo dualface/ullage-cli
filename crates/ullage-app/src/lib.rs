@@ -2,6 +2,7 @@ mod config;
 mod credential_backend;
 mod credentials;
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -204,18 +205,48 @@ pub async fn run_daemon_with(
         }
     });
     let result = match http {
-        Some(http) => {
-            tokio::select! {
-                result = server.run() => result,
-                result = http.run() => result,
-            }
-        }
+        Some(http) => run_control_and_http(server.run(), http, engine.clone()).await,
         None => server.run().await,
     };
     engine.shutdown();
     let _ = engine_task.await;
     signal_task.abort();
     result
+}
+
+async fn run_control_and_http<F>(
+    control: F,
+    http: HttpServer,
+    engine: DaemonEngine,
+) -> Result<(), String>
+where
+    F: Future<Output = Result<(), String>> + Send + 'static,
+{
+    let mut control_task = tokio::spawn(control);
+    let mut http_task = tokio::spawn(http.run());
+    tokio::select! {
+        control_result = &mut control_task => {
+            engine.shutdown();
+            merge_server_results(control_result, http_task.await)
+        }
+        http_result = &mut http_task => {
+            engine.shutdown();
+            merge_server_results(control_task.await, http_result)
+        }
+    }
+}
+
+fn merge_server_results(
+    unix: Result<Result<(), String>, tokio::task::JoinError>,
+    http: Result<Result<(), String>, tokio::task::JoinError>,
+) -> Result<(), String> {
+    let unix = unix.map_err(|_| "control server task failed".to_owned())?;
+    let http = http.map_err(|_| "http server task failed".to_owned())?;
+    match (unix, http) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(left), Err(right)) => Err(format!("{left}; {right}")),
+    }
 }
 
 fn http_bind_config(config: &AppConfig) -> Result<HttpBindConfig, String> {
@@ -226,6 +257,14 @@ fn http_bind_config(config: &AppConfig) -> Result<HttpBindConfig, String> {
         .map_err(|_| "http.bind is not a valid socket address".to_owned())?;
     if !bind.ip().is_loopback() {
         return Err("http.bind must be a loopback address".into());
+    }
+    if config
+        .http
+        .allowed_origins
+        .iter()
+        .any(|origin| origin == "*")
+    {
+        return Err("http.allowed_origins must not contain *".into());
     }
     Ok(HttpBindConfig {
         bind,

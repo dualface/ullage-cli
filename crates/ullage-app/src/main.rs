@@ -6,8 +6,8 @@ use ullage_cli::{ExitCode, RunOutput, run_from};
 async fn main() {
     ullage_daemon::install_redacting_panic_hook();
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__daemon")) {
-        if ullage_app::run_daemon().await.is_err() {
-            eprintln!("ullage daemon failed");
+        if let Err(error) = ullage_app::run_daemon().await {
+            eprintln!("ullage daemon failed: {error}");
             std::process::exit(1);
         }
         return;

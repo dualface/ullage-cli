@@ -144,21 +144,23 @@ impl Harness {
         )
         .await
         .unwrap();
-        engine
-            .add_account(AccountConfig {
-                id: AccountId::new("primary"),
-                provider: ProviderId::new("claude"),
-                query: UsageQuery {
-                    account_label: Some("primary".into()),
-                },
-                enabled: true,
-                interval: Duration::from_secs(60),
-                timeout: Duration::from_secs(5),
-                jitter: Duration::ZERO,
-                backoff: BackoffConfig::default(),
-            })
-            .await
-            .unwrap();
+        for id in ["primary", "team/a"] {
+            engine
+                .add_account(AccountConfig {
+                    id: AccountId::new(id),
+                    provider: ProviderId::new("claude"),
+                    query: UsageQuery {
+                        account_label: Some(id.into()),
+                    },
+                    enabled: true,
+                    interval: Duration::from_secs(60),
+                    timeout: Duration::from_secs(5),
+                    jitter: Duration::ZERO,
+                    backoff: BackoffConfig::default(),
+                })
+                .await
+                .unwrap();
+        }
         let directory = tempfile::tempdir().unwrap();
         #[cfg(unix)]
         {
@@ -353,12 +355,34 @@ async fn authenticates_with_bearer_token_and_maps_control_errors() {
     let missing = get(harness.addr, "/v1/status", None, "");
     assert_eq!(missing.status, 401);
     assert_eq!(missing.body, "{\"error\":\"unauthorized\"}");
+    let unauthenticated_body = exchange(
+        harness.addr,
+        &format!(
+            "POST /v1/accounts/primary/probe HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            harness.addr.port(),
+            1024 * 1024 + 1,
+            "x".repeat(1024 * 1024 + 1)
+        ),
+    );
+    assert_eq!(unauthenticated_body.status, 401);
     let wrong = get(harness.addr, "/v1/status", Some("wrong-token"), "");
     assert_eq!(wrong.status, 401);
     assert_eq!(wrong.body, missing.body);
     let status = get(harness.addr, "/v1/status", Some(&harness.token), "");
     assert_eq!(status.status, 200);
     assert!(status.body.contains("daemon_status"), "{}", status.body);
+    assert!(
+        status.body.contains("\"version\":8") || status.body.contains("\"version\": 8"),
+        "{}",
+        status.body
+    );
+    let illegal = get(
+        harness.addr,
+        "/v1/status?account=primary",
+        Some(&harness.token),
+        "",
+    );
+    assert_eq!(illegal.status, 400);
     assert_eq!(status.header("cache-control"), Some("no-store"));
     let unknown = get(harness.addr, "/v1/missing", Some(&harness.token), "");
     assert_eq!(unknown.status, 404);
@@ -484,6 +508,14 @@ async fn usage_reads_snapshots_without_calling_the_provider() {
     let accounts = get(harness.addr, "/v1/accounts", Some(&harness.token), "");
     assert_eq!(accounts.status, 200);
     assert!(accounts.body.contains("primary"), "{}", accounts.body);
+    let encoded = get(
+        harness.addr,
+        "/v1/accounts/team%2Fa",
+        Some(&harness.token),
+        "",
+    );
+    assert_eq!(encoded.status, 200, "{}", encoded.body);
+    assert!(encoded.body.contains("team/a"), "{}", encoded.body);
     harness.shutdown().await;
 }
 

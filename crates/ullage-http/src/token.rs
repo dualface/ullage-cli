@@ -254,7 +254,7 @@ fn open_existing(path: &Path) -> Result<std::fs::File, String> {
         // SAFETY: `geteuid` has no arguments and no memory-safety preconditions.
         if !metadata.is_file()
             || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
+            || metadata.permissions().mode() & 0o777 != 0o600
         {
             return Err(
                 "http-token must be owned by and accessible only to the current user".into(),
@@ -401,6 +401,13 @@ mod tests {
             0o644
         );
         assert!(rotate_token(&path).is_err());
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(load_token(&path).is_err());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     #[cfg(unix)]

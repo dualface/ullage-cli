@@ -65,6 +65,9 @@ impl HttpServer {
         if !config.bind.ip().is_loopback() {
             return Err("http.bind must be a loopback address".into());
         }
+        if config.allowed_origins.iter().any(|origin| origin == "*") {
+            return Err("http.allowed_origins must not contain *".into());
+        }
         load_or_create_token(&config.token_path)?;
         let listener = TcpListener::bind(config.bind)
             .await
@@ -175,22 +178,6 @@ async fn handle_request(
         };
     }
 
-    match collect_body(request).await {
-        Ok(()) => {}
-        Err(status) => {
-            let error = if status == StatusCode::PAYLOAD_TOO_LARGE {
-                "payload_too_large"
-            } else {
-                "request_timeout"
-            };
-            return finish(
-                json_status(status, serde_json::json!({"error": error})),
-                origin.as_deref(),
-                &state.allowed_origins,
-            );
-        }
-    }
-
     let expected = match load_token(&state.token_path) {
         Ok(token) => token,
         Err(_) => {
@@ -206,6 +193,22 @@ async fn handle_request(
     };
     if !bearer_matches(header_str(&headers, &header::AUTHORIZATION), &expected) {
         return finish(unauthorized(), origin.as_deref(), &state.allowed_origins);
+    }
+
+    match collect_body(request).await {
+        Ok(()) => {}
+        Err(status) => {
+            let error = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                "payload_too_large"
+            } else {
+                "request_timeout"
+            };
+            return finish(
+                json_status(status, serde_json::json!({"error": error})),
+                origin.as_deref(),
+                &state.allowed_origins,
+            );
+        }
     }
 
     let route = match parse_route(&method, &path) {
@@ -242,7 +245,10 @@ async fn handle_request(
         }
     };
 
-    let params = match QueryParams::parse(&query) {
+    let params = match QueryParams::parse(&query).and_then(|params| {
+        params.validate_for(&route)?;
+        Ok(params)
+    }) {
         Ok(params) => params,
         Err(()) => {
             return finish(
@@ -266,19 +272,7 @@ async fn handle_request(
         );
     }
 
-    let command = match route_command(route, &params) {
-        Ok(command) => command,
-        Err(()) => {
-            return finish(
-                json_status(
-                    StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error":"bad_request"}),
-                ),
-                origin.as_deref(),
-                &state.allowed_origins,
-            );
-        }
-    };
+    let command = route_command(route, &params);
 
     let request_id = next_request_id();
     let response = state
@@ -305,8 +299,8 @@ async fn collect_body(request: Request<Incoming>) -> Result<(), StatusCode> {
     }
 }
 
-fn route_command(route: Route, params: &QueryParams) -> Result<ControlCommand, ()> {
-    Ok(match route {
+fn route_command(route: Route, params: &QueryParams) -> ControlCommand {
+    match route {
         Route::Status => ControlCommand::DaemonStatus,
         Route::Providers => ControlCommand::ListProviders,
         Route::Accounts => ControlCommand::ListAccounts,
@@ -320,7 +314,7 @@ fn route_command(route: Route, params: &QueryParams) -> Result<ControlCommand, (
             account_id: id,
             wait: params.wait,
         },
-    })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -328,6 +322,7 @@ struct QueryParams {
     account: Option<String>,
     wait: bool,
     diagnose: bool,
+    keys: Vec<String>,
 }
 
 impl QueryParams {
@@ -335,11 +330,13 @@ impl QueryParams {
         let mut account = None;
         let mut wait = None;
         let mut diagnose = None;
+        let mut keys = Vec::new();
         if query.is_empty() {
             return Ok(Self {
                 account: None,
                 wait: true,
                 diagnose: false,
+                keys,
             });
         }
         for pair in query.split('&') {
@@ -375,12 +372,27 @@ impl QueryParams {
                 }
                 _ => return Err(()),
             }
+            keys.push(key);
         }
         Ok(Self {
             account,
             wait: wait.unwrap_or(true),
             diagnose: diagnose.unwrap_or(false),
+            keys,
         })
+    }
+
+    fn validate_for(&self, route: &Route) -> Result<(), ()> {
+        let allowed = match route {
+            Route::Usage => ["account", "diagnose"].as_slice(),
+            Route::Probe { .. } => ["wait", "diagnose"].as_slice(),
+            _ => ["diagnose"].as_slice(),
+        };
+        if self.keys.iter().all(|key| allowed.contains(&key.as_str())) {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -407,15 +419,13 @@ fn parse_route(method: &Method, path: &str) -> Result<Route, RouteError> {
         ["v1", "status"] => Some(Route::Status),
         ["v1", "providers"] => Some(Route::Providers),
         ["v1", "accounts"] => Some(Route::Accounts),
-        ["v1", "accounts", id] if !id.is_empty() && !id.contains('/') => Some(Route::Account {
+        ["v1", "accounts", id] if !id.is_empty() => Some(Route::Account {
             id: (*id).to_owned(),
         }),
         ["v1", "usage"] => Some(Route::Usage),
-        ["v1", "accounts", id, "probe"] if !id.is_empty() && !id.contains('/') => {
-            Some(Route::Probe {
-                id: (*id).to_owned(),
-            })
-        }
+        ["v1", "accounts", id, "probe"] if !id.is_empty() => Some(Route::Probe {
+            id: (*id).to_owned(),
+        }),
         _ => None,
     };
     match (method, matched) {
@@ -432,7 +442,7 @@ fn parse_route(method: &Method, path: &str) -> Result<Route, RouteError> {
 
 fn decode_component(value: &str) -> Result<String, ()> {
     let decoded = percent_decode_str(value).decode_utf8().map_err(|_| ())?;
-    if decoded.contains('/') || decoded.contains('\0') {
+    if decoded.contains('\0') {
         return Err(());
     }
     Ok(decoded.into_owned())
@@ -486,17 +496,23 @@ fn probe_retry_after(state: &HttpState, account_id: &str) -> Option<u64> {
 
 fn map_control_response(response: ControlResponse, diagnose: bool) -> Response<Full<Bytes>> {
     match response.result {
-        ControlResult::Error(error) => {
-            map_control_error(error, response.diagnostic.filter(|_| diagnose))
-        }
+        ControlResult::Error(error) => map_control_error(
+            error,
+            response.diagnostic.filter(|_| diagnose),
+            response.version,
+        ),
         ControlResult::ProtocolMismatch { supported_version } => json_status(
             StatusCode::BAD_REQUEST,
             serde_json::json!({
+                "version": response.version,
                 "error": "protocol_mismatch",
                 "supported_version": supported_version,
             }),
         ),
-        result => json_status(success_status(&result), result),
+        result => json_status(
+            success_status(&result),
+            with_protocol_version(response.version, result),
+        ),
     }
 }
 
@@ -507,10 +523,14 @@ fn success_status(result: &ControlResult) -> StatusCode {
     }
 }
 
-fn map_control_error(error: ControlError, diagnostic: Option<String>) -> Response<Full<Bytes>> {
+fn map_control_error(
+    error: ControlError,
+    diagnostic: Option<String>,
+    version: u16,
+) -> Response<Full<Bytes>> {
     let (status, retry_after) = control_error_status(&error);
-    let mut response = json_error_payload(status, error, diagnostic);
-    if let Some(retry_after) = retry_after {
+    let mut response = json_error_payload(status, error, diagnostic, version);
+    if status == StatusCode::TOO_MANY_REQUESTS {
         set_header(
             &mut response,
             header::RETRY_AFTER,
@@ -521,30 +541,34 @@ fn map_control_error(error: ControlError, diagnostic: Option<String>) -> Respons
     response
 }
 
-fn control_error_status(error: &ControlError) -> (StatusCode, Option<u64>) {
+fn control_error_status(error: &ControlError) -> (StatusCode, u64) {
     match error {
         ControlError::AccountNotFound { .. }
         | ControlError::AccountSelectorNotFound { .. }
         | ControlError::Account(ullage_protocol::AccountError::NotFound(_))
         | ControlError::Registry(ullage_protocol::RegistryError::NotFound(_)) => {
-            (StatusCode::NOT_FOUND, None)
+            (StatusCode::NOT_FOUND, 0)
         }
         ControlError::Provider(ProviderError::AuthenticationInvalid { .. }) => {
-            (StatusCode::CONFLICT, None)
+            (StatusCode::CONFLICT, 0)
         }
         ControlError::Provider(ProviderError::RateLimited {
             retry_after_seconds,
             ..
-        }) => (StatusCode::TOO_MANY_REQUESTS, *retry_after_seconds),
-        ControlError::Timeout => (StatusCode::GATEWAY_TIMEOUT, None),
-        ControlError::Storage => (StatusCode::INTERNAL_SERVER_ERROR, None),
-        ControlError::UnsupportedCommand => (StatusCode::BAD_REQUEST, None),
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, None),
+        }) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            retry_after_seconds.unwrap_or(1),
+        ),
+        ControlError::Timeout => (StatusCode::GATEWAY_TIMEOUT, 0),
+        ControlError::Storage => (StatusCode::INTERNAL_SERVER_ERROR, 0),
+        ControlError::UnsupportedCommand => (StatusCode::BAD_REQUEST, 0),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, 0),
     }
 }
 
 #[derive(Serialize)]
 struct ErrorDocument<T: Serialize> {
+    version: u16,
     #[serde(flatten)]
     error: T,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -555,8 +579,25 @@ fn json_error_payload(
     status: StatusCode,
     error: ControlError,
     diagnostic: Option<String>,
+    version: u16,
 ) -> Response<Full<Bytes>> {
-    json_status(status, ErrorDocument { error, diagnostic })
+    json_status(
+        status,
+        ErrorDocument {
+            version,
+            error,
+            diagnostic,
+        },
+    )
+}
+
+fn with_protocol_version(version: u16, value: impl Serialize) -> serde_json::Value {
+    let mut encoded =
+        serde_json::to_value(value).unwrap_or_else(|_| serde_json::json!({"error":"storage"}));
+    if let serde_json::Value::Object(map) = &mut encoded {
+        map.insert("version".into(), serde_json::json!(version));
+    }
+    encoded
 }
 
 fn json_status(status: StatusCode, value: impl Serialize) -> Response<Full<Bytes>> {
@@ -626,7 +667,11 @@ fn apply_cors(
     let Some(origin) = origin else {
         return;
     };
-    if !allowed_origins.iter().any(|allowed| allowed == origin) {
+    if origin == "*"
+        || !allowed_origins
+            .iter()
+            .any(|allowed| allowed != "*" && allowed == origin)
+    {
         return;
     }
     if let Ok(value) = HeaderValue::from_str(origin) {
@@ -725,7 +770,15 @@ mod tests {
                 retry_after_seconds: Some(12),
             }))
             .1,
-            Some(12)
+            12
+        );
+        assert_eq!(
+            control_error_status(&ControlError::Provider(ProviderError::RateLimited {
+                message: "slow".into(),
+                retry_after_seconds: None,
+            }))
+            .1,
+            1
         );
         assert_eq!(
             control_error_status(&ControlError::Timeout).0,
