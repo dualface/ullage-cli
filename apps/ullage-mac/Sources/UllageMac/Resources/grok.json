@@ -1,0 +1,23 @@
+{
+  "account_id": "mock-grok",
+  "usage": { "outcome": "complete", "data": {
+    "provider": "grok", "account_label": "Primary", "plan": "Premium+",
+    "subscription_expires_at": null, "observed_at": "2026-08-31T00:00:00Z",
+    "windows": [
+      { "window": { "kind": "weekly" }, "resets_at": "2026-09-04T00:00:00Z",
+        "measurements": [
+          { "name": "product:GrokBuild", "used": 31, "limit": 100, "unit": { "kind": "percent" } }
+        ] },
+      { "window": { "kind": "monthly" }, "resets_at": "2026-09-30T00:00:00Z",
+        "measurements": [
+          { "name": "monthly_credits", "used": 125, "limit": 1000, "unit": { "kind": "credits" } }
+        ] },
+      { "window": { "kind": "other", "id": "balance", "label": "Extra Usage Credits" },
+        "resets_at": null, "measurements": [
+          { "name": "remaining", "used": 12.5, "limit": null, "unit": { "kind": "currency", "code": "USD" } }
+        ] }
+    ]
+  } },
+  "last_success_at": "2026-08-31T00:00:00Z", "stale": false,
+  "last_error": null, "last_error_at": null
+}

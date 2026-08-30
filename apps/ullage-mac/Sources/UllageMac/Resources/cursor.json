@@ -1,0 +1,17 @@
+{
+  "account_id": "mock-cursor",
+  "usage": { "outcome": "complete", "data": {
+    "provider": "cursor", "account_label": "Team", "plan": "Business",
+    "subscription_expires_at": null, "observed_at": "2026-08-31T00:00:00Z",
+    "windows": [
+      { "window": { "kind": "monthly" }, "resets_at": "2026-09-01T00:00:00Z",
+        "measurements": [
+          { "name": "total", "used": 76, "limit": 100, "unit": { "kind": "percent" } },
+          { "name": "total_spend", "used": 7.5, "limit": 20, "unit": { "kind": "currency", "code": "USD" } },
+          { "name": "on_demand_enabled", "used": 0, "limit": 1, "unit": { "kind": "other", "id": "boolean", "label": "Enabled" } }
+        ] }
+    ]
+  } },
+  "last_success_at": "2026-08-31T00:00:00Z", "stale": true,
+  "last_error": "network", "last_error_at": "2026-08-31T00:01:00Z"
+}

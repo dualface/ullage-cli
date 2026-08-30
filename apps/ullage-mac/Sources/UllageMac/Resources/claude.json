@@ -1,0 +1,23 @@
+{
+  "account_id": "mock-claude",
+  "usage": { "outcome": "partial", "data": {
+    "provider": "claude", "account_label": "Work", "plan": "Pro",
+    "subscription_expires_at": null, "observed_at": "2026-08-31T00:00:00Z",
+    "windows": [
+      { "window": { "kind": "five_hours" }, "resets_at": "2026-08-31T04:00:00Z",
+        "measurements": [
+          { "name": "included_usage", "used": 22, "limit": 100, "unit": { "kind": "percent" } }
+        ] },
+      { "window": { "kind": "weekly" }, "resets_at": "2026-09-04T00:00:00Z",
+        "measurements": [
+          { "name": "included_usage", "used": 41, "limit": 100, "unit": { "kind": "percent" } }
+        ] },
+      { "window": { "kind": "other", "id": "opus", "label": "Weekly Opus" },
+        "resets_at": "2026-09-03T00:00:00Z", "measurements": [
+          { "name": "included_usage", "used": 9, "limit": 100, "unit": { "kind": "percent" } }
+        ] }
+    ]
+  }, "failures": [{ "scope": "sonnet", "message": "provider request failed" }] },
+  "last_success_at": "2026-08-31T00:00:00Z", "stale": false,
+  "last_error": null, "last_error_at": null
+}

@@ -11,11 +11,16 @@ let package = Package(
     ],
     targets: [
         .target(name: "UllageKit"),
-        .executableTarget(name: "UllageMac", dependencies: ["UllageKit"]),
+        .executableTarget(
+            name: "UllageMac",
+            dependencies: ["UllageKit"],
+            resources: [.process("Resources")]
+        ),
         .testTarget(
             name: "UllageKitTests",
             dependencies: ["UllageKit"],
             resources: [.copy("Fixtures")]
         ),
+        .testTarget(name: "UllageMacTests", dependencies: ["UllageMac"]),
     ]
 )

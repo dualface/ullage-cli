@@ -280,6 +280,22 @@ public struct SnapshotPayload: Codable, Equatable, Sendable {
         case lastError = "last_error"
         case lastErrorAt = "last_error_at"
     }
+
+    public init(
+        accountId: String,
+        usage: QueryOutcome<SubscriptionUsage>,
+        lastSuccessAt: Date,
+        stale: Bool,
+        lastError: SanitizedErrorPayload?,
+        lastErrorAt: Date?
+    ) {
+        self.accountId = accountId
+        self.usage = usage
+        self.lastSuccessAt = lastSuccessAt
+        self.stale = stale
+        self.lastError = lastError
+        self.lastErrorAt = lastErrorAt
+    }
 }
 
 public struct ProbePayload: Codable, Equatable, Sendable {
@@ -289,6 +305,11 @@ public struct ProbePayload: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case usage
         case accountId = "account_id"
+    }
+
+    public init(accountId: String, usage: QueryOutcome<SubscriptionUsage>) {
+        self.accountId = accountId
+        self.usage = usage
     }
 }
 

@@ -1,4 +1,7 @@
-import UllageKit
+import AppKit
 
-// The AppKit application entry point is added by the UI task.
-_ = UllageJSON.makeDecoder()
+let application = NSApplication.shared
+let delegate = AppDelegate()
+application.delegate = delegate
+application.setActivationPolicy(.accessory)
+application.run()
