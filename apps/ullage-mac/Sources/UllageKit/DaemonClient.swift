@@ -28,38 +28,39 @@ public final class DaemonClient: @unchecked Sendable {
     private let session: URLSession
     private let decoder: JSONDecoder
 
-    public init(baseURL: URL, token: String, session: URLSession? = nil) {
+    public init(baseURL: URL, token: String, configuration: URLSessionConfiguration? = nil) {
         self.baseURL = baseURL
         self.token = token
-        if let session {
-            self.session = session
-        } else {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.timeoutIntervalForRequest = 10
-            configuration.waitsForConnectivity = false
-            configuration.httpShouldSetCookies = false
-            self.session = URLSession(configuration: configuration)
-        }
+        let configuration = configuration ?? URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.waitsForConnectivity = false
+        configuration.httpShouldSetCookies = false
+        let delegate = RedirectRejectingDelegate()
+        self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         self.decoder = UllageJSON.makeDecoder()
     }
 
     public func status() async throws -> DaemonStatusPayload {
-        try await send(path: ["v1", "status"], method: "GET")
+        try await send(path: ["v1", "status"], method: "GET", expectedResult: "daemon_status")
     }
 
     public func accounts() async throws -> [Account] {
-        try await send(path: ["v1", "accounts"], method: "GET")
+        try await send(path: ["v1", "accounts"], method: "GET", expectedResult: "accounts")
     }
 
     public func usage() async throws -> [SnapshotPayload] {
-        try await send(path: ["v1", "usage"], method: "GET")
+        try await send(path: ["v1", "usage"], method: "GET", expectedResult: "snapshots")
     }
 
     public func probe(accountId: String) async throws -> ProbePayload {
-        try await send(path: ["v1", "accounts", accountId, "probe"], method: "POST")
+        try await send(path: ["v1", "accounts", accountId, "probe"], method: "POST", expectedResult: "probe")
     }
 
-    private func send<Payload: Decodable>(path: [String], method: String) async throws -> Payload {
+    private func send<Payload: Decodable>(
+        path: [String],
+        method: String,
+        expectedResult: String
+    ) async throws -> Payload {
         var url = baseURL
         for component in path {
             url.appendPathComponent(component)
@@ -72,6 +73,10 @@ public final class DaemonClient: @unchecked Sendable {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw DaemonError.unreachable(underlying: error)
         }
@@ -84,6 +89,9 @@ public final class DaemonClient: @unchecked Sendable {
 
         do {
             if let envelope = try? decoder.decode(ResponseEnvelope<Payload>.self, from: data) {
+                guard envelope.result == expectedResult else {
+                    throw EnvelopeResultMismatch(expected: expectedResult, actual: envelope.result)
+                }
                 return envelope.payload
             }
             return try decoder.decode(Payload.self, from: data)
@@ -111,9 +119,26 @@ public final class DaemonClient: @unchecked Sendable {
     }
 }
 
+final class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
 private struct ResponseEnvelope<Payload: Decodable>: Decodable {
     let result: String
     let payload: Payload
+}
+
+private struct EnvelopeResultMismatch: Error {
+    let expected: String
+    let actual: String
 }
 
 private struct ErrorEnvelope: Decodable {

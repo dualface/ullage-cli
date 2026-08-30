@@ -21,6 +21,7 @@ if [[ -z "$branch" || ! "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]; then
 fi
 
 remote_dir="ullage-build/$branch"
+ssh "$ULLAGE_MAC_SSH" "mkdir -p ~/$remote_dir"
 rsync -a --delete --exclude .build "$package_dir/" "$ULLAGE_MAC_SSH:~/$remote_dir/"
 
 if [[ "$1" == "build" ]]; then

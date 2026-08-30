@@ -46,6 +46,36 @@ struct DaemonClientTests {
         #expect(try await client.usage().isEmpty)
     }
 
+    @Test func rejectsACompatiblePayloadWithTheWrongEnvelopeTag() async throws {
+        StubURLProtocol.handler = {
+            response($0, body: #"{"result":"accounts","payload":[]}"#)
+        }
+        do {
+            _ = try await makeClient().usage()
+            Issue.record("Expected wrong result tag to fail")
+        } catch let error as DaemonError {
+            guard case .decoding = error else {
+                Issue.record("Expected decoding, got \(error)")
+                return
+            }
+        }
+    }
+
+    @Test func mapsRedirectResponsesWithoutFollowingThem() async throws {
+        StubURLProtocol.handler = {
+            response($0, status: 302, headers: ["Location": "/login"], body: "")
+        }
+        do {
+            _ = try await makeClient().status()
+            Issue.record("Expected redirect to fail")
+        } catch let error as DaemonError {
+            guard case .unexpectedStatus(302, _) = error else {
+                Issue.record("Expected unexpectedStatus(302), got \(error)")
+                return
+            }
+        }
+    }
+
     @Test func mapsHTTPStatusCodesAndPreservesSanitizedKind() async throws {
         let expectations = [401, 403, 404, 409, 429, 504, 500, 418]
         for status in expectations {
@@ -80,12 +110,6 @@ struct DaemonClientTests {
         StubURLProtocol.handler = { _ in throw URLError(.timedOut) }
         do {
             _ = try await makeClient().status()
-            Issue.record("Expected transport failure")
-        } catch is DaemonError {
-            // The detailed case is checked below to keep the failure readable.
-        }
-        do {
-            _ = try await makeClient().status()
         } catch let error as DaemonError {
             guard case .unreachable = error else {
                 Issue.record("Expected unreachable, got \(error)")
@@ -105,13 +129,23 @@ struct DaemonClientTests {
         }
     }
 
+    @Test func preservesCancellationSemantics() async throws {
+        StubURLProtocol.handler = { _ in throw URLError(.cancelled) }
+        do {
+            _ = try await makeClient().status()
+            Issue.record("Expected cancellation")
+        } catch is CancellationError {
+            // Cancellation is intentionally not translated to a daemon outage.
+        }
+    }
+
     private func makeClient() -> DaemonClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         return DaemonClient(
             baseURL: URL(string: "http://127.0.0.1:48937")!,
             token: "fixture-token",
-            session: URLSession(configuration: configuration)
+            configuration: configuration
         )
     }
 }

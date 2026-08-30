@@ -8,6 +8,7 @@ import Testing
         "2026-08-31T12:34:56.123Z",
         "2026-08-31T12:34:56.123456+00:00",
         "2026-08-31T12:34:56.123456789Z",
+        "2016-12-31T23:59:60.5Z",
     ]
     for value in values {
         #expect(RFC3339.date(from: value) != nil)

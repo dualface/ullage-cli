@@ -37,9 +37,13 @@ public enum RFC3339 {
         components.day = day
         components.hour = hour
         components.minute = minute
-        components.second = second
-        components.nanosecond = nanosecond
+        components.second = min(second, 59)
+        components.nanosecond = second == 60 ? 0 : nanosecond
         guard let date = calendar.date(from: components) else { return nil }
+
+        if second == 60 {
+            return date.addingTimeInterval(1 + Double(nanosecond) / 1_000_000_000)
+        }
 
         let roundTrip = calendar.dateComponents(
             [.year, .month, .day, .hour, .minute, .second],
