@@ -3,8 +3,7 @@ import Testing
 @testable import UllageKit
 
 private func fixture(_ name: String) throws -> SnapshotPayload {
-    let url = try #require(Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"))
-    return try UllageJSON.makeDecoder().decode(SnapshotPayload.self, from: Data(contentsOf: url))
+    try UllageFixtures.snapshot(named: name)
 }
 
 private func usage(_ name: String) throws -> SubscriptionUsage {

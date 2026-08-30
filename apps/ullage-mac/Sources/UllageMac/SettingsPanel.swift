@@ -4,12 +4,7 @@ import UllageKit
 
 @MainActor
 final class SettingsPanelController: NSWindowController {
-    private let settings: AppSettings
-    private let mode: AppMode
-
     init(settings: AppSettings, mode: AppMode, onSaved: @escaping () -> Void) {
-        self.settings = settings
-        self.mode = mode
         let view = SettingsView(settings: settings, mode: mode, onSaved: onSaved)
         let hostingController = NSHostingController(rootView: view)
         let panel = NSPanel(contentViewController: hostingController)

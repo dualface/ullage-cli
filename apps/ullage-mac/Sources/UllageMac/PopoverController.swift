@@ -16,16 +16,19 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         super.init()
         popover.behavior = .transient
         popover.delegate = self
-        store.onContentChanged = { [weak self] in self?.updateContentSize() }
     }
 
     func show(relativeTo rect: NSRect, of view: NSView) {
         if hostingController == nil {
-            let controller = NSHostingController(rootView: RootView(store: store, openSettings: openSettings))
+            let controller = NSHostingController(rootView: RootView(
+                store: store,
+                openSettings: openSettings,
+                onPreferredHeightChanged: { [weak self] height in self?.updateContentHeight(height) }
+            ))
             hostingController = controller
             popover.contentViewController = controller
         }
-        updateContentSize()
+        popover.contentSize = NSSize(width: 360, height: 260)
         popover.show(relativeTo: rect, of: view, preferredEdge: .minY)
         store.start()
     }
@@ -39,9 +42,7 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         store.stop()
     }
 
-    private func updateContentSize() {
-        let rows = max(store.accounts.count, 1)
-        let height = min(520, max(260, 125 + rows * 115))
-        popover.contentSize = NSSize(width: 360, height: height)
+    private func updateContentHeight(_ preferredHeight: CGFloat) {
+        popover.contentSize = NSSize(width: 360, height: min(520, max(180, preferredHeight)))
     }
 }

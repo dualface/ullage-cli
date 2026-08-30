@@ -41,9 +41,41 @@ struct DaemonClientTests {
         #expect(try await client.usage().isEmpty)
 
         StubURLProtocol.handler = {
-            response($0, body: #"{"result":"snapshots","payload":[]}"#)
+            response($0, body: #"{"version":8,"result":"snapshots","payload":[]}"#)
         }
         #expect(try await client.usage().isEmpty)
+    }
+
+    @Test func rejectsMismatchedProtocolVersions() async throws {
+        StubURLProtocol.handler = {
+            response($0, body: #"{"version":9,"result":"snapshots","payload":[]}"#)
+        }
+        do {
+            _ = try await makeClient().usage()
+            Issue.record("Expected success-envelope mismatch to fail")
+        } catch let error as DaemonError {
+            guard case .protocolMismatch(client: 8, server: 9) = error else {
+                Issue.record("Expected protocol mismatch, got \(error)")
+                return
+            }
+        }
+
+        StubURLProtocol.handler = {
+            response(
+                $0,
+                status: 400,
+                body: #"{"version":10,"error":"protocol_mismatch","supported_version":10}"#
+            )
+        }
+        do {
+            _ = try await makeClient().status()
+            Issue.record("Expected error-document mismatch to fail")
+        } catch let error as DaemonError {
+            guard case .protocolMismatch(client: 8, server: 10) = error else {
+                Issue.record("Expected protocol mismatch, got \(error)")
+                return
+            }
+        }
     }
 
     @Test func rejectsACompatiblePayloadWithTheWrongEnvelopeTag() async throws {

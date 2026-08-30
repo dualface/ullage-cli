@@ -18,14 +18,8 @@ struct MockDataSource: UsageDataSource {
     private let snapshots: [SnapshotPayload]
     private let accountValues: [Account]
 
-    init(bundle: Bundle = .module) {
-        let decoder = UllageJSON.makeDecoder()
-        let names = ["chatgpt", "claude", "cursor", "grok"]
-        snapshots = names.compactMap { name in
-            guard let url = bundle.url(forResource: name, withExtension: "json"),
-                  let data = try? Data(contentsOf: url) else { return nil }
-            return try? decoder.decode(SnapshotPayload.self, from: data)
-        }
+    init() {
+        snapshots = (try? UllageFixtures.snapshots()) ?? []
         accountValues = sortedAccounts(snapshots.compactMap { snapshot in
             snapshot.usage.data.map { usage in
                 Account(id: snapshot.accountId, provider: usage.provider, label: usage.accountLabel, enabled: true)

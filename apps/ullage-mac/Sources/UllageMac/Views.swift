@@ -1,7 +1,7 @@
 import SwiftUI
 import UllageKit
 
-private enum SelectedTab: Hashable {
+enum SelectedTab: Hashable {
     case overview
     case account(String)
 }
@@ -9,6 +9,7 @@ private enum SelectedTab: Hashable {
 struct RootView: View {
     @Bindable var store: UsageStore
     let openSettings: () -> Void
+    let onPreferredHeightChanged: (CGFloat) -> Void
     @State private var selectedTab: SelectedTab = .overview
 
     var body: some View {
@@ -29,10 +30,21 @@ struct RootView: View {
                     }
                 }
                 .padding(14)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: ContentHeightPreferenceKey.self, value: proxy.size.height)
+                    }
+                }
             }
         }
         .frame(width: 360)
         .background(.regularMaterial)
+        .onPreferenceChange(ContentHeightPreferenceKey.self) { contentHeight in
+            onPreferredHeightChanged(45 + contentHeight)
+        }
+        .onChange(of: store.accounts.map(\.id)) { _, accountIDs in
+            selectedTab = normalizedSelection(selectedTab, accountIDs: accountIDs)
+        }
     }
 
     private var emptyState: AnyView? {
@@ -86,6 +98,20 @@ struct RootView: View {
         default:
             return nil
         }
+    }
+}
+
+func normalizedSelection(_ selection: SelectedTab, accountIDs: [String]) -> SelectedTab {
+    guard case .account(let selectedID) = selection, !accountIDs.contains(selectedID) else {
+        return selection
+    }
+    return .overview
+}
+
+private struct ContentHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -328,34 +354,6 @@ struct EmptyStateView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 180)
     }
-}
-
-private func summaryValueText(_ value: SummaryValue) -> String {
-    switch value {
-    case .remains(let value): "remains \(percentage(value))"
-    case .used(let value): "used \(percentage(value))"
-    case .balance(let amount, let currency): "balance \(money(amount, currency.code))"
-    case .spent(let amount, let limit, let currency): "spent \(money(amount, currency.code)) of \(money(limit, currency.code))"
-    case .credits(let used, let limit): "credits \(number(used))" + (limit.map { " of \(number($0))" } ?? "")
-    case .creditsUnlimited: "credits unlimited"
-    case .counted(let used, let limit): "used \(number(used))" + (limit.map { " of \(number($0))" } ?? "")
-    case .disabled: "disabled"
-    }
-}
-
-private func number(_ value: Double) -> String {
-    guard value.isFinite else { return "-" }
-    return value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
-}
-
-private func percentage(_ value: Double) -> String {
-    guard value.isFinite else { return "-" }
-    return "\(value.rounded().formatted(.number.grouping(.never)))%"
-}
-
-private func money(_ value: Double, _ code: String) -> String {
-    guard value.isFinite else { return "-" }
-    return code == "USD" ? String(format: "$%.2f", value) : String(format: "%@ %.2f", code, value)
 }
 
 private func relativeTime(_ date: Date, now: Date = Date()) -> String {

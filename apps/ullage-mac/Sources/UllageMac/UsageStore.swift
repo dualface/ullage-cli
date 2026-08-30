@@ -26,7 +26,6 @@ final class UsageStore {
     private(set) var rateLimitDeadlines: [String: Date] = [:]
     private(set) var currentTime = Date()
 
-    var onContentChanged: (() -> Void)?
     private let dataSourceFactory: @MainActor () throws -> any UsageDataSource
     private var dataSource: (any UsageDataSource)?
     private var refreshTask: Task<Void, Never>?
@@ -44,6 +43,8 @@ final class UsageStore {
         guard !isActive else { return }
         isActive = true
         currentTime = Date()
+        rateLimitDeadlines = rateLimitDeadlines.filter { $0.value > currentTime }
+        if !rateLimitDeadlines.isEmpty { startCountdownTimerIfNeeded() }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -91,13 +92,11 @@ final class UsageStore {
                 self.snapshots = result.1
                 self.lastRefreshedAt = Date()
                 self.connectionState = self.accounts.isEmpty ? .noAccounts : .connected
-                self.onContentChanged?()
             } catch is CancellationError {
                 return
             } catch {
                 guard self.isActive else { return }
                 self.connectionState = Self.connectionState(for: error)
-                self.onContentChanged?()
             }
         }
     }
@@ -196,7 +195,8 @@ final class UsageStore {
         return switch error {
         case .unauthorized, .authenticationInvalid: .unauthorized
         case .forbiddenHost: .forbiddenHost
-        case .decoding: .protocolMismatch(client: "8", server: "unknown")
+        case .protocolMismatch(let client, let server):
+            .protocolMismatch(client: String(client), server: String(server))
         default: .unreachable
         }
     }

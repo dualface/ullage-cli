@@ -10,11 +10,12 @@ public enum DaemonError: Error, @unchecked Sendable {
     case timeout(kind: String?)
     case storage(kind: String?)
     case unexpectedStatus(Int, kind: String?)
+    case protocolMismatch(client: UInt16, server: UInt16)
     case decoding(underlying: any Error)
 
     public var errorKind: String? {
         switch self {
-        case .unreachable, .decoding: nil
+        case .unreachable, .protocolMismatch, .decoding: nil
         case .unauthorized(let kind), .forbiddenHost(let kind), .notFound(let kind),
              .authenticationInvalid(let kind), .timeout(let kind), .storage(let kind),
              .unexpectedStatus(_, let kind), .rateLimited(_, let kind): kind
@@ -23,6 +24,7 @@ public enum DaemonError: Error, @unchecked Sendable {
 }
 
 public final class DaemonClient: @unchecked Sendable {
+    public static let protocolVersion: UInt16 = 8
     private let baseURL: URL
     private let token: String
     private let session: URLSession
@@ -84,17 +86,26 @@ public final class DaemonClient: @unchecked Sendable {
             throw DaemonError.unreachable(underlying: URLError(.badServerResponse))
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
+            if let mismatch = try? decoder.decode(ProtocolMismatchDocument.self, from: data),
+               mismatch.error == "protocol_mismatch" {
+                throw DaemonError.protocolMismatch(client: Self.protocolVersion, server: mismatch.version)
+            }
             throw statusError(response: httpResponse, data: data)
         }
 
         do {
             if let envelope = try? decoder.decode(ResponseEnvelope<Payload>.self, from: data) {
+                if let version = envelope.version, version != Self.protocolVersion {
+                    throw DaemonError.protocolMismatch(client: Self.protocolVersion, server: version)
+                }
                 guard envelope.result == expectedResult else {
                     throw EnvelopeResultMismatch(expected: expectedResult, actual: envelope.result)
                 }
                 return envelope.payload
             }
             return try decoder.decode(Payload.self, from: data)
+        } catch let error as DaemonError {
+            throw error
         } catch {
             throw DaemonError.decoding(underlying: error)
         }
@@ -132,8 +143,14 @@ final class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchec
 }
 
 private struct ResponseEnvelope<Payload: Decodable>: Decodable {
+    let version: UInt16?
     let result: String
     let payload: Payload
+}
+
+private struct ProtocolMismatchDocument: Decodable {
+    let version: UInt16
+    let error: String
 }
 
 private struct EnvelopeResultMismatch: Error {
