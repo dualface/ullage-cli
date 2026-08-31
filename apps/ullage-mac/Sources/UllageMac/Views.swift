@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UllageKit
 
@@ -296,7 +297,10 @@ private struct Badge: View {
             .font(.system(size: 9, weight: .medium))
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(Color.orange.opacity(0.18), in: Capsule())
+            .background(.thinMaterial, in: Capsule())
+            .overlay {
+                Capsule().stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+            }
     }
 }
 
@@ -329,7 +333,7 @@ private struct SegmentedProgress: View {
         HStack(spacing: 2) {
             ForEach(0..<10, id: \.self) { index in
                 Capsule()
-                    .fill(index >= 10 - filledSegments ? color : Color.secondary.opacity(0.16))
+                    .fill(index >= 10 - filledSegments ? color : Color(nsColor: .separatorColor))
                     .frame(height: 5)
             }
         }
