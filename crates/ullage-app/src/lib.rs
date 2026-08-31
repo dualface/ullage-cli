@@ -20,7 +20,7 @@ use ullage_core::{
     Capability, ProviderDescriptor, ProviderError, ProviderId, ProviderRegistry, RegisteredProvider,
 };
 use ullage_daemon::{ControlService, DaemonEngine, JsonSnapshotStore, SystemClock};
-use ullage_http::{HttpBindConfig, HttpServer};
+use ullage_http::{HttpBindConfig, HttpServer, bind_address_is_allowed};
 use ullage_protocol::{ControlRequest, ControlResponse, CredentialBackendId};
 use ullage_provider_chatgpt::{
     ChatGptConfig, ChatGptHttpConfig, ChatGptProvider, ReqwestChatGptApi,
@@ -34,6 +34,8 @@ const CHATGPT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 /// The callback registered for that client. OpenAI compares redirect URIs
 /// verbatim, so `localhost` cannot be spelled `127.0.0.1` here.
 const CHATGPT_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
+const HTTP_BIND_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const HTTP_BIND_RETRY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn production_registry(config: &AppConfig) -> Result<ProviderRegistry, String> {
     Ok(production_components(config)?.0)
@@ -186,7 +188,19 @@ pub async fn run_daemon_with(
     merge_configured_accounts(&engine, &config.accounts).await?;
     let service = ControlService::new(engine.clone()).with_credential_backend(credential_backend);
     let http = if config.http.enabled {
-        Some(HttpServer::bind(http_bind_config(&config)?, service.clone()).await?)
+        let bind_config = http_bind_config(&config)?;
+        let bind_address = bind_config.bind;
+        Some(
+            retry_http_bind(
+                bind_address,
+                HTTP_BIND_RETRY_INTERVAL,
+                HTTP_BIND_RETRY_TIMEOUT,
+                || HttpServer::bind(bind_config.clone(), service.clone()),
+                |error| error.io_kind() == Some(std::io::ErrorKind::AddrNotAvailable),
+            )
+            .await
+            .map_err(String::from)?,
+        )
     } else {
         None
     };
@@ -212,6 +226,41 @@ pub async fn run_daemon_with(
     let _ = engine_task.await;
     signal_task.abort();
     result
+}
+
+async fn retry_http_bind<T, E, F, Fut, P>(
+    bind: SocketAddr,
+    interval: Duration,
+    timeout: Duration,
+    mut attempt: F,
+    retryable: P,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    P: Fn(&E) -> bool,
+{
+    let started = tokio::time::Instant::now();
+    loop {
+        match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if bind_address_is_allowed(bind.ip())
+                    && !bind.ip().is_loopback()
+                    && retryable(&error)
+                    && started.elapsed() < timeout =>
+            {
+                let remaining = timeout.saturating_sub(started.elapsed());
+                let delay = interval.min(remaining);
+                eprintln!(
+                    "http.bind address is not available; retrying in {} seconds",
+                    delay.as_secs_f64()
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 async fn run_control_and_http<F>(
@@ -255,9 +304,6 @@ fn http_bind_config(config: &AppConfig) -> Result<HttpBindConfig, String> {
         .bind
         .parse::<SocketAddr>()
         .map_err(|_| "http.bind is not a valid socket address".to_owned())?;
-    if !bind.ip().is_loopback() {
-        return Err("http.bind must be a loopback address".into());
-    }
     if config
         .http
         .allowed_origins
@@ -395,6 +441,72 @@ fn state_path() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn retries_only_unavailable_tailscale_binds() {
+        let attempts = AtomicUsize::new(0);
+        let result = retry_http_bind(
+            "100.64.0.1:7878".parse().unwrap(),
+            Duration::ZERO,
+            Duration::from_secs(1),
+            || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt < 2 {
+                        Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))
+                    } else {
+                        Ok(42)
+                    }
+                }
+            },
+            |error| error.kind() == std::io::ErrorKind::AddrNotAvailable,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+
+        for (bind, kind) in [
+            ("100.64.0.1:7878", std::io::ErrorKind::AddrInUse),
+            ("127.0.0.1:7878", std::io::ErrorKind::AddrNotAvailable),
+        ] {
+            let attempts = AtomicUsize::new(0);
+            let error = retry_http_bind(
+                bind.parse().unwrap(),
+                Duration::ZERO,
+                Duration::from_secs(1),
+                || {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    async { Err::<(), _>(std::io::Error::from(kind)) }
+                },
+                |error| error.kind() == std::io::ErrorKind::AddrNotAvailable,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_tailscale_bind_stops_after_timeout() {
+        let attempts = AtomicUsize::new(0);
+        let error = retry_http_bind(
+            "100.64.0.1:7878".parse().unwrap(),
+            Duration::from_millis(1),
+            Duration::from_millis(3),
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err::<(), _>(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)) }
+            },
+            |error| error.kind() == std::io::ErrorKind::AddrNotAvailable,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrNotAvailable);
+        assert!(attempts.load(Ordering::SeqCst) >= 2);
+    }
 
     #[tokio::test]
     async fn removed_config_seed_stays_removed_after_engine_restart() {

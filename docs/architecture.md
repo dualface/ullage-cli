@@ -25,8 +25,8 @@ direction rather than every composition-root edge; the complete direct workspace
 - each `ullage-provider-*`: `ullage-core`; providers that implement authentication also use `ullage-auth`.
 - `ullage-daemon`: `ullage-auth`, `ullage-core`, and `ullage-protocol`; it owns scheduling, persistence, and local
   control transport without choosing production providers.
-- `ullage-http`: `ullage-auth`, `ullage-daemon`, and `ullage-protocol`. It is an optional loopback HTTP
-  transport over `ControlService::handle()` and does not change the control protocol.
+- `ullage-http`: `ullage-auth`, `ullage-daemon`, and `ullage-protocol`. It is an optional local or
+  Tailscale HTTP transport over `ControlService::handle()` and does not change the control protocol.
 - `ullage-app`: `ullage-auth`, `ullage-cli`, `ullage-core`, `ullage-daemon`, `ullage-http`,
   `ullage-protocol`, and all four provider crates. It is the single production composition root
   and builds the `ullage` binary.
@@ -43,7 +43,7 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-provider-*`: vendor-specific DTOs, API behavior, and conversion into `ullage-core`
   DTOs. Vendor DTOs must not be moved into a shared crate.
 - `ullage-daemon`: local transport and scheduling.
-- `ullage-http`: loopback HTTP query transport, bearer token file, Host/Origin checks, and
+- `ullage-http`: loopback or Tailscale HTTP query transport, bearer token file, Host/Origin checks, and
   per-account probe cooldown. Assembled only by `ullage-app`.
 - `ullage-cli`: command-line client of the local control protocol.
 - `ullage-app`: single executable composition root for the CLI client and daemon process.
@@ -68,7 +68,7 @@ and a secure timestamp, then use the `notarize` target to submit, staple, and pa
 Remote distribution signing runs inside a user-provided tmux session created by the Mac GUI login
 session; the remote workflow passes only identity and Keychain profile names, never credentials.
 
-The client accesses daemon data only through the loopback HTTP API; it does not read Rust state,
+The client accesses daemon data only through the loopback or Tailscale HTTP API; it does not read Rust state,
 credentials, snapshots, or the private control socket directly. Its bearer token is stored as a
 generic password in the macOS Keychain with device-local, unlocked-only accessibility. The
 executable-owned `UsageDataSource` boundary selects either the real `DaemonClient` or bundled mock
@@ -187,7 +187,7 @@ failures. Control
 protocol version 8 adds `credential_backend` on daemon status. Version 7 added the diagnostics
 opt-in (`diagnostics` / `diagnostic`) and `SetAccountLabel`.
 
-## Loopback HTTP query API
+## HTTP query API
 
 `ullage-http` is an optional second transport beside the Unix socket / Windows named pipe. It is
 off unless `http.enabled` is true. The crate maps HTTP routes onto existing `ControlCommand`
@@ -200,14 +200,16 @@ workspace commands are not exposed.
 
 Security model:
 
-- Bind address must be loopback. A non-loopback `http.bind` fails daemon startup and names that
-  setting.
+- Bind address must be loopback or in Tailscale's `100.64.0.0/10` or
+  `fd7a:115c:a1e0::/48` ranges. Other `http.bind` values fail configuration loading and name that
+  setting. A Tailscale address that is temporarily unavailable is retried for up to 60 seconds.
+  Non-loopback traffic is limited to the tailnet and encrypted by WireGuard; Ullage does not add TLS.
 - Token: 256-bit `getrandom`, base64url, stored as `http-token` next to the state file. Unix
   files must be current-user-owned `0600`; Windows files use the same protected DACL primitive as
   credentials and snapshots. Permission mismatches refuse to start or rotate and are not repaired
   in place. Comparison is constant-time. `ullage http token --rotate` replaces the file so a
   running daemon rejects the old token on the next request.
-- Host whitelist: `127.0.0.1:<port>`, `localhost:<port>`, and the actual loopback bind address.
+- Host whitelist: `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`, and the actual bind address.
   Other Host values return 403.
 - CORS: `http.allowed_origins` defaults to empty. A matching Origin is echoed with `Vary:
   Origin`. Unmatched origins receive no `Access-Control-Allow-*` headers. The server never
@@ -219,8 +221,9 @@ Security model:
 - HTTP `/v1` is independent of `CONTROL_PROTOCOL_VERSION`. Status payloads still carry the
   control protocol version.
 
-This release does not offer TLS, non-loopback binds, Cookie authentication, SSE/WebSocket, or
-static page hosting. Remote use is SSH tunneling onto the loopback listener.
+This release does not offer TLS, arbitrary non-loopback binds, Cookie authentication,
+SSE/WebSocket, or static page hosting. Remote use is direct over Tailscale or SSH tunneling onto
+the loopback listener.
 
 ## User service hosting
 

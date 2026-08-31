@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -41,6 +41,56 @@ pub struct HttpServer {
     state: Arc<HttpState>,
 }
 
+#[derive(Debug)]
+pub struct HttpBindError {
+    message: String,
+    io_kind: Option<std::io::ErrorKind>,
+}
+
+impl HttpBindError {
+    fn message(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            io_kind: None,
+        }
+    }
+
+    fn io(message: impl Into<String>, error: &std::io::Error) -> Self {
+        Self {
+            message: message.into(),
+            io_kind: Some(error.kind()),
+        }
+    }
+
+    pub fn io_kind(&self) -> Option<std::io::ErrorKind> {
+        self.io_kind
+    }
+}
+
+impl std::fmt::Display for HttpBindError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for HttpBindError {}
+
+impl From<HttpBindError> for String {
+    fn from(error: HttpBindError) -> Self {
+        error.message
+    }
+}
+
+pub fn bind_address_is_allowed(address: IpAddr) -> bool {
+    if address.is_loopback() {
+        return true;
+    }
+    match address {
+        IpAddr::V4(address) => u32::from(address) & 0xffc0_0000 == 0x6440_0000,
+        IpAddr::V6(address) => address.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    }
+}
+
 struct HttpState {
     service: ControlService,
     bind: SocketAddr,
@@ -61,20 +111,27 @@ enum Route {
 }
 
 impl HttpServer {
-    pub async fn bind(config: HttpBindConfig, service: ControlService) -> Result<Self, String> {
-        if !config.bind.ip().is_loopback() {
-            return Err("http.bind must be a loopback address".into());
+    pub async fn bind(
+        config: HttpBindConfig,
+        service: ControlService,
+    ) -> Result<Self, HttpBindError> {
+        if !bind_address_is_allowed(config.bind.ip()) {
+            return Err(HttpBindError::message(
+                "http.bind must be a loopback or Tailscale address",
+            ));
         }
         if config.allowed_origins.iter().any(|origin| origin == "*") {
-            return Err("http.allowed_origins must not contain *".into());
+            return Err(HttpBindError::message(
+                "http.allowed_origins must not contain *",
+            ));
         }
-        load_or_create_token(&config.token_path)?;
-        let listener = TcpListener::bind(config.bind)
-            .await
-            .map_err(|error| format!("http.bind could not listen: {error}"))?;
-        let bind = listener
-            .local_addr()
-            .map_err(|error| format!("http.bind address is unavailable: {error}"))?;
+        load_or_create_token(&config.token_path).map_err(HttpBindError::message)?;
+        let listener = TcpListener::bind(config.bind).await.map_err(|error| {
+            HttpBindError::io(format!("http.bind could not listen: {error}"), &error)
+        })?;
+        let bind = listener.local_addr().map_err(|error| {
+            HttpBindError::io(format!("http.bind address is unavailable: {error}"), &error)
+        })?;
         Ok(Self {
             listener,
             state: Arc::new(HttpState {
@@ -727,6 +784,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bind_address_allowlist_covers_tailscale_boundaries() {
+        for address in [
+            "127.0.0.1",
+            "::1",
+            "100.64.0.0",
+            "100.127.255.255",
+            "fd7a:115c:a1e0::1",
+        ] {
+            assert!(
+                bind_address_is_allowed(address.parse().unwrap()),
+                "{address}"
+            );
+        }
+        for address in [
+            "100.63.255.255",
+            "100.128.0.0",
+            "192.168.50.10",
+            "10.0.0.1",
+            "0.0.0.0",
+            "fd7a:115c:a1e1::1",
+            "::",
+        ] {
+            assert!(
+                !bind_address_is_allowed(address.parse().unwrap()),
+                "{address}"
+            );
+        }
+    }
+
+    #[test]
     fn host_whitelist_accepts_loopback_spellings() {
         let bind = "127.0.0.1:7878".parse().unwrap();
         assert!(host_is_allowed(Some("127.0.0.1:7878"), bind));
@@ -735,6 +822,14 @@ mod tests {
         assert!(!host_is_allowed(Some("example.com"), bind));
         assert!(!host_is_allowed(Some("127.0.0.1"), bind));
         assert!(!host_is_allowed(None, bind));
+    }
+
+    #[test]
+    fn host_whitelist_accepts_only_the_configured_tailscale_address() {
+        let bind = "100.64.0.1:7878".parse().unwrap();
+        assert!(host_is_allowed(Some("100.64.0.1:7878"), bind));
+        assert!(!host_is_allowed(Some("100.64.0.2:7878"), bind));
+        assert!(!host_is_allowed(Some("evil.example:7878"), bind));
     }
 
     #[test]

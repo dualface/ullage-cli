@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{fs::File, io::Read};
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use ullage_auth::CredentialKey;
 use ullage_core::{ProviderId, UsageQuery};
 use ullage_daemon::{AccountConfig, AccountId, BackoffConfig, DaemonConfig, ProviderLimit};
+use ullage_http::bind_address_is_allowed;
 
 pub const CONFIG_VERSION: u16 = 1;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -268,6 +270,16 @@ fn validate(config: &AppConfig) -> Result<(), String> {
     {
         return Err("http.allowed_origins must not contain *".into());
     }
+    if config.http.enabled {
+        let bind = config
+            .http
+            .bind
+            .parse::<SocketAddr>()
+            .map_err(|_| "http.bind is not a valid socket address".to_owned())?;
+        if !bind_address_is_allowed(bind.ip()) {
+            return Err("http.bind must be a loopback or Tailscale address".into());
+        }
+    }
     let mut limited_providers = std::collections::BTreeSet::new();
     for limit in &config.daemon.provider_limits {
         if !PROVIDERS.contains(&limit.provider.as_str())
@@ -457,6 +469,41 @@ mod tests {
         .unwrap();
         make_private(&path);
         assert!(load(&path).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn validates_enabled_http_bind_addresses() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        for bind in ["127.0.0.1:7878", "100.64.0.1:7878"] {
+            tokio::fs::write(
+                &path,
+                format!(r#"{{"version":1,"http":{{"enabled":true,"bind":"{bind}"}}}}"#),
+            )
+            .await
+            .unwrap();
+            make_private(&path);
+            assert_eq!(load(&path).await.unwrap().http.bind, bind);
+        }
+
+        tokio::fs::write(
+            &path,
+            br#"{"version":1,"http":{"enabled":true,"bind":"192.168.50.10:7878"}}"#,
+        )
+        .await
+        .unwrap();
+        make_private(&path);
+        let error = load(&path).await.unwrap_err();
+        assert_eq!(error, "http.bind must be a loopback or Tailscale address");
+
+        tokio::fs::write(
+            &path,
+            br#"{"version":1,"http":{"enabled":false,"bind":"192.168.50.10:7878"}}"#,
+        )
+        .await
+        .unwrap();
+        make_private(&path);
+        assert_eq!(load(&path).await.unwrap().http.bind, "192.168.50.10:7878");
     }
 
     #[tokio::test]

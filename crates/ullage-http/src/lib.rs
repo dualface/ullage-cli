@@ -3,5 +3,5 @@
 mod server;
 mod token;
 
-pub use server::{HttpBindConfig, HttpServer};
+pub use server::{HttpBindConfig, HttpBindError, HttpServer, bind_address_is_allowed};
 pub use token::{constant_time_eq, load_or_create_token, load_token, rotate_token};

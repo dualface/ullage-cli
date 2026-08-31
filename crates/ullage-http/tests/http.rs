@@ -316,7 +316,7 @@ fn post(addr: SocketAddr, path: &str, token: &str, extra: &str) -> RawResponse {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn rejects_non_loopback_bind_and_names_the_setting() {
+async fn rejects_disallowed_bind_and_names_the_setting() {
     let engine = DaemonEngine::new(
         ullage_daemon::DaemonConfig::default(),
         Arc::new(ProviderRegistry::default()),
@@ -342,8 +342,8 @@ async fn rejects_non_loopback_bind_and_names_the_setting() {
     )
     .await
     {
-        Ok(_) => panic!("non-loopback http.bind should fail"),
-        Err(error) => error,
+        Ok(_) => panic!("disallowed http.bind should fail"),
+        Err(error) => error.to_string(),
     };
     assert!(error.contains("http.bind"), "{error}");
     assert!(error.contains("loopback"), "{error}");

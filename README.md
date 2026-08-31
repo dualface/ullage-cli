@@ -57,11 +57,11 @@ asset is required. Set the build palette with `ICON_PALETTE`, for example:
 make -C apps/ullage-mac bundle ICON_PALETTE=paper
 ```
 
-The normal client reads the server URL from its Settings panel. The URL must be
-an HTTP loopback address and defaults to `http://127.0.0.1:7878`. Enable the
-daemon's HTTP interface as described under Configuration, print its bearer
-token with `ullage http token`, and paste that token into Settings. The client
-stores it in the macOS Keychain rather than `UserDefaults`.
+The normal client reads the server URL from its Settings panel. The URL may be
+an HTTP loopback or Tailscale address and defaults to `http://127.0.0.1:7878`.
+Enable the daemon's HTTP interface as described under Configuration, print its
+bearer token with `ullage http token`, and paste that token into Settings. The
+client stores it in the macOS Keychain rather than `UserDefaults`.
 
 `Launch at Login` is available from the status-item menu when Ullage is running
 from the application bundle. Copy `Ullage.app` to `/Applications` or
@@ -130,8 +130,13 @@ Open Ullage Mac Settings, leave the default `http://127.0.0.1:7878` server URL
 (or use `http://localhost:7878`), paste the token, and select **Save** or
 **Test connection**. The token is stored in the current macOS user's Keychain.
 
-When the daemon runs on another machine, keep the HTTP listener on loopback and
-forward it over SSH. Run either a local forward from the Mac:
+When both machines are in the same tailnet, set the daemon's `http.bind` to its
+Tailscale IPv4 address and set the Mac server URL to
+`http://<tailscale-ipv4>:7878`. Traffic stays inside Tailscale's encrypted
+WireGuard tunnel; Ullage does not add TLS.
+
+As an alternative, keep the HTTP listener on loopback and forward it over SSH.
+Run either a local forward from the Mac:
 
 ```sh
 ssh -N -L 7878:127.0.0.1:7878 daemon-host
@@ -143,8 +148,8 @@ or a reverse forward from the daemon machine to the Mac:
 ssh -N -R 7878:127.0.0.1:7878 mac-host
 ```
 
-Do not enable `GatewayPorts`; Ullage Mac accepts only loopback HTTP URLs and the
-daemon rejects non-loopback Host headers.
+Do not enable `GatewayPorts`; the daemon permits only loopback and Tailscale
+bind addresses and rejects Host values other than its allowlist.
 
 Default paths:
 
@@ -224,9 +229,9 @@ downgrading. Old configuration files that omit the `credentials` object still
 load with the switch off.
 
 `http.enabled` is false by default. While it is off the daemon does not listen
-on any TCP port. When enabled, the daemon binds `http.bind` (loopback only;
-a non-loopback address refuses to start and names `http.bind`) and serves a
-read-only HTTP query API:
+on any TCP port. When enabled, the daemon binds `http.bind` (a loopback or
+Tailscale address; any other address refuses to start and names `http.bind`)
+and serves a read-only HTTP query API:
 
 ```text
 GET  /v1/status
@@ -253,11 +258,12 @@ The token is a 256-bit value stored as `http-token` next to the state file,
 owned by the current user (`0600` / protected DACL). A permission mismatch
 refuses to start or rotate rather than repairing the file. The HTTP server
 accepts only Host values `127.0.0.1:<port>` and `localhost:<port>` (plus the
-actual loopback bind address). `http.allowed_origins` is empty by default:
+actual bind address). `http.allowed_origins` is empty by default:
 matching origins are echoed with `Vary: Origin`; unmatched origins get no
 CORS headers. The server never returns `Access-Control-Allow-Origin: *` or
-`Access-Control-Allow-Credentials: true`. Remote access is expected to use
-an SSH tunnel; this release does not offer TLS or non-loopback binds.
+`Access-Control-Allow-Credentials: true`. Remote access may use a direct
+Tailscale address or an SSH tunnel. Ullage does not offer TLS; encryption for a
+Tailscale bind is provided by WireGuard.
 
 Error mapping is stable: missing or invalid Bearer tokens are `401`, unknown
 routes `404`, illegal parameters `400`, `AccountNotFound` `404`,
