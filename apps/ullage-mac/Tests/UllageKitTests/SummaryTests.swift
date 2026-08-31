@@ -14,9 +14,9 @@ private func date(_ value: String) throws -> Date {
     try #require(RFC3339.date(from: value))
 }
 
-// Expected rows mirror summarize_window, measurement_value, and
-// metric_display_name in crates/ullage-cli/src/summary.rs.
-@Test func providerFixturesMatchCLISummaryProjection() throws {
+// Measurement values and metric names mirror the CLI. Duplicate-kind window
+// qualification is specific to the Mac projection.
+@Test func providerFixturesMatchCLIValuesAndMacWindowNaming() throws {
     let chatGPT = summarize(try usage("chatgpt"))
     #expect(chatGPT.limitReached)
     #expect(chatGPT.rows == [
@@ -111,6 +111,25 @@ private func date(_ value: String) throws -> Date {
     #expect(RemainingTier(ratio: 0.25) == .low)
     #expect(RemainingTier(ratio: 0.11) == .low)
     #expect(RemainingTier(ratio: 0.10) == .critical)
+}
+
+@Test func duplicateUnknownWindowKindsUseTheirRepresentativeMetrics() throws {
+    let data = Data(#"""
+    {
+      "provider":"future","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-08-31T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"daily"},"resets_at":null,"measurements":[
+          {"name":"alpha_usage","used":10,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"daily"},"resets_at":null,"measurements":[
+          {"name":"beta_usage","used":20,"limit":100,"unit":{"kind":"percent"}}
+        ]}
+      ]
+    }
+    """#.utf8)
+    let usage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: data)
+    #expect(summarize(usage).rows.map(\.window) == ["daily · alpha", "daily · beta"])
 }
 
 @Test func overviewUsesPoolThenRatioThenFirstRowAndFiltersOtherWindows() throws {

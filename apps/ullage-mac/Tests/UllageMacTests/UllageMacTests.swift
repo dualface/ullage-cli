@@ -57,6 +57,8 @@ final class UllageMacTests: XCTestCase {
         XCTAssertTrue(output.hasPrefix("OVERVIEW\n"))
         XCTAssertTrue(output.contains("\nACCOUNTS\n"))
         XCTAssertTrue(output.contains("weekly · Codex"))
+        XCTAssertTrue(output.contains("badges=stale,partial,network"))
+        XCTAssertTrue(output.contains("badges=rate_limited"))
         XCTAssertFalse(output.contains("private label"))
     }
 

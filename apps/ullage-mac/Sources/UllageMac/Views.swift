@@ -277,16 +277,7 @@ private struct BadgeList: View {
     }
 
     private var badges: [String] {
-        var values: [String] = []
-        if snapshot.stale { values.append("stale") }
-        if case .partial = snapshot.usage { values.append("partial") }
-        if summary.limitReached { values.append("limit reached") }
-        if !account.enabled { values.append("disabled") }
-        if case .authenticationInvalid? = snapshot.lastError { values.append("auth invalid") }
-        if let error = snapshot.lastError { values.append(errorKind(error)) }
-        return values.reduce(into: []) { result, value in
-            if !result.contains(value) { result.append(value) }
-        }
+        badgeNames(account: account, snapshot: snapshot, summary: summary)
     }
 }
 
@@ -388,17 +379,5 @@ private func resetText(_ date: Date?) -> String {
 }
 
 private func errorKind(_ error: SanitizedErrorPayload?) -> String {
-    guard let error else { return "none" }
-    return switch error {
-    case .authenticationInvalid: "authentication_invalid"
-    case .rateLimited: "rate_limited"
-    case .network: "network"
-    case .protocolIncompatible: "protocol_incompatible"
-    case .unsupportedCapability: "unsupported_capability"
-    case .timeout: "timeout"
-    case .cancelled: "cancelled"
-    case .providerNotFound: "provider_not_found"
-    case .storage: "storage"
-    case .unknown(let kind): kind
-    }
+    sanitizedErrorKind(error) ?? "none"
 }

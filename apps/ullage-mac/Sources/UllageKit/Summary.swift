@@ -57,6 +57,39 @@ public struct UsageSummary: Equatable, Sendable {
     public var isEmpty: Bool { rows.isEmpty }
 }
 
+public func badgeNames(
+    account: Account,
+    snapshot: SnapshotPayload,
+    summary: UsageSummary
+) -> [String] {
+    var values: [String] = []
+    if snapshot.stale { values.append("stale") }
+    if case .partial = snapshot.usage { values.append("partial") }
+    if summary.limitReached { values.append("limit reached") }
+    if !account.enabled { values.append("disabled") }
+    if case .authenticationInvalid? = snapshot.lastError { values.append("auth invalid") }
+    if let kind = sanitizedErrorKind(snapshot.lastError) { values.append(kind) }
+    return values.reduce(into: []) { result, value in
+        if !result.contains(value) { result.append(value) }
+    }
+}
+
+public func sanitizedErrorKind(_ error: SanitizedErrorPayload?) -> String? {
+    guard let error else { return nil }
+    return switch error {
+    case .authenticationInvalid: "authentication_invalid"
+    case .rateLimited: "rate_limited"
+    case .network: "network"
+    case .protocolIncompatible: "protocol_incompatible"
+    case .unsupportedCapability: "unsupported_capability"
+    case .timeout: "timeout"
+    case .cancelled: "cancelled"
+    case .providerNotFound: "provider_not_found"
+    case .storage: "storage"
+    case .unknown(let kind): kind
+    }
+}
+
 public func summarize(_ usage: SubscriptionUsage) -> UsageSummary {
     UsageSummary(
         rows: projectedWindows(for: usage).flatMap { $0.map(\.row) },
@@ -119,7 +152,8 @@ private func windowKindKey(_ window: UsageWindowKind) -> String? {
     case .fiveHours: "five_hours"
     case .weekly: "weekly"
     case .monthly: "monthly"
-    case .other, .unknown: nil
+    case .unknown(let kind): "unknown:" + kind
+    case .other: nil
     }
 }
 

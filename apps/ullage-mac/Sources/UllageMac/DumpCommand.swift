@@ -68,11 +68,7 @@ private func dumpBadges(
     _ snapshot: SnapshotPayload,
     _ usage: SubscriptionUsage
 ) -> String {
-    var badges: [String] = []
-    if snapshot.stale { badges.append("stale") }
-    if case .partial = snapshot.usage { badges.append("partial") }
-    if summarize(usage).limitReached { badges.append("limit reached") }
-    if !account.enabled { badges.append("disabled") }
+    let badges = badgeNames(account: account, snapshot: snapshot, summary: summarize(usage))
     return "badges=" + (badges.isEmpty ? "-" : badges.joined(separator: ","))
 }
 
