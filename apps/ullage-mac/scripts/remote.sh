@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "${1:-}" == "__signed-launcher" ]]; then
-    if [[ $# -ne 7 ]]; then
+    if [[ $# -ne 8 ]]; then
         echo "invalid signed launcher invocation" >&2
         exit 2
     fi
@@ -12,6 +12,7 @@ if [[ "${1:-}" == "__signed-launcher" ]]; then
     profile="$5"
     log_file="$6"
     status_file="$7"
+    version="$8"
     if [[ "$action" != "sign" && "$action" != "notarize" ]]; then
         echo "invalid signed launcher action" >&2
         exit 2
@@ -20,9 +21,10 @@ if [[ "${1:-}" == "__signed-launcher" ]]; then
     cd "$package_dir"
     set +e
     if [[ "$action" == "sign" ]]; then
-        make bundle SIGN_IDENTITY="$identity" >"$log_file" 2>&1
+        make bundle SIGN_IDENTITY="$identity" VERSION="$version" >"$log_file" 2>&1
     else
-        make notarize SIGN_IDENTITY="$identity" NOTARY_PROFILE="$profile" >"$log_file" 2>&1
+        make notarize SIGN_IDENTITY="$identity" NOTARY_PROFILE="$profile" \
+            VERSION="$version" >"$log_file" 2>&1
     fi
     status=$?
     printf '%s\n' "$status" >"$status_file.tmp"
@@ -54,6 +56,35 @@ remote_exec() {
     command="$(shell_join "$@")"
     wrapped="$(shell_join /bin/bash --norc -c "$command")"
     ssh "$ULLAGE_MAC_SSH" "$wrapped"
+}
+
+remote_exec_until() {
+    local deadline="$1"
+    shift
+    local command wrapped ssh_pid ssh_status
+    (( SECONDS < deadline )) || return 124
+    command="$(shell_join "$@")"
+    wrapped="$(shell_join /bin/bash --norc -c "$command")"
+    ssh "$ULLAGE_MAC_SSH" "$wrapped" &
+    ssh_pid=$!
+    while kill -0 "$ssh_pid" >/dev/null 2>&1; do
+        if (( SECONDS >= deadline )); then
+            kill -TERM "$ssh_pid" >/dev/null 2>&1 || true
+            kill -KILL "$ssh_pid" >/dev/null 2>&1 || true
+            wait "$ssh_pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 1
+    done
+    if wait "$ssh_pid"; then
+        ssh_status=0
+    else
+        ssh_status=$?
+    fi
+    if (( SECONDS >= deadline )); then
+        return 124
+    fi
+    return "$ssh_status"
 }
 
 if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
@@ -121,6 +152,11 @@ if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
         exit 1
     fi
     remote_package_dir="$remote_home/$remote_dir"
+    version="$(make -C "$package_dir" --no-print-directory -s print-version)"
+    if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+        echo "VERSION must be dot-separated integers" >&2
+        exit 2
+    fi
     run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
     window_name="ullage-$action-$run_id"
     log_file="$remote_package_dir/.ullage-$action-$run_id.log"
@@ -128,33 +164,61 @@ if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
     launcher="$remote_package_dir/scripts/remote.sh"
     launcher_command="$(shell_join /bin/bash "$launcher" __signed-launcher \
         "$remote_package_dir" "$action" "$ULLAGE_MAC_SIGN_IDENTITY" \
-        "${ULLAGE_MAC_NOTARY_PROFILE:-}" "$log_file" "$status_file")"
+        "${ULLAGE_MAC_NOTARY_PROFILE:-}" "$log_file" "$status_file" "$version")"
 
-    remote_exec "$tmux_bin" new-window -t "=$ULLAGE_MAC_GUI_TMUX_SESSION" \
-        -n "$window_name" -d -- /bin/bash -c "$launcher_command"
     cleanup_window() {
-        remote_exec "$tmux_bin" kill-window \
+        local cleanup_deadline=$((SECONDS + 10))
+        remote_exec_until "$cleanup_deadline" "$tmux_bin" kill-window \
             -t "=$ULLAGE_MAC_GUI_TMUX_SESSION:=$window_name" >/dev/null 2>&1 || true
     }
     trap cleanup_window EXIT
+    remote_exec "$tmux_bin" new-window -t "=$ULLAGE_MAC_GUI_TMUX_SESSION" \
+        -n "$window_name" -d -- /bin/bash -c "$launcher_command"
 
     deadline=$((SECONDS + timeout))
-    while ! remote_exec /bin/test -f "$status_file" >/dev/null 2>&1; do
-        if ! remote_exec "$tmux_bin" list-panes \
+    while true; do
+        if remote_exec_until "$deadline" /bin/test -f "$status_file" >/dev/null 2>&1; then
+            break
+        else
+            probe_status=$?
+        fi
+        if [[ "$probe_status" -eq 124 ]]; then
+            remote_exec_until "$((SECONDS + 10))" /bin/cat "$log_file" 2>/dev/null || true
+            echo "$action timed out after $timeout seconds" >&2
+            exit 124
+        fi
+        if remote_exec_until "$deadline" "$tmux_bin" list-panes \
             -t "=$ULLAGE_MAC_GUI_TMUX_SESSION:=$window_name" >/dev/null 2>&1; then
-            remote_exec /bin/cat "$log_file" 2>/dev/null || true
+            :
+        else
+            probe_status=$?
+            if [[ "$probe_status" -eq 124 ]]; then
+                remote_exec_until "$((SECONDS + 10))" /bin/cat "$log_file" 2>/dev/null || true
+                echo "$action timed out after $timeout seconds" >&2
+                exit 124
+            fi
+            if remote_exec_until "$deadline" /bin/test -f "$status_file" >/dev/null 2>&1; then
+                break
+            fi
+            probe_status=$?
+            if [[ "$probe_status" -eq 124 ]]; then
+                remote_exec_until "$((SECONDS + 10))" /bin/cat "$log_file" 2>/dev/null || true
+                echo "$action timed out after $timeout seconds" >&2
+                exit 124
+            fi
+            remote_exec_until "$((SECONDS + 10))" /bin/cat "$log_file" 2>/dev/null || true
             echo "the remote $action launcher exited without publishing a status" >&2
             exit 1
         fi
         if (( SECONDS >= deadline )); then
-            remote_exec /bin/cat "$log_file" 2>/dev/null || true
+            remote_exec_until "$((SECONDS + 10))" /bin/cat "$log_file" 2>/dev/null || true
             echo "$action timed out after $timeout seconds" >&2
             exit 124
         fi
-        sleep 2
+        sleep 1
     done
-    status="$(remote_exec /bin/cat "$status_file")"
-    remote_exec /bin/cat "$log_file"
+    status="$(remote_exec_until "$((SECONDS + 10))" /bin/cat "$status_file")"
+    remote_exec_until "$((SECONDS + 30))" /bin/cat "$log_file"
     if [[ ! "$status" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]]; then
         echo "the remote launcher wrote an invalid exit status" >&2
         exit 1
@@ -163,7 +227,6 @@ if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
         exit "$status"
     fi
     if [[ "$action" == "notarize" ]]; then
-        version="$(make -C "$package_dir" --no-print-directory -s print-version)"
         mkdir -p "$package_dir/build"
         rsync -a "$ULLAGE_MAC_SSH:$remote_package_dir/build/Ullage-$version.zip" "$package_dir/build/"
         echo "archive: $package_dir/build/Ullage-$version.zip"
