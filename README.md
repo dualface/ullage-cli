@@ -87,8 +87,9 @@ never cross SSH: create a long-lived tmux session once from Terminal in the Mac
 GUI login session, then set the session name, identity, and profile locally:
 
 ```sh
-# Run once in Terminal on the Mac.
-tmux new-session -d -s <gui-session> -n _hold -- sleep infinity
+# Run once in Terminal on the Mac. macOS sleep does not accept "infinity";
+# a large second count keeps the hold window alive.
+tmux new-session -d -s <gui-session> -n _hold -- sleep 2147483647
 
 export ULLAGE_MAC_GUI_TMUX_SESSION=<gui-session>
 export ULLAGE_MAC_SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)"
