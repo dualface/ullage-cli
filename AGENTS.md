@@ -17,3 +17,8 @@ the current task.
   existing codebase.
 - Conversation with the user is not affected by this rule; reply in whatever
   language the user is using.
+
+## Remote macOS builds
+
+- Place macOS app build artifacts on `pro2026` under `~/ullage-build/`.
+- Also copy the final runnable `.app` bundle to `pro2026:~/Desktop/`.
