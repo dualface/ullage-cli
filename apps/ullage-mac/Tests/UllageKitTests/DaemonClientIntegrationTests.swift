@@ -53,6 +53,44 @@ final class DaemonClientIntegrationTests: XCTestCase {
         }
     }
 
+    /// The Settings panel maps `DaemonError.unreachable` to "unreachable".
+    /// A closed loopback port on the same host reproduces that state against
+    /// a real network stack without touching the daemon.
+    func testClosedPortIsUnreachable() async throws {
+        let configuration = try integrationConfiguration()
+        let closedPortURL = try XCTUnwrap(loopbackURL(configuration.baseURL, host: "127.0.0.1", port: 9))
+        do {
+            _ = try await DaemonClient(baseURL: closedPortURL, token: configuration.token).status()
+            XCTFail("Expected an unreachable endpoint")
+        } catch let error as DaemonError {
+            guard case .unreachable = error else {
+                return XCTFail("Expected unreachable, got \(error)")
+            }
+        }
+    }
+
+    /// The Settings panel maps `DaemonError.forbiddenHost` to "host rejected".
+    /// The daemon only allows `127.0.0.1:<port>`, `localhost:<port>`, and its
+    /// bind address as `Host`, so any other loopback name that still reaches
+    /// the daemon (for example `[::1]` behind an SSH tunnel) must be refused
+    /// with 403 before authentication. The URL is opt-in because it depends
+    /// on how the daemon or tunnel is bound on the test machine.
+    func testNonAllowlistedHostIsRejected() async throws {
+        let configuration = try integrationConfiguration()
+        guard let rawURL = ProcessInfo.processInfo.environment["ULLAGE_INTEGRATION_FORBIDDEN_HOST_URL"],
+              let forbiddenHostURL = URL(string: rawURL) else {
+            throw XCTSkip("Set ULLAGE_INTEGRATION_FORBIDDEN_HOST_URL to a reachable non-allowlisted daemon URL")
+        }
+        do {
+            _ = try await DaemonClient(baseURL: forbiddenHostURL, token: configuration.token).status()
+            XCTFail("Expected the daemon to reject the Host header")
+        } catch let error as DaemonError {
+            guard case .forbiddenHost = error else {
+                return XCTFail("Expected forbiddenHost, got \(error)")
+            }
+        }
+    }
+
     func testUnknownAccountIsNotFound() async throws {
         let configuration = try integrationConfiguration()
         let client = DaemonClient(baseURL: configuration.baseURL, token: configuration.token)
@@ -87,9 +125,10 @@ private func integrationConfiguration() throws -> IntegrationConfiguration {
     return IntegrationConfiguration(baseURL: baseURL, token: token)
 }
 
-private func loopbackURL(_ url: URL, host: String) -> URL? {
+private func loopbackURL(_ url: URL, host: String, port: Int? = nil) -> URL? {
     guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
     components.host = host
+    if let port { components.port = port }
     return components.url
 }
 
