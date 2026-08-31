@@ -126,6 +126,15 @@ enum UllageMark {
     }
 
     private static func drawVessel(in context: CGContext, style: Style) {
+        switch style {
+        case .applicationIcon:
+            drawApplicationIconVessel(in: context)
+        case .template:
+            drawTemplateVessel(in: context)
+        }
+    }
+
+    private static func drawApplicationIconVessel(in context: CGContext) {
         let vessel = CGMutablePath()
         vessel.move(to: CGPoint(x: 26, y: 16))
         vessel.addLine(to: CGPoint(x: 26, y: 60))
@@ -151,33 +160,60 @@ enum UllageMark {
         liquid.addLine(to: CGPoint(x: 69, y: 52))
         liquid.closeSubpath()
 
-        switch style {
-        case .applicationIcon:
-            context.saveGState()
-            context.addPath(liquid)
-            context.clip()
-            let gradient = CGGradient(
-                colorsSpace: colorSpace,
-                colors: [color(0xF2B34A), color(0xC47F1F)] as CFArray,
-                locations: [0, 1]
-            )!
-            context.drawLinearGradient(
-                gradient,
-                start: CGPoint(x: 50, y: 52),
-                end: CGPoint(x: 50, y: 79),
-                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
-            )
-            context.restoreGState()
-            context.setStrokeColor(color(0xE9F2EC))
-            context.setLineWidth(10)
-        case .template:
-            context.addPath(liquid)
-            context.setFillColor(NSColor.black.cgColor)
-            context.fillPath()
-            context.setStrokeColor(NSColor.black.cgColor)
-            context.setLineWidth(12)
-        }
+        context.saveGState()
+        context.addPath(liquid)
+        context.clip()
+        let gradient = CGGradient(
+            colorsSpace: colorSpace,
+            colors: [color(0xF2B34A), color(0xC47F1F)] as CFArray,
+            locations: [0, 1]
+        )!
+        context.drawLinearGradient(
+            gradient,
+            start: CGPoint(x: 50, y: 52),
+            end: CGPoint(x: 50, y: 79),
+            options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+        )
+        context.restoreGState()
+        context.setStrokeColor(color(0xE9F2EC))
+        context.setLineWidth(10)
 
+        context.setLineCap(.butt)
+        context.addPath(vessel)
+        context.strokePath()
+    }
+
+    private static func drawTemplateVessel(in context: CGContext) {
+        let vessel = CGMutablePath()
+        vessel.move(to: CGPoint(x: 12, y: 6))
+        vessel.addLine(to: CGPoint(x: 12, y: 58))
+        vessel.addArc(
+            center: CGPoint(x: 50, y: 58),
+            radius: 38,
+            startAngle: .pi,
+            endAngle: 0,
+            clockwise: true
+        )
+        vessel.addLine(to: CGPoint(x: 88, y: 6))
+
+        let liquid = CGMutablePath()
+        liquid.move(to: CGPoint(x: 16.5, y: 60))
+        liquid.addLine(to: CGPoint(x: 16.5, y: 58))
+        liquid.addArc(
+            center: CGPoint(x: 50, y: 58),
+            radius: 33.5,
+            startAngle: .pi,
+            endAngle: 0,
+            clockwise: true
+        )
+        liquid.addLine(to: CGPoint(x: 83.5, y: 60))
+        liquid.closeSubpath()
+
+        context.addPath(liquid)
+        context.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
+        context.fillPath()
+        context.setStrokeColor(NSColor.black.cgColor)
+        context.setLineWidth(9)
         context.setLineCap(.butt)
         context.addPath(vessel)
         context.strokePath()

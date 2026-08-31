@@ -13,6 +13,52 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuBarMarkRasterizationPreservesWallLiquidAndVoidAlpha() throws {
+        let image = UllageMark.menuBarImage()
+        let scale = 2
+        let pixelSize = Int(image.size.width) * scale
+        let representation = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelSize,
+            pixelsHigh: pixelSize,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        representation.size = image.size
+        let graphicsContext = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: representation))
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = graphicsContext
+        graphicsContext.cgContext.clear(CGRect(origin: .zero, size: image.size))
+        image.draw(
+            in: CGRect(origin: .zero, size: image.size),
+            from: .zero,
+            operation: .copy,
+            fraction: 1
+        )
+        graphicsContext.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        func alpha(atMarkPoint point: CGPoint) throws -> CGFloat {
+            let x = Int((point.x / 100 * CGFloat(pixelSize)).rounded(.down))
+            let y = Int((point.y / 100 * CGFloat(pixelSize)).rounded(.down))
+            return try XCTUnwrap(representation.colorAt(x: x, y: y)).alphaComponent
+        }
+
+        let wallAlpha = try alpha(atMarkPoint: CGPoint(x: 12, y: 30))
+        let liquidAlpha = try alpha(atMarkPoint: CGPoint(x: 50, y: 75))
+        let voidAlpha = try alpha(atMarkPoint: CGPoint(x: 50, y: 30))
+        XCTAssertGreaterThanOrEqual(wallAlpha, 0.95)
+        XCTAssertTrue(0.35...0.55 ~= liquidAlpha)
+        XCTAssertLessThanOrEqual(voidAlpha, 0.05)
+    }
+
+    @MainActor
     func testIconsetContainsTheStandardFilesAtTheirPixelSizes() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

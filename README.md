@@ -41,11 +41,13 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump
 apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 ```
 
-The menu bar mark and application icon share one Swift/CoreGraphics drawing in
-the `UllageMac` executable. During `bundle`, the executable renders the standard
-ten-file `build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and
-the build copies that file into the application bundle. No source bitmap or SVG
-asset is required.
+The menu bar mark and application icon share one Swift/CoreGraphics drawing
+implementation in the `UllageMac` executable. The menu bar variant uses
+dedicated geometry for legibility at 18 points, while the application icon
+keeps its full-color geometry. During `bundle`, the executable renders the
+standard ten-file `build/AppIcon.iconset`, `iconutil` converts it to
+`AppIcon.icns`, and the build copies that file into the application bundle. No
+source bitmap or SVG asset is required.
 
 The normal client reads the server URL from its Settings panel. The URL must be
 an HTTP loopback address and defaults to `http://127.0.0.1:7878`. Enable the

@@ -56,10 +56,12 @@ projection. The `UllageMac` executable target owns the `UsageDataSource` composi
 its daemon and mock adapters, as well as the AppKit application shell, SwiftUI views, refresh
 lifecycle, settings, and Keychain access. The application bundle copies the SwiftPM resource bundle
 into `Contents/Resources` so both tests and mock mode use the same canonical fixture files.
-The executable also owns the shared Swift/CoreGraphics U-vessel drawing used for the template menu
-bar mark and full-color application icon. Its headless `--render-iconset` command produces the ten
-standard PNG renditions during `bundle`; `iconutil` converts them to `AppIcon.icns` before the bundle
-is ad-hoc signed, so the repository does not carry generated SVG or bitmap icon assets.
+The executable also owns the shared Swift/CoreGraphics U-vessel drawing implementation used for the
+template menu bar mark and full-color application icon. The template variant uses dedicated geometry
+to remain legible at 18 points, while the application icon retains its full-color geometry. Its
+headless `--render-iconset` command produces the ten standard PNG renditions during `bundle`;
+`iconutil` converts them to `AppIcon.icns` before the bundle is ad-hoc signed, so the repository does
+not carry generated SVG or bitmap icon assets.
 
 The client accesses daemon data only through the loopback HTTP API; it does not read Rust state,
 credentials, snapshots, or the private control socket directly. Its bearer token is stored as a
