@@ -21,9 +21,9 @@ private func date(_ value: String) throws -> Date {
     #expect(chatGPT.limitReached)
     #expect(chatGPT.rows == [
         SummaryRow(
-            window: "5h", metric: "Codex", value: .remains(74.6),
+            window: "5h", metric: "Codex", value: .remains(6),
             resetsAt: try date("2026-08-31T05:00:00.123456789Z"),
-            remainingRatio: 0.746, disabled: false
+            remainingRatio: 0.06, disabled: false
         ),
         SummaryRow(
             window: "5h", metric: "requests", value: .counted(used: 12, limit: 20),
@@ -35,7 +35,7 @@ private func date(_ value: String) throws -> Date {
             resetsAt: nil, remainingRatio: nil, disabled: false
         ),
     ])
-    #expect(chatGPT.rows[0].value.roundedPercentage == 75)
+    #expect(chatGPT.rows[0].value.roundedPercentage == 6)
     #expect(SummaryValue.used(Double.greatestFiniteMagnitude).roundedPercentage == nil)
 
     let claude = summarize(try usage("claude"))
@@ -61,8 +61,8 @@ private func date(_ value: String) throws -> Date {
             resetsAt: cursorReset, remainingRatio: 0.85, disabled: false
         ),
         SummaryRow(
-            window: "monthly", metric: "usage", value: .remains(85),
-            resetsAt: cursorReset, remainingRatio: 0.85, disabled: false
+            window: "monthly", metric: "usage", value: .remains(18),
+            resetsAt: cursorReset, remainingRatio: 0.18, disabled: false
         ),
         SummaryRow(
             window: "monthly", metric: "on demand spend",
@@ -74,9 +74,9 @@ private func date(_ value: String) throws -> Date {
     let grok = summarize(try usage("grok"))
     #expect(grok.rows == [
         SummaryRow(
-            window: "weekly", metric: "GrokBuild", value: .used(61),
+            window: "weekly", metric: "GrokBuild", value: .remains(45),
             resetsAt: try date("2026-09-04T01:18:04.090314+00:00"),
-            remainingRatio: nil, disabled: false
+            remainingRatio: 0.45, disabled: false
         ),
         SummaryRow(
             window: "monthly", metric: "monthly credits", value: .credits(used: 285, limit: 1000),
@@ -94,6 +94,15 @@ private func date(_ value: String) throws -> Date {
     ])
 }
 
+@Test func remainingTierIncludesThresholdsInTheLowerTier() {
+    #expect(RemainingTier(ratio: 0.51) == .healthy)
+    #expect(RemainingTier(ratio: 0.50) == .caution)
+    #expect(RemainingTier(ratio: 0.26) == .caution)
+    #expect(RemainingTier(ratio: 0.25) == .low)
+    #expect(RemainingTier(ratio: 0.11) == .low)
+    #expect(RemainingTier(ratio: 0.10) == .critical)
+}
+
 @Test func overviewUsesPoolThenRatioThenFirstRowAndFiltersOtherWindows() throws {
     let cursorRows = overviewRows(for: try usage("cursor"))
     #expect(cursorRows.count == 1)
@@ -108,4 +117,9 @@ private func date(_ value: String) throws -> Date {
     #expect(grokRows[0].metric == "GrokBuild")
     #expect(grokRows[1].window == "monthly")
     #expect(!grokRows.contains(where: { $0.window == "Extra Usage Credits" }))
+
+    #expect(overviewRows(for: try usage("claude"))[0].remainingRatio == 0.97)
+    #expect(grokRows[0].remainingRatio == 0.45)
+    #expect(overviewRows(for: try usage("cursor"))[0].remainingRatio == 0.18)
+    #expect(chatGPTRows[0].remainingRatio == 0.06)
 }

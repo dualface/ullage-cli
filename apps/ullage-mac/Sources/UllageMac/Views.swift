@@ -336,7 +336,14 @@ private struct SegmentedProgress: View {
     }
 
     private var filledSegments: Int { min(10, max(0, Int(ceil(ratio * 10)))) }
-    private var color: Color { ratio < 0.10 ? .red : ratio < 0.25 ? .yellow : .accentColor }
+    private var color: Color {
+        switch RemainingTier(ratio: ratio) {
+        case .healthy: .green
+        case .caution: .yellow
+        case .low: .orange
+        case .critical: .red
+        }
+    }
 }
 
 struct EmptyStateView: View {
