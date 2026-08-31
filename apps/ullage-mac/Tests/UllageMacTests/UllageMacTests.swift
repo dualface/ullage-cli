@@ -5,6 +5,34 @@ import XCTest
 import UllageKit
 
 final class UllageMacTests: XCTestCase {
+    @MainActor
+    func testMenuBarMarkIsAnEighteenPointTemplateImage() {
+        let image = UllageMark.menuBarImage()
+        XCTAssertEqual(image.size, NSSize(width: 18, height: 18))
+        XCTAssertTrue(image.isTemplate)
+    }
+
+    @MainActor
+    func testIconsetContainsTheStandardFilesAtTheirPixelSizes() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("AppIcon.iconset", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+
+        try IconsetCommand.render(to: directory)
+
+        let filenames = try Set(FileManager.default.contentsOfDirectory(atPath: directory.path))
+        XCTAssertEqual(filenames, Set(IconsetCommand.entries.map(\.filename)))
+        for entry in IconsetCommand.entries {
+            let data = try Data(contentsOf: directory.appendingPathComponent(entry.filename))
+            let representation = try XCTUnwrap(
+                NSBitmapImageRep(data: data)
+            )
+            XCTAssertEqual(representation.pixelsWide, entry.pixelSize, entry.filename)
+            XCTAssertEqual(representation.pixelsHigh, entry.pixelSize, entry.filename)
+        }
+    }
+
     func testLoginItemRequiresApplicationBundle() {
         XCTAssertTrue(isApplicationBundleURL(URL(fileURLWithPath: "/Applications/Ullage.app")))
         XCTAssertTrue(isApplicationBundleURL(URL(fileURLWithPath: "/Applications/Ullage.APP")))

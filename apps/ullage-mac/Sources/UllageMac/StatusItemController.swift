@@ -16,9 +16,7 @@ final class StatusItemController: NSObject {
         self.mode = mode
         super.init()
         guard let button = statusItem.button else { return }
-        let image = NSImage(systemSymbolName: "gauge.with.dots.needle.67percent", accessibilityDescription: "Ullage")
-        image?.isTemplate = true
-        button.image = image
+        button.image = UllageMark.menuBarImage()
         button.imagePosition = .imageOnly
         button.title = ""
         button.target = self

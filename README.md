@@ -41,6 +41,12 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump
 apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 ```
 
+The menu bar mark and application icon share one Swift/CoreGraphics drawing in
+the `UllageMac` executable. During `bundle`, the executable renders the standard
+ten-file `build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and
+the build copies that file into the application bundle. No source bitmap or SVG
+asset is required.
+
 The normal client reads the server URL from its Settings panel. The URL must be
 an HTTP loopback address and defaults to `http://127.0.0.1:7878`. Enable the
 daemon's HTTP interface as described under Configuration, print its bearer
@@ -52,10 +58,11 @@ from the application bundle. Copy `Ullage.app` to `/Applications` or
 `~/Applications` before enabling it so the registered path remains stable.
 
 `--dump` fetches the same accounts and usage projection as the menu bar UI and
-prints it without starting AppKit. `--mock` and `ULLAGE_MOCK=1` remain available
-for demonstrations with bundled fixtures. Intel Macs are not supported. The
-bundle receives an ad-hoc signature for local use; it has no Developer ID
-signature and is not notarized.
+prints it without starting the AppKit application loop. `--render-iconset DIR`
+likewise renders build assets without starting that loop. `--mock` and
+`ULLAGE_MOCK=1` remain available for demonstrations with bundled fixtures.
+Intel Macs are not supported. The bundle receives an ad-hoc signature for local
+use; it has no Developer ID signature and is not notarized.
 
 ### Connecting to the daemon
 
