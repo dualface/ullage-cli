@@ -42,7 +42,7 @@ private enum ConnectionTestResult: String {
     case unreachable
 }
 
-struct SettingsView: View {
+private struct SettingsView: View {
     @Bindable var settings: AppSettings
     let mode: AppMode
     let onSaved: () -> Void
@@ -81,7 +81,7 @@ struct SettingsView: View {
                     }
                 }
                 Spacer()
-                if let preview = iconPreview {
+                if let preview = iconPreviewImage(palette: settings.iconPalette) {
                     Image(nsImage: preview)
                         .resizable()
                         .frame(width: 64, height: 64)
@@ -103,16 +103,6 @@ struct SettingsView: View {
         .onChange(of: settings.iconPalette) { _, palette in
             onPaletteChanged(palette)
         }
-    }
-
-    private var iconPreview: NSImage? {
-        guard let representation = try? UllageMark.applicationIcon(
-            pixelSize: 128,
-            palette: settings.iconPalette
-        ) else { return nil }
-        let image = NSImage(size: NSSize(width: 64, height: 64))
-        image.addRepresentation(representation)
-        return image
     }
 
     private func save() {
@@ -160,4 +150,15 @@ struct SettingsView: View {
             }
         }
     }
+}
+
+@MainActor
+func iconPreviewImage(palette: UllageMark.Palette) -> NSImage? {
+    guard let representation = try? UllageMark.applicationIcon(
+        pixelSize: 128,
+        palette: palette
+    ) else { return nil }
+    let image = NSImage(size: NSSize(width: 64, height: 64))
+    image.addRepresentation(representation)
+    return image
 }

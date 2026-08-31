@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import SwiftUI
 import XCTest
 @testable import UllageMac
 import UllageKit
@@ -160,27 +159,18 @@ final class UllageMacTests: XCTestCase {
 
     @MainActor
     func testSettingsPreviewChangesWithTheSelectedPalette() throws {
-        let suiteName = "UllageMacTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let settings = AppSettings(defaults: defaults)
+        let oxblood = try XCTUnwrap(iconPreviewImage(palette: .oxblood))
+        let paper = try XCTUnwrap(iconPreviewImage(palette: .paper))
+        XCTAssertEqual(oxblood.size, NSSize(width: 64, height: 64))
+        XCTAssertEqual(paper.size, NSSize(width: 64, height: 64))
 
-        func snapshot(palette: UllageMark.Palette) throws -> Data {
-            settings.iconPalette = palette
-            let view = NSHostingView(rootView: SettingsView(
-                settings: settings,
-                mode: .mock,
-                onSaved: {},
-                onPaletteChanged: { _ in }
-            ))
-            view.frame = NSRect(x: 0, y: 0, width: 420, height: 340)
-            view.layoutSubtreeIfNeeded()
-            let representation = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-            view.cacheDisplay(in: view.bounds, to: representation)
+        let previews = try [oxblood, paper].map { image -> Data in
+            let representation = try XCTUnwrap(image.representations.first as? NSBitmapImageRep)
+            XCTAssertEqual(representation.pixelsWide, 128)
+            XCTAssertEqual(representation.pixelsHigh, 128)
             return try XCTUnwrap(representation.representation(using: .png, properties: [:]))
         }
-
-        XCTAssertNotEqual(try snapshot(palette: .oxblood), try snapshot(palette: .paper))
+        XCTAssertNotEqual(previews[0], previews[1])
     }
 
     @MainActor
