@@ -29,7 +29,9 @@ enum DumpCommand {
             writeDumpError("token not configured")
             return 1
         } catch {
-            writeDumpError("could not load daemon usage")
+            // Keychain and other setup failures are not `DaemonError`s; keep
+            // the underlying description so a failed dump is diagnosable.
+            writeDumpError("could not load daemon usage: \(error)")
             return 1
         }
     }
