@@ -60,8 +60,12 @@ The executable also owns the shared Swift/CoreGraphics U-vessel drawing implemen
 template menu bar mark and full-color application icon. The template variant uses dedicated geometry
 to remain legible at 18 points, while the application icon retains its full-color geometry. Its
 headless `--render-iconset` command produces the ten standard PNG renditions during `bundle`;
-`iconutil` converts them to `AppIcon.icns` before the bundle is ad-hoc signed, so the repository does
-not carry generated SVG or bitmap icon assets.
+`iconutil` converts them to `AppIcon.icns` before the bundle is signed, so the repository does not
+carry generated SVG or bitmap icon assets. Bundle signing is
+ad-hoc by default. A caller can instead select a Developer ID identity to enable the hardened runtime
+and a secure timestamp, then use the `notarize` target to submit, staple, and package the application.
+Remote distribution signing runs inside a user-provided tmux session created by the Mac GUI login
+session; the remote workflow passes only identity and Keychain profile names, never credentials.
 
 The client accesses daemon data only through the loopback HTTP API; it does not read Rust state,
 credentials, snapshots, or the private control socket directly. Its bearer token is stored as a

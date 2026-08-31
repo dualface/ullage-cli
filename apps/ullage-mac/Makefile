@@ -1,8 +1,12 @@
-.PHONY: build bundle run clean
+.PHONY: build bundle check-notarize-config notarize print-version run clean
 
 VERSION ?= 0.1.0
+SIGN_IDENTITY ?= -
+NOTARY_PROFILE ?=
 APP := build/Ullage.app
 CONTENTS := $(APP)/Contents
+NOTARY_UPLOAD := build/Ullage-notarization.zip
+DISTRIBUTION_ZIP := build/Ullage-$(VERSION).zip
 
 build:
 	swift build -c release --arch arm64
@@ -26,7 +30,34 @@ bundle: build
 	cp "$$icns" "$(CONTENTS)/Resources/AppIcon.icns"; \
 	cp -R "$$resource_bundle" "$(CONTENTS)/Resources/"; \
 	printf 'APPL????' > "$(CONTENTS)/PkgInfo"; \
-	codesign --force --sign - --timestamp=none "$(APP)"
+	if [ "$(SIGN_IDENTITY)" = "-" ]; then \
+		codesign --force --sign - --timestamp=none "$(APP)"; \
+	else \
+		codesign --force --sign "$(SIGN_IDENTITY)" --options runtime --timestamp "$(APP)"; \
+	fi
+
+check-notarize-config:
+	@if [ -z "$(SIGN_IDENTITY)" ] || [ "$(SIGN_IDENTITY)" = "-" ]; then \
+		echo "SIGN_IDENTITY must name a Developer ID Application identity" >&2; \
+		exit 2; \
+	fi
+	@if [ -z "$(NOTARY_PROFILE)" ]; then \
+		echo "NOTARY_PROFILE is required" >&2; \
+		exit 2; \
+	fi
+
+notarize: check-notarize-config bundle
+	@set -eu; \
+	rm -f "$(NOTARY_UPLOAD)" "$(DISTRIBUTION_ZIP)"; \
+	ditto -c -k --keepParent "$(APP)" "$(NOTARY_UPLOAD)"; \
+	xcrun notarytool submit "$(NOTARY_UPLOAD)" --keychain-profile "$(NOTARY_PROFILE)" --wait; \
+	xcrun stapler staple "$(APP)"; \
+	ditto -c -k --keepParent "$(APP)" "$(DISTRIBUTION_ZIP)"; \
+	rm -f "$(NOTARY_UPLOAD)"; \
+	echo "Notarized archive: $(DISTRIBUTION_ZIP)"
+
+print-version:
+	@printf '%s\n' "$(VERSION)"
 
 run: bundle
 	open "$(APP)"

@@ -63,8 +63,47 @@ from the application bundle. Copy `Ullage.app` to `/Applications` or
 prints it without starting the AppKit application loop. `--render-iconset DIR`
 likewise renders build assets without starting that loop. `--mock` and
 `ULLAGE_MOCK=1` remain available for demonstrations with bundled fixtures.
-Intel Macs are not supported. The bundle receives an ad-hoc signature for local
-use; it has no Developer ID signature and is not notarized.
+Intel Macs are not supported. By default, `bundle` keeps the local-development
+behavior and applies an ad-hoc signature without a timestamp. To create a
+hardened-runtime bundle signed for distribution, pass the Developer ID identity:
+
+```sh
+make -C apps/ullage-mac bundle \
+  SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)"
+```
+
+To sign, submit the bundle to Apple's notary service, staple the ticket, and
+create `build/Ullage-<VERSION>.zip`, use a Keychain profile previously stored
+with `xcrun notarytool store-credentials`:
+
+```sh
+make -C apps/ullage-mac notarize \
+  SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)" \
+  NOTARY_PROFILE=ullage-notary
+```
+
+The same operations can run on the configured remote Mac. Signing credentials
+never cross SSH: create a long-lived tmux session once from Terminal in the Mac
+GUI login session, then set the session name, identity, and profile locally:
+
+```sh
+# Run once in Terminal on the Mac.
+tmux new-session -d -s <gui-session> -n _hold -- sleep infinity
+
+export ULLAGE_MAC_GUI_TMUX_SESSION=<gui-session>
+export ULLAGE_MAC_SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)"
+export ULLAGE_MAC_NOTARY_PROFILE=ullage-notary
+apps/ullage-mac/scripts/remote.sh sign
+apps/ullage-mac/scripts/remote.sh notarize
+```
+
+`remote.sh` requires `ULLAGE_MAC_SSH` as before. It synchronizes the package,
+runs signing in a temporary window of the GUI-created session, waits up to 30
+minutes by default, and copies the notarized zip back into the local `build/`
+directory. Set `ULLAGE_MAC_SIGN_TIMEOUT` to a positive number of seconds to
+change that limit. A session created over SSH does not inherit the GUI login
+security context and therefore cannot reliably access the unlocked login
+Keychain or the notarytool profile.
 
 ### Connecting to the daemon
 
