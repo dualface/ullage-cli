@@ -1,10 +1,59 @@
 import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 @testable import UllageMac
 import UllageKit
 
 final class UllageMacTests: XCTestCase {
+    @MainActor
+    func testPalettesExposeTheCanonicalColors() {
+        let expected: [(UllageMark.Palette, UInt32, UInt32, UInt32, UInt32, UInt32)] = [
+            (.amber, 0x1B5044, 0x0B231E, 0xE9F2EC, 0xF2B34A, 0xC47F1F),
+            (.oxblood, 0x4A1020, 0x24060F, 0xF3EBDD, 0xD9445F, 0x8C1A33),
+            (.propellant, 0x2A2E35, 0x15171B, 0xDDE3E8, 0xFF6A2A, 0xD63A0A),
+            (.copper, 0x123C40, 0x071E21, 0xEAF1EE, 0xD98A48, 0x8E4E1F),
+            (.paper, 0xF4ECDC, 0xE7DCC4, 0x1E1B18, 0x2A3F5F, 0x14213A),
+            (.plum, 0x3A1F4A, 0x1E0F2A, 0xF1E9F4, 0xF6B26B, 0xE3703F),
+        ]
+
+        XCTAssertEqual(UllageMark.Palette.allCases.count, 6)
+        XCTAssertEqual(UllageMark.Palette.default, .oxblood)
+        for (palette, groundInner, groundOuter, wall, liquidTop, liquidBottom) in expected {
+            XCTAssertEqual(palette.groundInner, groundInner, palette.rawValue)
+            XCTAssertEqual(palette.groundOuter, groundOuter, palette.rawValue)
+            XCTAssertEqual(palette.wall, wall, palette.rawValue)
+            XCTAssertEqual(palette.liquidTop, liquidTop, palette.rawValue)
+            XCTAssertEqual(palette.liquidBottom, liquidBottom, palette.rawValue)
+        }
+        XCTAssertEqual(UllageMark.Palette.allCases.filter(\.isLightGround), [.paper])
+    }
+
+    @MainActor
+    func testAllPaletteIconsRenderWithDifferentPixels() throws {
+        let pngs = try UllageMark.Palette.allCases.map { palette in
+            let icon = try UllageMark.applicationIcon(pixelSize: 64, palette: palette)
+            return try XCTUnwrap(icon.representation(using: .png, properties: [:]))
+        }
+        XCTAssertEqual(Set(pngs).count, UllageMark.Palette.allCases.count)
+    }
+
+    @MainActor
+    func testOxbloodIconContainsTheGlassLayers() throws {
+        let icon = try UllageMark.applicationIcon(pixelSize: 256, palette: .oxblood)
+        let glint = try iconColor(icon, markPoint: CGPoint(x: 42, y: 51.2))
+        let liquid = try iconColor(icon, markPoint: CGPoint(x: 42, y: 60))
+        XCTAssertGreaterThan(luminance(glint), luminance(liquid) + 0.08)
+
+        let highlight = try iconColor(icon, markPoint: CGPoint(x: 23.2, y: 40))
+        let wallCenter = try iconColor(icon, markPoint: CGPoint(x: 26, y: 40))
+        XCTAssertGreaterThan(luminance(highlight), luminance(wallCenter) + 0.04)
+
+        let innerShadow = try iconColor(icon, markPoint: CGPoint(x: 50, y: 20))
+        let lowerInterior = try iconColor(icon, markPoint: CGPoint(x: 50, y: 35))
+        XCTAssertGreaterThan(abs(luminance(innerShadow) - luminance(lowerInterior)), 0.02)
+    }
+
     @MainActor
     func testMenuBarMarkIsAnEighteenPointTemplateImage() {
         let image = UllageMark.menuBarImage()
@@ -65,7 +114,7 @@ final class UllageMacTests: XCTestCase {
             .appendingPathComponent("AppIcon.iconset", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
 
-        try IconsetCommand.render(to: directory)
+        try IconsetCommand.render(to: directory, palette: .plum)
 
         let filenames = try Set(FileManager.default.contentsOfDirectory(atPath: directory.path))
         XCTAssertEqual(filenames, Set(IconsetCommand.entries.map(\.filename)))
@@ -77,6 +126,69 @@ final class UllageMacTests: XCTestCase {
             XCTAssertEqual(representation.pixelsWide, entry.pixelSize, entry.filename)
             XCTAssertEqual(representation.pixelsHigh, entry.pixelSize, entry.filename)
         }
+    }
+
+    @MainActor
+    func testIconPaletteDefaultsRejectsInvalidValuesAndRoundTrips() {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(AppSettings(defaults: defaults).iconPalette, .oxblood)
+        defaults.set("bogus", forKey: "iconPalette")
+        XCTAssertEqual(AppSettings(defaults: defaults).iconPalette, .oxblood)
+
+        let settings = AppSettings(defaults: defaults)
+        settings.iconPalette = .plum
+        XCTAssertEqual(AppSettings(defaults: defaults).iconPalette, .plum)
+    }
+
+    @MainActor
+    func testApplicationIconSetterReceivesPaletteChanges() throws {
+        var images: [NSImage] = []
+        let controller = ApplicationIconController { images.append($0) }
+        try controller.apply(palette: .oxblood)
+        try controller.apply(palette: .paper)
+
+        XCTAssertEqual(images.count, 2)
+        let pngs = try images.map { image -> Data in
+            let representation = try XCTUnwrap(image.representations.first as? NSBitmapImageRep)
+            return try XCTUnwrap(representation.representation(using: .png, properties: [:]))
+        }
+        XCTAssertNotEqual(pngs[0], pngs[1])
+    }
+
+    @MainActor
+    func testSettingsPreviewChangesWithTheSelectedPalette() throws {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults)
+
+        func snapshot(palette: UllageMark.Palette) throws -> Data {
+            settings.iconPalette = palette
+            let view = NSHostingView(rootView: SettingsView(
+                settings: settings,
+                mode: .mock,
+                onSaved: {},
+                onPaletteChanged: { _ in }
+            ))
+            view.frame = NSRect(x: 0, y: 0, width: 420, height: 340)
+            view.layoutSubtreeIfNeeded()
+            let representation = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: representation)
+            return try XCTUnwrap(representation.representation(using: .png, properties: [:]))
+        }
+
+        XCTAssertNotEqual(try snapshot(palette: .oxblood), try snapshot(palette: .paper))
+    }
+
+    @MainActor
+    func testProgressColorsUseOnlyTheHealthyPaletteColor() {
+        XCTAssertEqual(rgbHex(progressColor(for: .healthy, palette: .plum)), 0xF6B26B)
+        XCTAssertEqual(progressColor(for: .caution, palette: .plum), .systemYellow)
+        XCTAssertEqual(progressColor(for: .low, palette: .plum), .systemOrange)
+        XCTAssertEqual(progressColor(for: .critical, palette: .plum), .systemRed)
     }
 
     func testLoginItemRequiresApplicationBundle() {
@@ -187,6 +299,36 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(store.connectionState, .protocolMismatch(client: "8", server: "9"))
         store.stop()
     }
+}
+
+@MainActor
+private func iconColor(
+    _ icon: NSBitmapImageRep,
+    markPoint: CGPoint,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) throws -> NSColor {
+    let size = CGFloat(icon.pixelsWide)
+    let tileOrigin = size * 100 / 1024
+    let tileSide = size * 824 / 1024
+    let x = Int((tileOrigin + markPoint.x / 100 * tileSide).rounded(.down))
+    let y = Int((tileOrigin + markPoint.y / 100 * tileSide).rounded(.down))
+    return try XCTUnwrap(icon.colorAt(x: x, y: y), file: file, line: line)
+}
+
+private func luminance(_ color: NSColor) -> CGFloat {
+    let converted = color.usingColorSpace(.sRGB)!
+    return 0.2126 * converted.redComponent
+        + 0.7152 * converted.greenComponent
+        + 0.0722 * converted.blueComponent
+}
+
+private func rgbHex(_ color: NSColor) -> UInt32 {
+    let converted = color.usingColorSpace(.sRGB)!
+    let red = UInt32((converted.redComponent * 255).rounded())
+    let green = UInt32((converted.greenComponent * 255).rounded())
+    let blue = UInt32((converted.blueComponent * 255).rounded())
+    return red << 16 | green << 8 | blue
 }
 
 private actor CountingDataSource: UsageDataSource {

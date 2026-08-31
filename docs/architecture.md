@@ -57,8 +57,9 @@ its daemon and mock adapters, as well as the AppKit application shell, SwiftUI v
 lifecycle, settings, and Keychain access. The application bundle copies the SwiftPM resource bundle
 into `Contents/Resources` so both tests and mock mode use the same canonical fixture files.
 The executable also owns the shared Swift/CoreGraphics U-vessel drawing implementation used for the
-template menu bar mark and full-color application icon. The template variant uses dedicated geometry
-to remain legible at 18 points, while the application icon retains its full-color geometry. Its
+template menu bar mark and full-color application icon. `UllageMark.Palette` owns the six canonical
+application-icon palettes and their glass-rendering colors. The template variant uses dedicated
+geometry to remain legible at 18 points, while the application icon retains its full-color geometry. Its
 headless `--render-iconset` command produces the ten standard PNG renditions during `bundle`;
 `iconutil` converts them to `AppIcon.icns` before the bundle is signed, so the repository does not
 carry generated SVG or bitmap icon assets. Bundle signing is

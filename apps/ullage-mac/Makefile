@@ -3,6 +3,7 @@
 VERSION ?= 0.1.0
 SIGN_IDENTITY ?= -
 NOTARY_PROFILE ?=
+ICON_PALETTE ?= oxblood
 export ULLAGE_MAKE_VERSION := $(value VERSION)
 export ULLAGE_MAKE_SIGN_IDENTITY := $(value SIGN_IDENTITY)
 export ULLAGE_MAKE_NOTARY_PROFILE := $(value NOTARY_PROFILE)
@@ -23,7 +24,7 @@ bundle: build
 	iconset="$(CURDIR)/build/AppIcon.iconset"; \
 	icns="$(CURDIR)/build/AppIcon.icns"; \
 	rm -rf "$$iconset" "$$icns"; \
-	"$$bin_dir/UllageMac" --render-iconset "$$iconset"; \
+	"$$bin_dir/UllageMac" --render-iconset "$$iconset" --palette "$(ICON_PALETTE)"; \
 	iconutil -c icns "$$iconset" -o "$$icns"; \
 	rm -rf "$(APP)"; \
 	mkdir -p "$(CONTENTS)/MacOS" "$(CONTENTS)/Resources"; \

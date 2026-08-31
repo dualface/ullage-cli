@@ -43,11 +43,19 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 
 The menu bar mark and application icon share one Swift/CoreGraphics drawing
 implementation in the `UllageMac` executable. The menu bar variant uses
-dedicated geometry for legibility at 18 points, while the application icon
-keeps its full-color geometry. During `bundle`, the executable renders the
-standard ten-file `build/AppIcon.iconset`, `iconutil` converts it to
-`AppIcon.icns`, and the build copies that file into the application bundle. No
-source bitmap or SVG asset is required.
+dedicated geometry for legibility at 18 points. The glass application icon has
+six built-in palettes: Amber, Oxblood, Propellant, Copper, Paper, and Plum;
+Oxblood is the default. The runtime choice in Settings updates the icon used by
+the About panel and system dialogs, as well as the healthy usage-bar color.
+Finder and Launchpad use the signed `AppIcon.icns`, so that palette is selected
+at build time instead. During `bundle`, the executable renders the standard
+ten-file `build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and
+the build copies that file into the application bundle. No source bitmap or SVG
+asset is required. Set the build palette with `ICON_PALETTE`, for example:
+
+```sh
+make -C apps/ullage-mac bundle ICON_PALETTE=paper
+```
 
 The normal client reads the server URL from its Settings panel. The URL must be
 an HTTP loopback address and defaults to `http://127.0.0.1:7878`. Enable the
@@ -60,8 +68,9 @@ from the application bundle. Copy `Ullage.app` to `/Applications` or
 `~/Applications` before enabling it so the registered path remains stable.
 
 `--dump` fetches the same accounts and usage projection as the menu bar UI and
-prints it without starting the AppKit application loop. `--render-iconset DIR`
-likewise renders build assets without starting that loop. `--mock` and
+prints it without starting the AppKit application loop. `--render-iconset DIR
+[--palette KEY]` likewise renders build assets without starting that loop and
+defaults to Oxblood. `--mock` and
 `ULLAGE_MOCK=1` remain available for demonstrations with bundled fixtures.
 Intel Macs are not supported. By default, `bundle` keeps the local-development
 behavior and applies an ad-hoc signature without a timestamp. To create a

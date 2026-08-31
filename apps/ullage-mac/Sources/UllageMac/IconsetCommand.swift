@@ -22,13 +22,15 @@ enum IconsetCommand {
     ]
 
     static func run(arguments: [String]) -> Int32 {
-        guard arguments.count == 1 else {
-            writeIconsetError("usage: UllageMac --render-iconset <directory>")
+        guard let parsed = parse(arguments: arguments) else {
             return 2
         }
 
         do {
-            try render(to: URL(fileURLWithPath: arguments[0], isDirectory: true))
+            try render(
+                to: URL(fileURLWithPath: parsed.directory, isDirectory: true),
+                palette: parsed.palette
+            )
             return 0
         } catch {
             writeIconsetError("could not render iconset: \(error.localizedDescription)")
@@ -36,18 +38,42 @@ enum IconsetCommand {
         }
     }
 
-    static func render(to directory: URL) throws {
+    static func render(to directory: URL, palette: UllageMark.Palette) throws {
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
         )
         for entry in entries {
-            let image = try UllageMark.applicationIcon(pixelSize: entry.pixelSize)
+            let image = try UllageMark.applicationIcon(
+                pixelSize: entry.pixelSize,
+                palette: palette
+            )
             guard let png = image.representation(using: .png, properties: [:]) else {
                 throw IconsetError.couldNotEncodePNG(entry.filename)
             }
             try png.write(to: directory.appendingPathComponent(entry.filename), options: .atomic)
         }
+    }
+
+    private static func parse(arguments: [String]) -> (directory: String, palette: UllageMark.Palette)? {
+        guard arguments.count == 1 || arguments.count == 3,
+              let directory = arguments.first else {
+            writeUsage()
+            return nil
+        }
+        guard arguments.count == 3 else { return (directory, .default) }
+        guard arguments[1] == "--palette",
+              let palette = UllageMark.Palette(rawValue: arguments[2]) else {
+            writeUsage()
+            return nil
+        }
+        return (directory, palette)
+    }
+
+    private static func writeUsage() {
+        let palettes = UllageMark.Palette.allCases.map(\.rawValue).joined(separator: ", ")
+        writeIconsetError("usage: UllageMac --render-iconset <directory> [--palette <key>]")
+        writeIconsetError("palette must be one of: \(palettes)")
     }
 }
 

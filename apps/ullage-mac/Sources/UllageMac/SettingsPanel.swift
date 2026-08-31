@@ -4,13 +4,23 @@ import UllageKit
 
 @MainActor
 final class SettingsPanelController: NSWindowController {
-    init(settings: AppSettings, mode: AppMode, onSaved: @escaping () -> Void) {
-        let view = SettingsView(settings: settings, mode: mode, onSaved: onSaved)
+    init(
+        settings: AppSettings,
+        mode: AppMode,
+        onSaved: @escaping () -> Void,
+        onPaletteChanged: @escaping (UllageMark.Palette) -> Void
+    ) {
+        let view = SettingsView(
+            settings: settings,
+            mode: mode,
+            onSaved: onSaved,
+            onPaletteChanged: onPaletteChanged
+        )
         let hostingController = NSHostingController(rootView: view)
         let panel = NSPanel(contentViewController: hostingController)
         panel.title = "Ullage Settings"
         panel.styleMask = [.titled, .closable]
-        panel.setContentSize(NSSize(width: 420, height: 250))
+        panel.setContentSize(NSSize(width: 420, height: 340))
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
     }
@@ -32,19 +42,26 @@ private enum ConnectionTestResult: String {
     case unreachable
 }
 
-private struct SettingsView: View {
-    let settings: AppSettings
+struct SettingsView: View {
+    @Bindable var settings: AppSettings
     let mode: AppMode
     let onSaved: () -> Void
+    let onPaletteChanged: (UllageMark.Palette) -> Void
     @State private var serverURL: String
     @State private var token = ""
     @State private var message = ""
     @State private var isTesting = false
 
-    init(settings: AppSettings, mode: AppMode, onSaved: @escaping () -> Void) {
+    init(
+        settings: AppSettings,
+        mode: AppMode,
+        onSaved: @escaping () -> Void,
+        onPaletteChanged: @escaping (UllageMark.Palette) -> Void
+    ) {
         self.settings = settings
         self.mode = mode
         self.onSaved = onSaved
+        self.onPaletteChanged = onPaletteChanged
         _serverURL = State(initialValue: settings.serverURL.absoluteString)
     }
 
@@ -58,6 +75,20 @@ private struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
+                Picker("Icon palette", selection: $settings.iconPalette) {
+                    ForEach(UllageMark.Palette.allCases) { palette in
+                        Text(palette.displayName).tag(palette)
+                    }
+                }
+                Spacer()
+                if let preview = iconPreview {
+                    Image(nsImage: preview)
+                        .resizable()
+                        .frame(width: 64, height: 64)
+                        .accessibilityLabel("\(settings.iconPalette.displayName) icon preview")
+                }
+            }
+            HStack {
                 Button("Save") { save() }
                 Button("Test connection") { testConnection() }
                     .disabled(isTesting)
@@ -68,7 +99,20 @@ private struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 420, height: 250)
+        .frame(width: 420, height: 340)
+        .onChange(of: settings.iconPalette) { _, palette in
+            onPaletteChanged(palette)
+        }
+    }
+
+    private var iconPreview: NSImage? {
+        guard let representation = try? UllageMark.applicationIcon(
+            pixelSize: 128,
+            palette: settings.iconPalette
+        ) else { return nil }
+        let image = NSImage(size: NSSize(width: 64, height: 64))
+        image.addRepresentation(representation)
+        return image
     }
 
     private func save() {

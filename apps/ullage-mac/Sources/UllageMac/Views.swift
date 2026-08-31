@@ -9,6 +9,7 @@ enum SelectedTab: Hashable {
 
 struct RootView: View {
     @Bindable var store: UsageStore
+    @Bindable var settings: AppSettings
     let openSettings: () -> Void
     let onPreferredHeightChanged: (CGFloat) -> Void
     @State private var selectedTab: SelectedTab = .overview
@@ -24,9 +25,9 @@ struct RootView: View {
                     } else {
                         switch selectedTab {
                         case .overview:
-                            OverviewView(store: store)
+                            OverviewView(store: store, palette: settings.iconPalette)
                         case .account(let id):
-                            AccountView(store: store, accountID: id)
+                            AccountView(store: store, accountID: id, palette: settings.iconPalette)
                         }
                     }
                 }
@@ -154,6 +155,7 @@ private struct TabBar: View {
 
 private struct OverviewView: View {
     let store: UsageStore
+    let palette: UllageMark.Palette
 
     var body: some View {
         LazyVStack(spacing: 14) {
@@ -167,7 +169,7 @@ private struct OverviewView: View {
                         timestamp: snapshot.lastSuccessAt
                     )
                     ForEach(Array(overviewRows(for: usage).enumerated()), id: \.offset) { _, row in
-                        SummaryRowView(row: row)
+                        SummaryRowView(row: row, palette: palette)
                     }
                     Divider()
                 }
@@ -179,6 +181,7 @@ private struct OverviewView: View {
 private struct AccountView: View {
     let store: UsageStore
     let accountID: String
+    let palette: UllageMark.Palette
 
     private var account: Account? { store.accounts.first(where: { $0.id == accountID }) }
     private var snapshot: SnapshotPayload? { store.snapshot(for: accountID) }
@@ -202,7 +205,7 @@ private struct AccountView: View {
                             Text(resetText(windowRows.first?.resetsAt)).font(.caption).foregroundStyle(.secondary)
                         }
                         ForEach(Array(windowRows.enumerated()), id: \.offset) { _, row in
-                            SummaryRowView(row: row, showWindow: false)
+                            SummaryRowView(row: row, palette: palette, showWindow: false)
                         }
                     }
                 }
@@ -297,6 +300,7 @@ private struct Badge: View {
 
 private struct SummaryRowView: View {
     let row: SummaryRow
+    let palette: UllageMark.Palette
     var showWindow = true
 
     var body: some View {
@@ -311,14 +315,15 @@ private struct SummaryRowView: View {
                 if showWindow { Text(resetText(row.resetsAt)).font(.caption).foregroundStyle(.secondary) }
             }
             if let ratio = row.remainingRatio {
-                SegmentedProgress(ratio: ratio)
+                SegmentedProgress(ratio: ratio, palette: palette)
             }
         }
     }
 }
 
-private struct SegmentedProgress: View {
+struct SegmentedProgress: View {
     let ratio: Double
+    let palette: UllageMark.Palette
 
     var body: some View {
         HStack(spacing: 2) {
@@ -331,13 +336,18 @@ private struct SegmentedProgress: View {
     }
 
     private var filledSegments: Int { min(10, max(0, Int(ceil(ratio * 10)))) }
-    private var color: Color {
-        switch RemainingTier(ratio: ratio) {
-        case .healthy: .green
-        case .caution: .yellow
-        case .low: .orange
-        case .critical: .red
-        }
+    var color: Color {
+        Color(nsColor: progressColor(for: RemainingTier(ratio: ratio), palette: palette))
+    }
+}
+
+@MainActor
+func progressColor(for tier: RemainingTier, palette: UllageMark.Palette) -> NSColor {
+    switch tier {
+    case .healthy: palette.liquidTopColor
+    case .caution: .systemYellow
+    case .low: .systemOrange
+    case .critical: .systemRed
     }
 }
 
