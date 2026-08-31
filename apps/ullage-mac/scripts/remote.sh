@@ -143,7 +143,48 @@ fi
 
 remote_dir="ullage-build/$branch"
 ssh "$ULLAGE_MAC_SSH" "mkdir -p ~/$remote_dir"
-rsync -a --delete --exclude .build --exclude build "$package_dir/" "$ULLAGE_MAC_SSH:~/$remote_dir/"
+
+# Mark this build directory as in use for the lifetime of the run so a
+# concurrent run for another branch does not prune it. The marker holds the
+# epoch time; a marker older than two hours is treated as a crashed leftover.
+in_progress_marker="\$HOME/$remote_dir/.in-progress"
+cleanup_marker() {
+    remote_exec /bin/bash --norc -c "rm -f -- $in_progress_marker" >/dev/null 2>&1 || true
+}
+trap cleanup_marker EXIT
+remote_exec /bin/bash --norc -c "printf '%s\\n' \"\$(date +%s)\" > $in_progress_marker"
+
+rsync -a --delete --exclude .build --exclude build --exclude .in-progress \
+    "$package_dir/" "$ULLAGE_MAC_SSH:~/$remote_dir/"
+
+# Keep only the build directory for this branch: every other direct child of
+# ~/ullage-build is removed, except sibling builds whose marker is still fresh.
+# Symlinks are removed as links and never followed. A branch name containing
+# a slash nests below ~/ullage-build, so pruning is skipped rather than guessed.
+if [[ "$branch" == */* ]]; then
+    echo "warning: branch name contains '/'; skipping remote build cleanup" >&2
+else
+    remote_exec /bin/bash --norc -c '
+set -euo pipefail
+keep="$1"
+root="$HOME/ullage-build"
+now="$(date +%s)"
+cd "$root" || exit 0
+shopt -s dotglob nullglob
+for entry in *; do
+    [[ "$entry" == "$keep" ]] && continue
+    if [[ -d "$entry" && ! -L "$entry" && -f "$entry/.in-progress" ]]; then
+        stamp="$(cat "$entry/.in-progress" 2>/dev/null || true)"
+        [[ "$stamp" =~ ^[0-9]+$ ]] || stamp=0
+        if (( now - stamp < 7200 )); then
+            echo "keeping in-progress remote build: $entry" >&2
+            continue
+        fi
+    fi
+    rm -rf -- "$entry"
+done
+' prune "$branch"
+fi
 
 if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
     remote_home="$(remote_exec /bin/bash --norc -c 'printf "%s\n" "$HOME"')"
@@ -171,7 +212,7 @@ if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
         remote_exec_until "$cleanup_deadline" "$tmux_bin" kill-window \
             -t "=$ULLAGE_MAC_GUI_TMUX_SESSION:=$window_name" >/dev/null 2>&1 || true
     }
-    trap cleanup_window EXIT
+    trap 'cleanup_window; cleanup_marker' EXIT
     remote_exec "$tmux_bin" new-window -t "=$ULLAGE_MAC_GUI_TMUX_SESSION" \
         -n "$window_name" -d -- /bin/bash -c "$launcher_command"
 
