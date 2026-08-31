@@ -313,6 +313,11 @@ public struct ProbePayload: Codable, Equatable, Sendable {
     }
 }
 
+public enum ProbeResult: Equatable, Sendable {
+    case accepted
+    case completed(ProbePayload)
+}
+
 public enum CredentialBackendID: Codable, Equatable, Sendable {
     case linuxSecretService, macOSKeychain, windowsCredentialManager, fileFallback, otherPlatform
     case unknown(String)
@@ -366,14 +371,35 @@ public struct AccountStatusPayload: Codable, Equatable, Sendable {
 }
 
 public struct DaemonStatusPayload: Codable, Equatable, Sendable {
+    public let version: UInt16
     public let shuttingDown: Bool
     public let accounts: [AccountStatusPayload]
     public let credentialBackend: CredentialBackendID
 
     private enum CodingKeys: String, CodingKey {
-        case accounts
+        case version, accounts
         case shuttingDown = "shutting_down"
         case credentialBackend = "credential_backend"
+    }
+
+    public init(
+        version: UInt16,
+        shuttingDown: Bool,
+        accounts: [AccountStatusPayload],
+        credentialBackend: CredentialBackendID
+    ) {
+        self.version = version
+        self.shuttingDown = shuttingDown
+        self.accounts = accounts
+        self.credentialBackend = credentialBackend
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(UInt16.self, forKey: .version) ?? 0
+        shuttingDown = try container.decode(Bool.self, forKey: .shuttingDown)
+        accounts = try container.decode([AccountStatusPayload].self, forKey: .accounts)
+        credentialBackend = try container.decode(CredentialBackendID.self, forKey: .credentialBackend)
     }
 }
 

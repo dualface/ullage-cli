@@ -109,7 +109,7 @@ private actor CountingDataSource: UsageDataSource {
 
     func status() async throws -> DaemonStatusPayload {
         requestCount += 1
-        let data = Data("{\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
+        let data = Data("{\"version\":8,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
         return try UllageJSON.makeDecoder().decode(DaemonStatusPayload.self, from: data)
     }
 
@@ -123,7 +123,7 @@ private actor CountingDataSource: UsageDataSource {
         return []
     }
 
-    func probe(accountId: String) async throws -> ProbePayload {
+    func probe(accountId: String, wait: Bool) async throws -> ProbeResult {
         requestCount += 1
         if let probeRetryAfter {
             throw DaemonError.rateLimited(retryAfter: probeRetryAfter, kind: "rate_limited")
@@ -136,7 +136,7 @@ private struct ProtocolMismatchDataSource: UsageDataSource {
     func status() async throws -> DaemonStatusPayload { throw mismatch }
     func accounts() async throws -> [Account] { throw mismatch }
     func usage() async throws -> [SnapshotPayload] { throw mismatch }
-    func probe(accountId: String) async throws -> ProbePayload { throw mismatch }
+    func probe(accountId: String, wait: Bool) async throws -> ProbeResult { throw mismatch }
 
     private var mismatch: DaemonError { .protocolMismatch(client: 8, server: 9) }
 }

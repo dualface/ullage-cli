@@ -31,6 +31,16 @@ private func date(_ value: String) throws -> Date {
             remainingRatio: 0.4, disabled: false
         ),
         SummaryRow(
+            window: "weekly · Codex", metric: "Codex", value: .remains(69),
+            resetsAt: try date("2026-09-07T00:00:00Z"),
+            remainingRatio: 0.69, disabled: false
+        ),
+        SummaryRow(
+            window: "weekly · GPT-5.3-Codex-Spark", metric: "GPT-5.3-Codex-Spark",
+            value: .remains(58), resetsAt: try date("2026-09-07T00:00:00Z"),
+            remainingRatio: 0.58, disabled: false
+        ),
+        SummaryRow(
             window: "Credits", metric: "credit balance", value: .creditsUnlimited,
             resetsAt: nil, remainingRatio: nil, disabled: false
         ),
@@ -109,7 +119,10 @@ private func date(_ value: String) throws -> Date {
     #expect(cursorRows[0].metric == "usage")
 
     let chatGPTRows = overviewRows(for: try usage("chatgpt"))
-    #expect(chatGPTRows.map(\.metric) == ["Codex"])
+    #expect(chatGPTRows.map(\.metric) == ["Codex", "Codex", "GPT-5.3-Codex-Spark"])
+    #expect(chatGPTRows.map(\.window) == [
+        "5h", "weekly · Codex", "weekly · GPT-5.3-Codex-Spark",
+    ])
 
     let grokRows = overviewRows(for: try usage("grok"))
     #expect(grokRows.count == 2)

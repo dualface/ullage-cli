@@ -7,21 +7,21 @@ struct DaemonClientTests {
     @Test func sendsExpectedRequestsAndAuthorization() async throws {
         StubURLProtocol.handler = { request in
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token")
-            #expect(request.url?.query == nil)
             let path = request.url?.path
             switch path {
             case "/v1/status":
                 #expect(request.httpMethod == "GET")
-                return response(request, body: #"{"shutting_down":false,"accounts":[],"credential_backend":"macos_keychain"}"#)
+                return response(request, body: #"{"version":8,"result":"daemon_status","payload":{"shutting_down":false,"accounts":[],"credential_backend":"macos_keychain"}}"#)
             case "/v1/accounts":
                 #expect(request.httpMethod == "GET")
-                return response(request, body: "[]")
+                return response(request, body: #"{"version":8,"result":"accounts","payload":[]}"#)
             case "/v1/usage":
                 #expect(request.httpMethod == "GET")
-                return response(request, body: "[]")
+                return response(request, body: #"{"version":8,"result":"snapshots","payload":[]}"#)
             case "/v1/accounts/account fixture/probe":
                 #expect(request.httpMethod == "POST")
-                return response(request, body: #"{"account_id":"account fixture","usage":{"outcome":"future"}}"#)
+                #expect(request.url?.query == "wait=true")
+                return response(request, body: #"{"version":8,"result":"probe","payload":{"account_id":"account fixture","usage":{"outcome":"future"}}}"#)
             default:
                 Issue.record("Unexpected path: \(path ?? "nil")")
                 return response(request, status: 404, body: "{}")
@@ -29,21 +29,64 @@ struct DaemonClientTests {
         }
 
         let client = makeClient()
-        #expect(try await client.status().credentialBackend == .macOSKeychain)
+        let status = try await client.status()
+        #expect(status.version == 8)
+        #expect(status.credentialBackend == .macOSKeychain)
         #expect(try await client.accounts().isEmpty)
         #expect(try await client.usage().isEmpty)
-        #expect(try await client.probe(accountId: "account fixture").accountId == "account fixture")
+        let result = try await client.probe(accountId: "account fixture", wait: true)
+        guard case .completed(let payload) = result else {
+            Issue.record("Expected a completed probe")
+            return
+        }
+        #expect(payload.accountId == "account fixture")
     }
 
-    @Test func acceptsBareAndEnvelopeResponseShapes() async throws {
-        let client = makeClient()
+    @Test func rejectsBarePayloadsAndAcceptsOnlyEnvelopes() async throws {
         StubURLProtocol.handler = { response($0, body: "[]") }
-        #expect(try await client.usage().isEmpty)
+        do {
+            _ = try await makeClient().usage()
+            Issue.record("Expected a bare payload to fail")
+        } catch let error as DaemonError {
+            guard case .decoding = error else {
+                Issue.record("Expected decoding, got \(error)")
+                return
+            }
+        }
 
         StubURLProtocol.handler = {
             response($0, body: #"{"version":8,"result":"snapshots","payload":[]}"#)
         }
-        #expect(try await client.usage().isEmpty)
+        #expect(try await makeClient().usage().isEmpty)
+    }
+
+    @Test func mapsSynchronousAndAsynchronousProbeResponses() async throws {
+        StubURLProtocol.handler = { request in
+            if request.url?.query == "wait=false" {
+                return response(request, status: 202, body: #"{"version":8,"result":"ack"}"#)
+            }
+            return response(
+                request,
+                body: #"{"version":8,"result":"probe","payload":{"account_id":"fixture","usage":{"outcome":"future"}}}"#
+            )
+        }
+
+        #expect(try await makeClient().probe(accountId: "fixture", wait: false) == .accepted)
+        let completed = try await makeClient().probe(accountId: "fixture", wait: true)
+        guard case .completed(let payload) = completed else {
+            Issue.record("Expected a completed probe")
+            return
+        }
+        #expect(payload.accountId == "fixture")
+    }
+
+    @Test func requestsUsageForOneAccount() async throws {
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.path == "/v1/usage")
+            #expect(request.url?.query == "account=fixture")
+            return response(request, body: #"{"version":8,"result":"snapshots","payload":[]}"#)
+        }
+        #expect(try await makeClient().usage(accountId: "fixture").isEmpty)
     }
 
     @Test func rejectsMismatchedProtocolVersions() async throws {
@@ -136,7 +179,9 @@ struct DaemonClientTests {
                     $0,
                     status: status,
                     headers: status == 429 ? ["Retry-After": "17.5"] : [:],
-                    body: #"{"error":{"kind":"fixture_kind","diagnostic":"must be ignored"}}"#
+                    body: status == 401
+                        ? #"{"error":"fixture_kind","diagnostic":"must be ignored"}"#
+                        : #"{"version":8,"kind":"fixture_kind","detail":{"diagnostic":"nested value"},"diagnostic":"must be ignored"}"#
                 )
             }
             do {
@@ -154,6 +199,44 @@ struct DaemonClientTests {
                 default:
                     Issue.record("Wrong mapping for status \(status): \(error)")
                 }
+            }
+        }
+    }
+
+    @Test func mapsRealStringErrorsAndRetryAfter() async throws {
+        StubURLProtocol.handler = {
+            response(
+                $0,
+                status: 429,
+                headers: ["Retry-After": "59"],
+                body: #"{"error":"rate_limited"}"#
+            )
+        }
+        do {
+            _ = try await makeClient().probe(accountId: "fixture", wait: true)
+            Issue.record("Expected rate limiting")
+        } catch let error as DaemonError {
+            guard case .rateLimited(retryAfter: 59, kind: "rate_limited") = error else {
+                Issue.record("Expected real rate-limit mapping, got \(error)")
+                return
+            }
+        }
+
+        StubURLProtocol.handler = {
+            response(
+                $0,
+                status: 401,
+                headers: ["WWW-Authenticate": "Bearer"],
+                body: #"{"error":"unauthorized"}"#
+            )
+        }
+        do {
+            _ = try await makeClient().status()
+            Issue.record("Expected unauthorized")
+        } catch let error as DaemonError {
+            guard case .unauthorized(kind: "unauthorized") = error else {
+                Issue.record("Expected unauthorized mapping, got \(error)")
+                return
             }
         }
     }

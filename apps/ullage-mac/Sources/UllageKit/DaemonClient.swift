@@ -1,6 +1,6 @@
 import Foundation
 
-public enum DaemonError: Error, @unchecked Sendable {
+public enum DaemonError: Error, @unchecked Sendable, CustomStringConvertible {
     case unreachable(underlying: any Error)
     case unauthorized(kind: String?)
     case forbiddenHost(kind: String?)
@@ -19,6 +19,24 @@ public enum DaemonError: Error, @unchecked Sendable {
         case .unauthorized(let kind), .forbiddenHost(let kind), .notFound(let kind),
              .authenticationInvalid(let kind), .timeout(let kind), .storage(let kind),
              .unexpectedStatus(_, let kind), .rateLimited(_, let kind): kind
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .unreachable: "daemon unreachable"
+        case .unauthorized(let kind): kind ?? "unauthorized"
+        case .forbiddenHost(let kind): kind ?? "forbidden"
+        case .notFound(let kind): kind ?? "not_found"
+        case .authenticationInvalid(let kind): kind ?? "authentication_invalid"
+        case .rateLimited(let retryAfter, let kind):
+            (kind ?? "rate_limited") + (retryAfter.map { " (retry after \($0)s)" } ?? "")
+        case .timeout(let kind): kind ?? "timeout"
+        case .storage(let kind): kind ?? "storage"
+        case .unexpectedStatus(let status, let kind): kind ?? "unexpected HTTP status \(status)"
+        case .protocolMismatch(let client, let server):
+            "protocol mismatch (client \(client), server \(server))"
+        case .decoding: "daemon response decoding failed"
         }
     }
 }
@@ -43,29 +61,89 @@ public final class DaemonClient: @unchecked Sendable {
     }
 
     public func status() async throws -> DaemonStatusPayload {
-        try await send(path: ["v1", "status"], method: "GET", expectedResult: "daemon_status")
+        let envelope: ResponseEnvelope<DaemonStatusPayload> = try await send(
+            path: ["v1", "status"], method: "GET", expectedResult: "daemon_status"
+        )
+        return DaemonStatusPayload(
+            version: envelope.version,
+            shuttingDown: envelope.payload.shuttingDown,
+            accounts: envelope.payload.accounts,
+            credentialBackend: envelope.payload.credentialBackend
+        )
     }
 
     public func accounts() async throws -> [Account] {
-        try await send(path: ["v1", "accounts"], method: "GET", expectedResult: "accounts")
+        let envelope: ResponseEnvelope<[Account]> = try await send(
+            path: ["v1", "accounts"], method: "GET", expectedResult: "accounts"
+        )
+        return envelope.payload
     }
 
     public func usage() async throws -> [SnapshotPayload] {
-        try await send(path: ["v1", "usage"], method: "GET", expectedResult: "snapshots")
+        let envelope: ResponseEnvelope<[SnapshotPayload]> = try await send(
+            path: ["v1", "usage"], method: "GET", expectedResult: "snapshots"
+        )
+        return envelope.payload
     }
 
-    public func probe(accountId: String) async throws -> ProbePayload {
-        try await send(path: ["v1", "accounts", accountId, "probe"], method: "POST", expectedResult: "probe")
+    public func usage(accountId: String) async throws -> [SnapshotPayload] {
+        let envelope: ResponseEnvelope<[SnapshotPayload]> = try await send(
+            path: ["v1", "usage"],
+            method: "GET",
+            expectedResult: "snapshots",
+            queryItems: [URLQueryItem(name: "account", value: accountId)]
+        )
+        return envelope.payload
+    }
+
+    public func probe(accountId: String, wait: Bool) async throws -> ProbeResult {
+        let (data, response) = try await perform(
+            path: ["v1", "accounts", accountId, "probe"],
+            method: "POST",
+            queryItems: [URLQueryItem(name: "wait", value: wait ? "true" : "false")]
+        )
+        let expectedStatus = wait ? 200 : 202
+        guard response.statusCode == expectedStatus else {
+            throw DaemonError.unexpectedStatus(response.statusCode, kind: nil)
+        }
+        if wait {
+            let envelope: ResponseEnvelope<ProbePayload> = try decodeEnvelope(
+                data, expectedResult: "probe"
+            )
+            return .completed(envelope.payload)
+        }
+        _ = try decodeHeader(data, expectedResult: "ack")
+        return .accepted
     }
 
     private func send<Payload: Decodable>(
         path: [String],
         method: String,
-        expectedResult: String
-    ) async throws -> Payload {
+        expectedResult: String,
+        queryItems: [URLQueryItem] = []
+    ) async throws -> ResponseEnvelope<Payload> {
+        let (data, _) = try await perform(path: path, method: method, queryItems: queryItems)
+        return try decodeEnvelope(data, expectedResult: expectedResult)
+    }
+
+    private func perform(
+        path: [String],
+        method: String,
+        queryItems: [URLQueryItem] = []
+    ) async throws -> (Data, HTTPURLResponse) {
         var url = baseURL
         for component in path {
             url.appendPathComponent(component)
+        }
+        if !queryItems.isEmpty {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                throw DaemonError.unreachable(underlying: URLError(.badURL))
+            }
+            components.queryItems = queryItems
+            guard let queryURL = components.url else {
+                throw DaemonError.unreachable(underlying: URLError(.badURL))
+            }
+            url = queryURL
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -93,17 +171,33 @@ public final class DaemonClient: @unchecked Sendable {
             throw statusError(response: httpResponse, data: data)
         }
 
+        return (data, httpResponse)
+    }
+
+    private func decodeEnvelope<Payload: Decodable>(
+        _ data: Data,
+        expectedResult: String
+    ) throws -> ResponseEnvelope<Payload> {
         do {
-            if let header = try? decoder.decode(ResponseEnvelopeHeader.self, from: data) {
-                if header.version != Self.protocolVersion {
-                    throw DaemonError.protocolMismatch(client: Self.protocolVersion, server: header.version)
-                }
-                guard header.result == expectedResult else {
-                    throw EnvelopeResultMismatch(expected: expectedResult, actual: header.result)
-                }
-                return try decoder.decode(ResponseEnvelope<Payload>.self, from: data).payload
+            _ = try decodeHeader(data, expectedResult: expectedResult)
+            return try decoder.decode(ResponseEnvelope<Payload>.self, from: data)
+        } catch let error as DaemonError {
+            throw error
+        } catch {
+            throw DaemonError.decoding(underlying: error)
+        }
+    }
+
+    private func decodeHeader(_ data: Data, expectedResult: String) throws -> ResponseEnvelopeHeader {
+        do {
+            let header = try decoder.decode(ResponseEnvelopeHeader.self, from: data)
+            if header.version != Self.protocolVersion {
+                throw DaemonError.protocolMismatch(client: Self.protocolVersion, server: header.version)
             }
-            return try decoder.decode(Payload.self, from: data)
+            guard header.result == expectedResult else {
+                throw EnvelopeResultMismatch(expected: expectedResult, actual: header.result)
+            }
+            return header
         } catch let error as DaemonError {
             throw error
         } catch {
@@ -112,7 +206,8 @@ public final class DaemonClient: @unchecked Sendable {
     }
 
     private func statusError(response: HTTPURLResponse, data: Data) -> DaemonError {
-        let kind = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data))?.error.kind
+        let kind = (try? JSONDecoder().decode(StringErrorDocument.self, from: data))?.error
+            ?? (try? JSONDecoder().decode(ControlErrorDocument.self, from: data))?.kind
         return switch response.statusCode {
         case 401: .unauthorized(kind: kind)
         case 403: .forbiddenHost(kind: kind)
@@ -163,10 +258,6 @@ private struct EnvelopeResultMismatch: Error {
     let actual: String
 }
 
-private struct ErrorEnvelope: Decodable {
-    struct Payload: Decodable {
-        let kind: String?
-    }
+private struct StringErrorDocument: Decodable { let error: String }
 
-    let error: Payload
-}
+private struct ControlErrorDocument: Decodable { let kind: String }

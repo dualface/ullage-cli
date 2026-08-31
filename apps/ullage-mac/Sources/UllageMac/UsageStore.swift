@@ -122,9 +122,10 @@ final class UsageStore {
                 probingAccountIDs.remove(accountID)
                 probeTasks[accountID] = nil
             }
-            let payload = try await source.probe(accountId: accountID)
+            let result = try await source.probe(accountId: accountID, wait: true)
             try Task.checkCancellation()
             guard isActive else { return }
+            guard case .completed(let payload) = result else { return }
             if let index = snapshots.firstIndex(where: { $0.accountId == accountID }) {
                 let old = snapshots[index]
                 snapshots[index] = SnapshotPayload.replacingUsage(in: old, with: payload.usage)

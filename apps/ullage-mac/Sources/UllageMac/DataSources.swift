@@ -5,7 +5,7 @@ protocol UsageDataSource: Sendable {
     func status() async throws -> DaemonStatusPayload
     func accounts() async throws -> [Account]
     func usage() async throws -> [SnapshotPayload]
-    func probe(accountId: String) async throws -> ProbePayload
+    func probe(accountId: String, wait: Bool) async throws -> ProbeResult
 }
 
 extension DaemonClient: UsageDataSource {}
@@ -28,7 +28,7 @@ struct MockDataSource: UsageDataSource {
     }
 
     func status() async throws -> DaemonStatusPayload {
-        let data = Data("{\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
+        let data = Data("{\"version\":8,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
         return try UllageJSON.makeDecoder().decode(DaemonStatusPayload.self, from: data)
     }
 
@@ -40,11 +40,12 @@ struct MockDataSource: UsageDataSource {
         snapshots
     }
 
-    func probe(accountId: String) async throws -> ProbePayload {
+    func probe(accountId: String, wait: Bool) async throws -> ProbeResult {
         try await Task.sleep(for: .seconds(1))
         guard let snapshot = snapshots.first(where: { $0.accountId == accountId }) else {
             throw DaemonError.notFound(kind: "account_not_found")
         }
-        return ProbePayload(accountId: snapshot.accountId, usage: snapshot.usage)
+        guard wait else { return .accepted }
+        return .completed(ProbePayload(accountId: snapshot.accountId, usage: snapshot.usage))
     }
 }

@@ -59,7 +59,7 @@ public struct UsageSummary: Equatable, Sendable {
 
 public func summarize(_ usage: SubscriptionUsage) -> UsageSummary {
     UsageSummary(
-        rows: usage.windows.flatMap { summarizeWindow($0).map(\.row) },
+        rows: projectedWindows(for: usage).flatMap { $0.map(\.row) },
         limitReached: usage.windows.contains(where: windowHitItsLimit),
         observedAt: usage.observedAt,
         expiresAt: usage.subscriptionExpiresAt
@@ -67,10 +67,11 @@ public func summarize(_ usage: SubscriptionUsage) -> UsageSummary {
 }
 
 public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
-    usage.windows.enumerated()
+    let windows = projectedWindows(for: usage)
+    return usage.windows.enumerated()
         .compactMap { index, window -> (Int, Int, SummaryRow)? in
             guard let rank = overviewRank(window.window) else { return nil }
-            let rows = summarizeWindow(window)
+            let rows = windows[index]
             guard let selected = rows.first(where: { poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage" })
                 ?? rows.first(where: { $0.row.remainingRatio != nil })
                 ?? rows.first else { return nil }
@@ -80,6 +81,46 @@ public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
             lhs.0 == rhs.0 ? lhs.1 < rhs.1 : lhs.0 < rhs.0
         }
         .map(\.2)
+}
+
+private func projectedWindows(for usage: SubscriptionUsage) -> [[ProjectedRow]] {
+    let projected = usage.windows.map(summarizeWindow)
+    let kindCounts = Dictionary(grouping: usage.windows.compactMap { windowKindKey($0.window) }, by: { $0 })
+        .mapValues(\.count)
+
+    return zip(usage.windows, projected).map { window, rows in
+        guard let key = windowKindKey(window.window), kindCounts[key, default: 0] > 1,
+              let representative = representativeRow(in: rows) else { return rows }
+        let qualifiedName = windowDisplayName(window.window) + " · " + representative.row.metric
+        return rows.map { projectedRow in
+            ProjectedRow(
+                measurementName: projectedRow.measurementName,
+                row: SummaryRow(
+                    window: qualifiedName,
+                    metric: projectedRow.row.metric,
+                    value: projectedRow.row.value,
+                    resetsAt: projectedRow.row.resetsAt,
+                    remainingRatio: projectedRow.row.remainingRatio,
+                    disabled: projectedRow.row.disabled
+                )
+            )
+        }
+    }
+}
+
+private func representativeRow(in rows: [ProjectedRow]) -> ProjectedRow? {
+    rows.first(where: { poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage" })
+        ?? rows.first(where: { $0.row.remainingRatio != nil })
+        ?? rows.first
+}
+
+private func windowKindKey(_ window: UsageWindowKind) -> String? {
+    switch window {
+    case .fiveHours: "five_hours"
+    case .weekly: "weekly"
+    case .monthly: "monthly"
+    case .other, .unknown: nil
+    }
 }
 
 private struct ProjectedRow {
