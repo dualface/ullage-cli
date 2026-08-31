@@ -147,6 +147,7 @@ private struct TabBar: View {
             .foregroundStyle(enabled ? .primary : .tertiary)
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 }
 
@@ -217,6 +218,7 @@ private struct AccountView: View {
                         }
                     }
                     .disabled(store.probingAccountIDs.contains(accountID) || store.isRateLimited(accountID))
+                    .focusEffectDisabled()
                     Spacer()
                     Text("last error: \(errorKind(snapshot.lastError))")
                         .font(.caption)
@@ -350,7 +352,10 @@ struct EmptyStateView: View {
                 .foregroundStyle(.secondary)
             Text(title).font(.headline)
             if let detail { Text(detail).multilineTextAlignment(.center).foregroundStyle(.secondary) }
-            if let actionTitle, let action { Button(actionTitle, action: action) }
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .focusEffectDisabled()
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 180)
     }
