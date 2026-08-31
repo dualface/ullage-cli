@@ -182,8 +182,8 @@ private func remainingRatio(_ value: SummaryValue) -> Double? {
 private func windowDisplayName(_ window: UsageWindowKind) -> String {
     return switch window {
     case .fiveHours: "5h"
-    case .weekly: "Weekly"
-    case .monthly: "Monthly"
+    case .weekly: "weekly"
+    case .monthly: "monthly"
     case .other(let id, let label): label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? id : label
     case .unknown(let kind): kind
     }

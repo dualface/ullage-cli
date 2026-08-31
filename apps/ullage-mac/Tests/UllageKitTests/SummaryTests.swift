@@ -56,16 +56,16 @@ private func date(_ value: String) throws -> Date {
     let cursorReset = try date("2026-09-01T00:00:00Z")
     #expect(cursor.rows == [
         SummaryRow(
-            window: "Monthly", metric: "total spend",
+            window: "monthly", metric: "total spend",
             value: .spent(amount: 3, limit: 20, currency: Currency(code: "USD")),
             resetsAt: cursorReset, remainingRatio: 0.85, disabled: false
         ),
         SummaryRow(
-            window: "Monthly", metric: "usage", value: .remains(85),
+            window: "monthly", metric: "usage", value: .remains(85),
             resetsAt: cursorReset, remainingRatio: 0.85, disabled: false
         ),
         SummaryRow(
-            window: "Monthly", metric: "on demand spend",
+            window: "monthly", metric: "on demand spend",
             value: .spent(amount: 0, limit: 50, currency: Currency(code: "USD")),
             resetsAt: cursorReset, remainingRatio: 1, disabled: true
         ),
@@ -74,12 +74,12 @@ private func date(_ value: String) throws -> Date {
     let grok = summarize(try usage("grok"))
     #expect(grok.rows == [
         SummaryRow(
-            window: "Weekly", metric: "GrokBuild", value: .used(61),
+            window: "weekly", metric: "GrokBuild", value: .used(61),
             resetsAt: try date("2026-09-04T01:18:04.090314+00:00"),
             remainingRatio: nil, disabled: false
         ),
         SummaryRow(
-            window: "Monthly", metric: "monthly credits", value: .credits(used: 285, limit: 1000),
+            window: "monthly", metric: "monthly credits", value: .credits(used: 285, limit: 1000),
             resetsAt: nil, remainingRatio: 0.715, disabled: false
         ),
         SummaryRow(
@@ -104,8 +104,8 @@ private func date(_ value: String) throws -> Date {
 
     let grokRows = overviewRows(for: try usage("grok"))
     #expect(grokRows.count == 2)
-    #expect(grokRows[0].window == "Weekly")
+    #expect(grokRows[0].window == "weekly")
     #expect(grokRows[0].metric == "GrokBuild")
-    #expect(grokRows[1].window == "Monthly")
+    #expect(grokRows[1].window == "monthly")
     #expect(!grokRows.contains(where: { $0.window == "Extra Usage Credits" }))
 }
