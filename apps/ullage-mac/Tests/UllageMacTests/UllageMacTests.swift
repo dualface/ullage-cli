@@ -46,6 +46,20 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(moneyText(12.5, "SEK"), "SEK 12.50")
     }
 
+    func testDumpContainsBothProjectionsWithoutLabels() throws {
+        let snapshots = try UllageFixtures.snapshots()
+        let accounts = snapshots.compactMap { snapshot in
+            snapshot.usage.data.map {
+                Account(id: snapshot.accountId, provider: $0.provider, label: "private label", enabled: true)
+            }
+        }
+        let output = dumpOutput(accounts: accounts, snapshots: snapshots)
+        XCTAssertTrue(output.hasPrefix("OVERVIEW\n"))
+        XCTAssertTrue(output.contains("\nACCOUNTS\n"))
+        XCTAssertTrue(output.contains("weekly · Codex"))
+        XCTAssertFalse(output.contains("private label"))
+    }
+
     func testPopoverSizingDefaultsAndClampsHeight() {
         var sizing = PopoverSizing()
         XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 260))

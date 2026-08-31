@@ -37,6 +37,8 @@ or run it with the bundled fixture data:
 open apps/ullage-mac/build/Ullage.app
 open apps/ullage-mac/build/Ullage.app --args --mock
 ULLAGE_MOCK=1 apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac
+apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump
+apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 ```
 
 The normal client reads the server URL from its Settings panel. The URL must be
@@ -49,11 +51,42 @@ stores it in the macOS Keychain rather than `UserDefaults`.
 from the application bundle. Copy `Ullage.app` to `/Applications` or
 `~/Applications` before enabling it so the registered path remains stable.
 
-This is the mock-data stage of Ullage Mac. The real daemon HTTP integration is
-scheduled for the next stage, so use `--mock` or `ULLAGE_MOCK=1` to exercise the
-complete interface today. Intel Macs are not supported. The bundle receives an
-ad-hoc signature for local use; it has no Developer ID signature and is not
-notarized.
+`--dump` fetches the same accounts and usage projection as the menu bar UI and
+prints it without starting AppKit. `--mock` and `ULLAGE_MOCK=1` remain available
+for demonstrations with bundled fixtures. Intel Macs are not supported. The
+bundle receives an ad-hoc signature for local use; it has no Developer ID
+signature and is not notarized.
+
+### Connecting to the daemon
+
+Set `http.enabled` to `true` in the daemon configuration, restart the daemon,
+and obtain its bearer token without copying it into a script or log:
+
+```sh
+ullage daemon stop
+ullage daemon start
+ullage http token
+```
+
+Open Ullage Mac Settings, leave the default `http://127.0.0.1:7878` server URL
+(or use `http://localhost:7878`), paste the token, and select **Save** or
+**Test connection**. The token is stored in the current macOS user's Keychain.
+
+When the daemon runs on another machine, keep the HTTP listener on loopback and
+forward it over SSH. Run either a local forward from the Mac:
+
+```sh
+ssh -N -L 7878:127.0.0.1:7878 daemon-host
+```
+
+or a reverse forward from the daemon machine to the Mac:
+
+```sh
+ssh -N -R 7878:127.0.0.1:7878 mac-host
+```
+
+Do not enable `GatewayPorts`; Ullage Mac accepts only loopback HTTP URLs and the
+daemon rejects non-loopback Host headers.
 
 Default paths:
 

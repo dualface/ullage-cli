@@ -59,9 +59,11 @@ into `Contents/Resources` so both tests and mock mode use the same canonical fix
 
 The client accesses daemon data only through the loopback HTTP API; it does not read Rust state,
 credentials, snapshots, or the private control socket directly. Its bearer token is stored as a
-generic password in the macOS Keychain with device-local, unlocked-only accessibility. The current
-stage uses the executable-owned `UsageDataSource` boundary with bundled mock fixtures. Real HTTP
-behavior and compatibility validation belong to `20260831-mac-http-integration-task`.
+generic password in the macOS Keychain with device-local, unlocked-only accessibility. The
+executable-owned `UsageDataSource` boundary selects either the real `DaemonClient` or bundled mock
+fixtures. HTTP responses require the version 8 result envelope, probes distinguish acknowledged
+and completed responses, and the headless `--dump` path reuses the same summary projection as the
+menu bar UI.
 
 ## Dependency rules
 

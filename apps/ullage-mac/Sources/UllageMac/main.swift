@@ -1,7 +1,15 @@
 import AppKit
+import Foundation
 
-let application = NSApplication.shared
-let delegate = AppDelegate()
-application.delegate = delegate
-application.setActivationPolicy(.accessory)
-application.run()
+if ProcessInfo.processInfo.arguments.contains("--dump") {
+    Task { @MainActor in
+        exit(await DumpCommand.run())
+    }
+    dispatchMain()
+} else {
+    let application = NSApplication.shared
+    let delegate = AppDelegate()
+    application.delegate = delegate
+    application.setActivationPolicy(.accessory)
+    application.run()
+}
