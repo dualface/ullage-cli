@@ -57,11 +57,12 @@ asset is required. Set the build palette with `ICON_PALETTE`, for example:
 make -C apps/ullage-mac bundle ICON_PALETTE=paper
 ```
 
-The normal client reads the server URL from its Settings panel. The URL may be
-an HTTP loopback or Tailscale address and defaults to `http://127.0.0.1:7878`.
-Enable the daemon's HTTP interface as described under Configuration, print its
-bearer token with `ullage http token`, and paste that token into Settings. The
-client stores it in the macOS Keychain rather than `UserDefaults`.
+The normal client reads the server URL from its Settings panel. The current
+client accepts an HTTP loopback address and defaults to
+`http://127.0.0.1:7878`. Enable the daemon's HTTP interface as described under
+Configuration, print its bearer token with `ullage http token`, and paste that
+token into Settings. The client stores it in the macOS Keychain rather than
+`UserDefaults`.
 
 `Launch at Login` is available from the status-item menu when Ullage is running
 from the application bundle. Copy `Ullage.app` to `/Applications` or
@@ -130,10 +131,12 @@ Open Ullage Mac Settings, leave the default `http://127.0.0.1:7878` server URL
 (or use `http://localhost:7878`), paste the token, and select **Save** or
 **Test connection**. The token is stored in the current macOS user's Keychain.
 
-When both machines are in the same tailnet, set the daemon's `http.bind` to its
-Tailscale IPv4 address and set the Mac server URL to
-`http://<tailscale-ipv4>:7878`. Traffic stays inside Tailscale's encrypted
-WireGuard tunnel; Ullage does not add TLS.
+When both machines are in the same tailnet, the daemon HTTP API can bind its
+Tailscale IPv4 address and generic HTTP clients can connect to
+`http://<tailscale-ipv4>:7878`. A Mac build with Tailscale URL support uses the
+same server URL. Traffic stays inside Tailscale's encrypted WireGuard tunnel;
+Ullage does not add TLS. The current Mac client still accepts only loopback
+URLs, so use the SSH alternative below until that client support is installed.
 
 As an alternative, keep the HTTP listener on loopback and forward it over SSH.
 Run either a local forward from the Mac:
@@ -257,8 +260,9 @@ ullage http token --rotate
 The token is a 256-bit value stored as `http-token` next to the state file,
 owned by the current user (`0600` / protected DACL). A permission mismatch
 refuses to start or rotate rather than repairing the file. The HTTP server
-accepts only Host values `127.0.0.1:<port>` and `localhost:<port>` (plus the
-actual bind address). `http.allowed_origins` is empty by default:
+accepts only Host values `127.0.0.1:<port>`, `localhost:<port>`, and the actual
+bind address; an IPv6 listener additionally accepts `[::1]:<port>`.
+`http.allowed_origins` is empty by default:
 matching origins are echoed with `Vary: Origin`; unmatched origins get no
 CORS headers. The server never returns `Access-Control-Allow-Origin: *` or
 `Access-Control-Allow-Credentials: true`. Remote access may use a direct

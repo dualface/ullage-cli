@@ -68,7 +68,7 @@ and a secure timestamp, then use the `notarize` target to submit, staple, and pa
 Remote distribution signing runs inside a user-provided tmux session created by the Mac GUI login
 session; the remote workflow passes only identity and Keychain profile names, never credentials.
 
-The client accesses daemon data only through the loopback or Tailscale HTTP API; it does not read Rust state,
+The current client accesses daemon data only through the loopback HTTP API; it does not read Rust state,
 credentials, snapshots, or the private control socket directly. Its bearer token is stored as a
 generic password in the macOS Keychain with device-local, unlocked-only accessibility. The
 executable-owned `UsageDataSource` boundary selects either the real `DaemonClient` or bundled mock
@@ -200,17 +200,18 @@ workspace commands are not exposed.
 
 Security model:
 
-- Bind address must be loopback or in Tailscale's `100.64.0.0/10` or
-  `fd7a:115c:a1e0::/48` ranges. Other `http.bind` values fail configuration loading and name that
-  setting. A Tailscale address that is temporarily unavailable is retried for up to 60 seconds.
+- When `http.enabled` is true, the bind address must be loopback or in Tailscale's
+  `100.64.0.0/10` or `fd7a:115c:a1e0::/48` ranges. Other `http.bind` values fail configuration
+  loading and name that setting. A Tailscale address that is temporarily unavailable is retried for
+  up to 60 seconds.
   Non-loopback traffic is limited to the tailnet and encrypted by WireGuard; Ullage does not add TLS.
 - Token: 256-bit `getrandom`, base64url, stored as `http-token` next to the state file. Unix
   files must be current-user-owned `0600`; Windows files use the same protected DACL primitive as
   credentials and snapshots. Permission mismatches refuse to start or rotate and are not repaired
   in place. Comparison is constant-time. `ullage http token --rotate` replaces the file so a
   running daemon rejects the old token on the next request.
-- Host whitelist: `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`, and the actual bind address.
-  Other Host values return 403.
+- Host whitelist: `127.0.0.1:<port>`, `localhost:<port>`, and the actual bind address. An IPv6
+  listener additionally accepts `[::1]:<port>`. Other Host values return 403.
 - CORS: `http.allowed_origins` defaults to empty. A matching Origin is echoed with `Vary:
   Origin`. Unmatched origins receive no `Access-Control-Allow-*` headers. The server never
   returns `*` or `Access-Control-Allow-Credentials: true`. OPTIONS preflight is supported. CORS
