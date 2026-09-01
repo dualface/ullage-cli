@@ -67,6 +67,7 @@ The executable also owns the shared Swift/CoreGraphics U-vessel drawing implemen
 template menu bar mark and full-color application icon. `UllageMark.Palette` owns the six canonical
 application-icon palettes and their glass-rendering colors. The template variant uses dedicated
 geometry to remain legible at 18 points, while the application icon retains its full-color geometry. Its
+usage progress bars use fixed semantic colors selected solely by each row's remaining-percentage tier.
 headless `--render-iconset` command produces the ten standard PNG renditions during `bundle`;
 `iconutil` converts them to `AppIcon.icns` before the bundle is signed, so the repository does not
 carry generated SVG or bitmap icon assets. Bundle signing is

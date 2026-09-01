@@ -46,7 +46,7 @@ implementation in the `UllageMac` executable. The menu bar variant uses
 dedicated geometry for legibility at 18 points. The glass application icon has
 six built-in palettes: Amber, Oxblood, Propellant, Copper, Paper, and Plum;
 Oxblood is the default. The runtime choice in Settings updates the icon used by
-the About panel and system dialogs, as well as the healthy usage-bar color.
+the About panel and system dialogs.
 Finder and Launchpad use the signed `AppIcon.icns`, so that palette is selected
 at build time instead. During `bundle`, the executable renders the standard
 ten-file `build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and

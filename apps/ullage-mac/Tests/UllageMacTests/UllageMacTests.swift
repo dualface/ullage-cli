@@ -175,11 +175,11 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
-    func testProgressColorsUseOnlyTheHealthyPaletteColor() {
-        XCTAssertEqual(rgbHex(progressColor(for: .healthy, palette: .plum)), 0xF6B26B)
-        XCTAssertEqual(progressColor(for: .caution, palette: .plum), .systemYellow)
-        XCTAssertEqual(progressColor(for: .low, palette: .plum), .systemOrange)
-        XCTAssertEqual(progressColor(for: .critical, palette: .plum), .systemRed)
+    func testProgressColorsUseSemanticTierColors() {
+        XCTAssertEqual(progressColor(for: .healthy), .systemGreen)
+        XCTAssertEqual(progressColor(for: .caution), .systemYellow)
+        XCTAssertEqual(progressColor(for: .low), .systemOrange)
+        XCTAssertEqual(progressColor(for: .critical), .systemRed)
     }
 
     func testLoginItemRequiresApplicationBundle() {
