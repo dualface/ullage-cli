@@ -166,8 +166,8 @@ private struct OverviewView: View {
                         timestampLabel: "updated",
                         timestamp: snapshot.lastSuccessAt
                     )
-                    ForEach(overviewRows(for: usage), id: \.window) { row in
-                        SummaryRowView(row: row)
+                    ForEach(overviewItems(for: usage)) { item in
+                        SummaryRowView(row: item.row)
                     }
                     Divider()
                 }

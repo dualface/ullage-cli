@@ -222,6 +222,33 @@ private func date(_ value: String) throws -> Date {
     #expect(rows.map(\.metric) == ["usage", "requests"])
 }
 
+@Test func overviewItemsKeepUniqueStableIDsForDuplicateDisplayNames() throws {
+    let data = Data(#"""
+    {
+      "provider":"test","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"five_hours"},"resets_at":"2026-09-01T05:00:00Z","measurements":[
+          {"name":"usage","used":10,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"five_hours"},"resets_at":"2026-09-01T10:00:00Z","measurements":[
+          {"name":"usage","used":20,"limit":100,"unit":{"kind":"percent"}}
+        ]}
+      ]
+    }
+    """#.utf8)
+    let usage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: data)
+    let updatedData = Data(String(decoding: data, as: UTF8.self)
+        .replacingOccurrences(of: "\"used\":10", with: "\"used\":30")
+        .utf8)
+    let updatedUsage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: updatedData)
+
+    let items = overviewItems(for: usage)
+    #expect(items.map(\.row.window) == ["5h · usage", "5h · usage"])
+    #expect(Set(items.map(\.id)).count == 2)
+    #expect(items.map(\.id) == overviewItems(for: updatedUsage).map(\.id))
+}
+
 @Test func overviewKeepsAllOtherAndUnknownWindowsWhenTheyAreTheOnlyTier() throws {
     let data = Data(#"""
     {
@@ -234,6 +261,9 @@ private func date(_ value: String) throws -> Date {
         {"window":{"kind":"other","id":"custom","label":"Custom quota"},"resets_at":null,"measurements":[
           {"name":"usage","used":20,"limit":100,"unit":{"kind":"percent"}}
         ]},
+        {"window":{"kind":"other","id":"custom-2","label":"Custom quota"},"resets_at":null,"measurements":[
+          {"name":"usage","used":30,"limit":100,"unit":{"kind":"percent"}}
+        ]},
         {"window":{"kind":"future_status"},"resets_at":null,"measurements":[
           {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
         ]}
@@ -242,9 +272,11 @@ private func date(_ value: String) throws -> Date {
     """#.utf8)
     let usage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: data)
 
-    let rows = overviewRows(for: usage)
-    #expect(rows.map(\.window) == ["daily", "Custom quota", "future_status"])
-    #expect(rows.map(\.remainingRatio) == [0.9, 0.8, 0])
+    let items = overviewItems(for: usage)
+    let rows = items.map(\.row)
+    #expect(rows.map(\.window) == ["daily", "Custom quota", "Custom quota", "future_status"])
+    #expect(rows.map(\.remainingRatio) == [0.9, 0.8, 0.7, 0])
+    #expect(Set(items.map(\.id)).count == items.count)
 }
 
 @Test func menuBarFillUsesTheMinimumAcrossEnabledAccounts() throws {

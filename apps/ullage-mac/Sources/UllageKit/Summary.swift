@@ -57,6 +57,17 @@ public struct UsageSummary: Equatable, Sendable {
     public var isEmpty: Bool { rows.isEmpty }
 }
 
+public struct OverviewItem: Equatable, Identifiable, Sendable {
+    public struct ID: Hashable, Sendable {
+        fileprivate let windowKey: String
+        fileprivate let measurementName: String
+        fileprivate let occurrence: Int
+    }
+
+    public let id: ID
+    public let row: SummaryRow
+}
+
 public func badgeNames(
     account: Account,
     snapshot: SnapshotPayload,
@@ -100,18 +111,50 @@ public func summarize(_ usage: SubscriptionUsage) -> UsageSummary {
 }
 
 public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
+    overviewItems(for: usage).map(\.row)
+}
+
+public func overviewItems(for usage: SubscriptionUsage) -> [OverviewItem] {
     let windows = projectedWindows(for: usage)
+    var occurrences: [OverviewIdentityBase: Int] = [:]
     return overviewWindowIndexes(for: usage)
-        .compactMap { index -> SummaryRow? in
+        .compactMap { index -> OverviewItem? in
             let window = usage.windows[index]
             let rows = windows[index]
-            guard let selected = rows.first(where: { poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage" })
+            let selected = rows.first(where: { poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage" })
                 ?? rows.first(where: { $0.row.remainingRatio != nil })
-                ?? rows.first else {
-                return overviewFallbackRow(for: window)
-            }
-            return selected.row
+                ?? rows.first
+            guard let row = selected?.row ?? overviewFallbackRow(for: window) else { return nil }
+            let identity = OverviewIdentityBase(
+                windowKey: overviewIdentityKey(window.window),
+                measurementName: selected?.measurementName ?? row.metric
+            )
+            let occurrence = occurrences[identity, default: 0]
+            occurrences[identity] = occurrence + 1
+            return OverviewItem(
+                id: OverviewItem.ID(
+                    windowKey: identity.windowKey,
+                    measurementName: identity.measurementName,
+                    occurrence: occurrence
+                ),
+                row: row
+            )
         }
+}
+
+private struct OverviewIdentityBase: Hashable {
+    let windowKey: String
+    let measurementName: String
+}
+
+private func overviewIdentityKey(_ window: UsageWindowKind) -> String {
+    switch window {
+    case .fiveHours: "five_hours"
+    case .weekly: "weekly"
+    case .monthly: "monthly"
+    case .other(let id, _): "other:" + id
+    case .unknown(let kind): "unknown:" + kind
+    }
 }
 
 private func overviewWindowIndexes(for usage: SubscriptionUsage) -> [Int] {
