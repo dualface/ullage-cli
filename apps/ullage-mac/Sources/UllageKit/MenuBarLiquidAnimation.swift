@@ -4,7 +4,7 @@ import Foundation
 public enum MenuBarLiquidMotionGate: Equatable, Sendable {
     /// AC power and reduce-motion off: wobble and height easing may run.
     case animate
-    /// Battery or reduce-motion: freeze at the current displayed height.
+    /// Battery or reduce-motion: snap to and hold the current target height.
     case freeze
     /// Error / no data: stop motion; caller draws the exclamation mark.
     case stop

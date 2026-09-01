@@ -97,12 +97,14 @@ enum UllageMark {
     static func menuBarImage(
         fillRatio: Double?,
         wavePhase: Double = 0,
-        accountLabel: String? = nil
+        accountLabel: String? = nil,
+        accessibilityRatio: Double? = nil
     ) -> NSImage {
         let quantizedRatio = fillRatio.map(quantizedMenuBarFillRatio)
+        let accessibilityValue = (accessibilityRatio ?? fillRatio).map(quantizedMenuBarFillRatio)
         let description: String
-        if let quantizedRatio {
-            let percent = "Ullage — \(Int((quantizedRatio * 100).rounded()))% remaining"
+        if let accessibilityValue {
+            let percent = "Ullage — \(Int((accessibilityValue * 100).rounded()))% remaining"
             if let accountLabel, !accountLabel.isEmpty {
                 description = percent + " · " + accountLabel
             } else {
@@ -478,11 +480,14 @@ enum UllageMark {
         vessel.addLine(to: CGPoint(x: 88, y: 6))
 
         if let fillRatio {
-            drawTemplateLiquidStroke(
-                in: context,
-                fillRatio: min(max(fillRatio, 0), 1),
-                wavePhase: wavePhase
-            )
+            let clamped = min(max(fillRatio, 0), 1)
+            if clamped > 0 {
+                drawTemplateLiquidStroke(
+                    in: context,
+                    fillRatio: clamped,
+                    wavePhase: wavePhase
+                )
+            }
         } else {
             context.setFillColor(NSColor.black.withAlphaComponent(0.65).cgColor)
             context.addPath(CGPath(

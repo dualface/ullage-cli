@@ -74,10 +74,11 @@ Overview uses a provider-specific catalog (ChatGPT weekly and reset credits, Cla
 Cursor auto and api, Grok usage and GrokBuild). Unknown providers keep every window in the shortest
 available time tier, and a reached limit in those retained windows takes precedence as 0% for that
 account while still participating in rotation.
-The headless dump still reports the global minimum usable Overview ratio across enabled accounts,
-while account tabs retain all windows. The mark shows an exclamation point after the first refresh
-when no usable ratio remains or the connection is in an error state, and stops animation. The
-application icon retains its full-color geometry and static filled liquid level.
+The headless dump retains the per-account Overview projection used by account tabs,
+while the menu bar cycles those same per-account levels. The mark shows an exclamation
+point after the first refresh when no usable ratio remains or the connection is in an
+error state, and stops animation. The application icon retains its full-color geometry
+and static filled liquid level.
 The macOS app's usage progress bars use ten cells of 10% each and fill remaining quota from the
 right, including a partial last cell (5% remaining paints half of one cell). Colors are fixed
 semantic values selected solely by each row's remaining-percentage tier. The executable's headless `--render-iconset` command produces the ten

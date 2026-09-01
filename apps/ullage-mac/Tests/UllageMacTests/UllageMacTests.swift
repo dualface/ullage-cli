@@ -79,6 +79,19 @@ final class UllageMacTests: XCTestCase {
             let alpha = try XCTUnwrap(representation.colorAt(x: xPixel, y: yPixel)).alphaComponent
             XCTAssertLessThanOrEqual(alpha, 0.05, "Unexpected liquid fill at y=\(y)")
         }
+        let phaseA = try pngData(rasterizedMenuBarImage(fillRatio: 0, wavePhase: 0))
+        let phaseB = try pngData(rasterizedMenuBarImage(fillRatio: 0, wavePhase: .pi / 2))
+        XCTAssertEqual(phaseA, phaseB, "Zero fill must not draw a wobbling stroke")
+    }
+
+    @MainActor
+    func testMenuBarAccessibilityUsesTargetRatioDuringTransitions() {
+        let image = UllageMark.menuBarImage(
+            fillRatio: 0.4,
+            accountLabel: "Claude",
+            accessibilityRatio: 0.8
+        )
+        XCTAssertEqual(image.accessibilityDescription, "Ullage — 80% remaining · Claude")
     }
 
     @MainActor

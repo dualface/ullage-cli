@@ -15,9 +15,11 @@ final class StatusItemController: NSObject {
     private var menuBarMode = MenuBarPresentation.initial
     private var animationState = MenuBarLiquidAnimationState()
     private var animationTimer: Timer?
+    private var lastTickUptime: TimeInterval?
     private var lastMotionGate: MenuBarLiquidMotionGate?
     private var reduceMotionObserver: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
+    private var powerSourceRunLoopSource: CFRunLoopSource?
 
     private enum MenuBarPresentation: Equatable {
         case initial
@@ -42,6 +44,7 @@ final class StatusItemController: NSObject {
         button.action = #selector(handleStatusItem(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         observeWorkspaceGates()
+        startPowerSourceMonitoring()
         observeStore()
     }
 
@@ -69,6 +72,22 @@ final class StatusItemController: NSObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.reconcileAnimationTimer() }
         }
+    }
+
+    private func startPowerSourceMonitoring() {
+        guard powerSourceRunLoopSource == nil else { return }
+        let callback: IOPowerSourceCallbackType = { context in
+            guard let context else { return }
+            let controller = Unmanaged<StatusItemController>.fromOpaque(context).takeUnretainedValue()
+            Task { @MainActor in
+                controller.reconcileAnimationTimer()
+            }
+        }
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        guard let source = IOPSNotificationCreateRunLoopSource(callback, context)?.takeRetainedValue()
+        else { return }
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        powerSourceRunLoopSource = source
     }
 
     private func refreshPresentationFromStore() {
@@ -105,8 +124,7 @@ final class StatusItemController: NSObject {
             if !wasLiquid {
                 seedAnimation(with: levels)
             }
-            startAnimationTimerIfNeeded()
-            renderLiquidFrame(levels: levels)
+            reconcileAnimationTimer()
         }
     }
 
@@ -148,12 +166,24 @@ final class StatusItemController: NSObject {
             stopAnimationTimer()
             return
         }
-        startAnimationTimerIfNeeded()
-        renderLiquidFrame(levels: levels)
+        let gate = motionGate()
+        animationState = MenuBarLiquidAnimation.advance(
+            state: animationState,
+            levels: levels,
+            gate: gate,
+            dt: 0
+        )
+        applyLiquidImage(gate: gate)
+        if gate == .animate {
+            startAnimationTimerIfNeeded()
+        } else {
+            stopAnimationTimer()
+        }
     }
 
     private func startAnimationTimerIfNeeded() {
         guard animationTimer == nil else { return }
+        lastTickUptime = ProcessInfo.processInfo.systemUptime
         let interval = MenuBarLiquidAnimation.tickInterval()
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tickAnimation() }
@@ -166,6 +196,7 @@ final class StatusItemController: NSObject {
     private func stopAnimationTimer() {
         animationTimer?.invalidate()
         animationTimer = nil
+        lastTickUptime = nil
     }
 
     private func tickAnimation() {
@@ -174,30 +205,19 @@ final class StatusItemController: NSObject {
             return
         }
         let gate = motionGate()
-        let previous = animationState
-        animationState = MenuBarLiquidAnimation.advance(
-            state: animationState,
-            levels: levels,
-            gate: gate,
-            dt: gate == .animate ? MenuBarLiquidAnimation.tickInterval() : 0
-        )
-        let gateChanged = lastMotionGate != gate
-        let stateChanged = previous.displayedRatio != animationState.displayedRatio
-            || previous.accountID != animationState.accountID
-            || previous.targetRatio != animationState.targetRatio
-            || previous.wavePhase != animationState.wavePhase
-        if gate == .animate || gateChanged || stateChanged {
-            applyLiquidImage(gate: gate)
+        guard gate == .animate else {
+            reconcileAnimationTimer()
+            return
         }
-    }
-
-    private func renderLiquidFrame(levels: [MenuBarAccountLevel]) {
-        let gate = motionGate()
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = lastTickUptime.map { now - $0 } ?? MenuBarLiquidAnimation.tickInterval()
+        lastTickUptime = now
+        let dt = min(max(elapsed, 0), 0.5)
         animationState = MenuBarLiquidAnimation.advance(
             state: animationState,
             levels: levels,
             gate: gate,
-            dt: 0
+            dt: dt
         )
         applyLiquidImage(gate: gate)
     }
@@ -207,7 +227,8 @@ final class StatusItemController: NSObject {
         statusItem.button?.image = UllageMark.menuBarImage(
             fillRatio: animationState.displayedRatio,
             wavePhase: gate == .animate ? animationState.wavePhase : 0,
-            accountLabel: animationState.displayName
+            accountLabel: animationState.displayName,
+            accessibilityRatio: animationState.targetRatio
         )
     }
 
