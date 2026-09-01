@@ -338,34 +338,70 @@ private func overviewFallbackRow(for window: UsageWindow) -> SummaryRow? {
     )
 }
 
+/// One enabled account that has a countable Overview remaining ratio for the menu bar.
+public struct MenuBarAccountLevel: Equatable, Sendable {
+    public let accountID: String
+    public let displayName: String
+    public let remainingRatio: Double
+
+    public init(accountID: String, displayName: String, remainingRatio: Double) {
+        self.accountID = accountID
+        self.displayName = displayName
+        self.remainingRatio = remainingRatio
+    }
+}
+
+/// Enabled accounts with countable Overview rows, in stable account order.
+/// `limitReached` (or an empty remaining) yields `0` and still participates.
+public func menuBarAccountLevels(
+    accounts: [Account],
+    snapshots: [SnapshotPayload]
+) -> [MenuBarAccountLevel] {
+    let titles = tabTitles(for: accounts)
+    let snapshotsByID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.accountId, $0) })
+    return sortedAccounts(accounts.filter(\.enabled)).compactMap { account in
+        guard let snapshot = snapshotsByID[account.id],
+              let usage = snapshot.usage.data,
+              let ratio = menuBarFillRatio(for: usage) else { return nil }
+        return MenuBarAccountLevel(
+            accountID: account.id,
+            displayName: titles[account.id] ?? providerDisplayName(account.provider),
+            remainingRatio: ratio
+        )
+    }
+}
+
 public func menuBarFillRatio(
     accounts: [Account],
     snapshots: [SnapshotPayload]
 ) -> Double? {
-    let enabledAccountIDs = Set(accounts.lazy.filter(\.enabled).map(\.id))
-    var minimumRatio: Double?
-
-    for snapshot in snapshots where enabledAccountIDs.contains(snapshot.accountId) {
-        guard let usage = snapshot.usage.data else { continue }
-        let projected = projectedWindows(for: usage)
-        let selections = overviewSelections(windows: projected, usage: usage)
-        if selections.contains(where: { windowHitItsLimit(usage.windows[$0.windowIndex]) }) { return 0 }
-
-        for selection in selections {
-            let window = usage.windows[selection.windowIndex]
-            let row = selection.projected?.row
-                ?? (selection.usesRepresentative ? overviewFallbackRow(for: window) : nil)
-            guard let row, !row.disabled, let ratio = row.remainingRatio else { continue }
-            minimumRatio = min(minimumRatio ?? ratio, ratio)
-        }
-    }
-
-    return minimumRatio
+    let levels = menuBarAccountLevels(accounts: accounts, snapshots: snapshots)
+    guard !levels.isEmpty else { return nil }
+    return levels.map(\.remainingRatio).min()
 }
 
 public func quantizedMenuBarFillRatio(_ ratio: Double) -> Double {
     let clampedRatio = min(max(ratio.isFinite ? ratio : 0, 0), 1)
     return (clampedRatio * 20).rounded() / 20
+}
+
+private func menuBarFillRatio(for usage: SubscriptionUsage) -> Double? {
+    let projected = projectedWindows(for: usage)
+    let selections = overviewSelections(windows: projected, usage: usage)
+    guard !selections.isEmpty else { return nil }
+    if selections.contains(where: { windowHitItsLimit(usage.windows[$0.windowIndex]) }) {
+        return 0
+    }
+
+    var minimumRatio: Double?
+    for selection in selections {
+        let window = usage.windows[selection.windowIndex]
+        let row = selection.projected?.row
+            ?? (selection.usesRepresentative ? overviewFallbackRow(for: window) : nil)
+        guard let row, !row.disabled, let ratio = row.remainingRatio else { continue }
+        minimumRatio = min(minimumRatio ?? ratio, ratio)
+    }
+    return minimumRatio
 }
 
 private func projectedWindows(for usage: SubscriptionUsage) -> [[ProjectedRow]] {

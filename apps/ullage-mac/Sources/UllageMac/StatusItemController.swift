@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.ps
 import Observation
 import ServiceManagement
 import UllageKit
@@ -11,11 +12,16 @@ final class StatusItemController: NSObject {
     private let mode: AppMode
     private var popoverController: PopoverController?
     private var settingsController: SettingsPanelController?
-    private var menuBarIconState = MenuBarIconState.initial
+    private var menuBarMode = MenuBarPresentation.initial
+    private var animationState = MenuBarLiquidAnimationState()
+    private var animationTimer: Timer?
+    private var lastMotionGate: MenuBarLiquidMotionGate?
+    private var reduceMotionObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
 
-    private enum MenuBarIconState: Equatable {
+    private enum MenuBarPresentation: Equatable {
         case initial
-        case fill(Double)
+        case liquid([MenuBarAccountLevel])
         case noData
     }
 
@@ -35,45 +41,174 @@ final class StatusItemController: NSObject {
         button.target = self
         button.action = #selector(handleStatusItem(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        observeWorkspaceGates()
         observeStore()
     }
 
     private func observeStore() {
         withObservationTracking {
-            updateMenuBarImage()
+            refreshPresentationFromStore()
         } onChange: { [weak self] in
             Task { @MainActor in self?.observeStore() }
         }
     }
 
-    private func updateMenuBarImage() {
+    private func observeWorkspaceGates() {
+        let center = NSWorkspace.shared.notificationCenter
+        reduceMotionObserver = center.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.reconcileAnimationTimer() }
+        }
+        wakeObserver = center.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.reconcileAnimationTimer() }
+        }
+    }
+
+    private func refreshPresentationFromStore() {
         let accounts = store.accounts
         let snapshots = store.snapshots
         let connectionState = store.connectionState
-        let state: MenuBarIconState
+        let presentation: MenuBarPresentation
         if store.lastRefreshedAt == nil {
-            state = .initial
+            presentation = .initial
         } else if connectionState.hasMenuBarData {
-            if let ratio = menuBarFillRatio(accounts: accounts, snapshots: snapshots) {
-                state = .fill(quantizedMenuBarFillRatio(ratio))
-            } else {
-                state = .noData
-            }
+            let levels = menuBarAccountLevels(accounts: accounts, snapshots: snapshots)
+            presentation = levels.isEmpty ? .noData : .liquid(levels)
         } else if connectionState == .loading {
             return
         } else {
-            state = .noData
+            presentation = .noData
         }
-        guard state != menuBarIconState, let button = statusItem.button else { return }
-        menuBarIconState = state
-        switch state {
+
+        let wasLiquid: Bool
+        if case .liquid = menuBarMode {
+            wasLiquid = true
+        } else {
+            wasLiquid = false
+        }
+        menuBarMode = presentation
+        switch presentation {
         case .initial:
-            button.image = UllageMark.menuBarImage()
-        case .fill(let ratio):
-            button.image = UllageMark.menuBarImage(fillRatio: ratio)
+            stopAnimationTimer()
+            statusItem.button?.image = UllageMark.menuBarImage()
         case .noData:
-            button.image = UllageMark.menuBarImage(fillRatio: nil)
+            stopAnimationTimer()
+            statusItem.button?.image = UllageMark.menuBarImage(fillRatio: nil)
+        case .liquid(let levels):
+            if !wasLiquid {
+                seedAnimation(with: levels)
+            }
+            startAnimationTimerIfNeeded()
+            renderLiquidFrame(levels: levels)
         }
+    }
+
+    private func seedAnimation(with levels: [MenuBarAccountLevel]) {
+        let index: Int
+        if let accountID = animationState.accountID,
+           let existing = levels.firstIndex(where: { $0.accountID == accountID }) {
+            index = existing
+        } else {
+            index = 0
+        }
+        let level = levels[index]
+        let ratio = quantizedMenuBarFillRatio(level.remainingRatio)
+        animationState = MenuBarLiquidAnimationState(
+            displayedRatio: ratio,
+            targetRatio: ratio,
+            accountIndex: index,
+            accountID: level.accountID,
+            displayName: level.displayName,
+            wavePhase: animationState.wavePhase,
+            secondsInAccount: 0
+        )
+    }
+
+    private func motionGate() -> MenuBarLiquidMotionGate {
+        switch menuBarMode {
+        case .initial, .noData:
+            return .stop
+        case .liquid:
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || PowerSource.isOnBattery {
+                return .freeze
+            }
+            return .animate
+        }
+    }
+
+    private func reconcileAnimationTimer() {
+        guard case .liquid(let levels) = menuBarMode else {
+            stopAnimationTimer()
+            return
+        }
+        startAnimationTimerIfNeeded()
+        renderLiquidFrame(levels: levels)
+    }
+
+    private func startAnimationTimerIfNeeded() {
+        guard animationTimer == nil else { return }
+        let interval = MenuBarLiquidAnimation.tickInterval()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tickAnimation() }
+        }
+        timer.tolerance = interval * 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
+    }
+
+    private func stopAnimationTimer() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+    }
+
+    private func tickAnimation() {
+        guard case .liquid(let levels) = menuBarMode else {
+            stopAnimationTimer()
+            return
+        }
+        let gate = motionGate()
+        let previous = animationState
+        animationState = MenuBarLiquidAnimation.advance(
+            state: animationState,
+            levels: levels,
+            gate: gate,
+            dt: gate == .animate ? MenuBarLiquidAnimation.tickInterval() : 0
+        )
+        let gateChanged = lastMotionGate != gate
+        let stateChanged = previous.displayedRatio != animationState.displayedRatio
+            || previous.accountID != animationState.accountID
+            || previous.targetRatio != animationState.targetRatio
+            || previous.wavePhase != animationState.wavePhase
+        if gate == .animate || gateChanged || stateChanged {
+            applyLiquidImage(gate: gate)
+        }
+    }
+
+    private func renderLiquidFrame(levels: [MenuBarAccountLevel]) {
+        let gate = motionGate()
+        animationState = MenuBarLiquidAnimation.advance(
+            state: animationState,
+            levels: levels,
+            gate: gate,
+            dt: 0
+        )
+        applyLiquidImage(gate: gate)
+    }
+
+    private func applyLiquidImage(gate: MenuBarLiquidMotionGate) {
+        lastMotionGate = gate
+        statusItem.button?.image = UllageMark.menuBarImage(
+            fillRatio: animationState.displayedRatio,
+            wavePhase: gate == .animate ? animationState.wavePhase : 0,
+            accountLabel: animationState.displayName
+        )
     }
 
     @objc private func handleStatusItem(_ sender: NSStatusBarButton) {
@@ -164,6 +299,7 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func quit() {
+        stopAnimationTimer()
         store.stop()
         NSApp.terminate(nil)
     }
@@ -172,6 +308,18 @@ final class StatusItemController: NSObject {
 private extension ConnectionState {
     var hasMenuBarData: Bool {
         self == .connected
+    }
+}
+
+enum PowerSource {
+    /// True when the machine is drawing from battery rather than AC/UPS.
+    static var isOnBattery: Bool {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?
+        else {
+            return false
+        }
+        return type == kIOPSBatteryPowerValue
     }
 }
 

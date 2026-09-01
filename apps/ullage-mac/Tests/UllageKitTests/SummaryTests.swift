@@ -435,3 +435,144 @@ private func date(_ value: String) throws -> Date {
     #expect(quantizedMenuBarFillRatio(0.5251) == 0.55)
     #expect(quantizedMenuBarFillRatio(2) == 1)
 }
+
+@Test func menuBarAccountLevelsFollowStableAccountOrder() throws {
+    let snapshots = try [fixture("claude"), fixture("cursor"), fixture("grok")]
+    let accounts = [
+        Account(id: "fixture-cursor", provider: "cursor", label: nil, enabled: true),
+        Account(id: "fixture-claude", provider: "claude", label: nil, enabled: true),
+        Account(id: "fixture-grok", provider: "grok", label: nil, enabled: true),
+    ]
+    let levels = menuBarAccountLevels(accounts: accounts, snapshots: snapshots)
+    #expect(levels.map(\.accountID) == ["fixture-claude", "fixture-cursor", "fixture-grok"])
+    #expect(levels.map(\.remainingRatio) == [0.78, 0.7, 0.4])
+    #expect(menuBarFillRatio(accounts: accounts, snapshots: snapshots) == 0.4)
+}
+
+@Test func menuBarAccountLevelsKeepZeroWhenLimitReached() throws {
+    let limitedData = Data(#"""
+    {
+      "provider":"chatgpt","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"five_hours"},"resets_at":null,"measurements":[
+          {"name":"codex_usage","used":10,"limit":100,"unit":{"kind":"percent"}},
+          {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]},
+        {"window":{"kind":"weekly"},"resets_at":null,"measurements":[
+          {"name":"codex_usage","used":20,"limit":100,"unit":{"kind":"percent"}},
+          {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]}
+      ]
+    }
+    """#.utf8)
+    let limitedUsage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: limitedData)
+    let limited = SnapshotPayload(
+        accountId: "chatgpt", usage: .complete(limitedUsage), lastSuccessAt: Date(),
+        stale: false, lastError: nil, lastErrorAt: nil
+    )
+    let cursor = try fixture("cursor")
+    let accounts = [
+        Account(id: "chatgpt", provider: "chatgpt", label: nil, enabled: true),
+        Account(id: cursor.accountId, provider: "cursor", label: nil, enabled: true),
+    ]
+    let levels = menuBarAccountLevels(accounts: accounts, snapshots: [limited, cursor])
+    #expect(levels.map(\.accountID) == ["chatgpt", cursor.accountId])
+    #expect(levels.first?.remainingRatio == 0)
+}
+
+@Test func menuBarLiquidApproachIsMonotonicTowardTarget() {
+    var current = 0.2
+    let target = 0.8
+    var previousDistance = abs(target - current)
+    for _ in 0..<40 {
+        current = MenuBarLiquidAnimation.approachRatio(current: current, target: target, dt: 0.1)
+        let distance = abs(target - current)
+        #expect(distance <= previousDistance + 1e-9)
+        previousDistance = distance
+    }
+    #expect(abs(current - target) < 0.01)
+}
+
+@Test func menuBarLiquidAnimationRotatesAccountsEveryMinute() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
+        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.8),
+    ]
+    var state = MenuBarLiquidAnimationState(
+        displayedRatio: 0.2,
+        targetRatio: 0.2,
+        accountIndex: 0,
+        accountID: "a",
+        displayName: "A"
+    )
+    state = MenuBarLiquidAnimation.advance(
+        state: state, levels: levels, gate: .animate, dt: 59.9
+    )
+    #expect(state.accountID == "a")
+    state = MenuBarLiquidAnimation.advance(
+        state: state, levels: levels, gate: .animate, dt: 0.2
+    )
+    #expect(state.accountID == "b")
+    #expect(state.targetRatio == 0.8)
+}
+
+@Test func menuBarLiquidAnimationDoesNotRotateASingleAccount() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.4),
+    ]
+    var state = MenuBarLiquidAnimationState(
+        displayedRatio: 0.4,
+        targetRatio: 0.4,
+        accountIndex: 0,
+        accountID: "a",
+        displayName: "A"
+    )
+    state = MenuBarLiquidAnimation.advance(
+        state: state, levels: levels, gate: .animate, dt: 120
+    )
+    #expect(state.accountID == "a")
+    #expect(state.secondsInAccount == 0)
+}
+
+@Test func menuBarLiquidFreezeSkipsWaveAndRotation() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
+        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.9),
+    ]
+    let start = MenuBarLiquidAnimationState(
+        displayedRatio: 0.2,
+        targetRatio: 0.2,
+        accountIndex: 0,
+        accountID: "a",
+        displayName: "A",
+        wavePhase: 1.5,
+        secondsInAccount: 50
+    )
+    let frozen = MenuBarLiquidAnimation.advance(
+        state: start, levels: levels, gate: .freeze, dt: 10
+    )
+    #expect(frozen.accountID == "a")
+    #expect(frozen.wavePhase == 1.5)
+    #expect(frozen.secondsInAccount == 50)
+    #expect(frozen.displayedRatio == 0.2)
+}
+
+@Test func menuBarLiquidStopLeavesStateUntouched() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.5),
+    ]
+    let start = MenuBarLiquidAnimationState(
+        displayedRatio: 0.5,
+        targetRatio: 0.5,
+        accountIndex: 0,
+        accountID: "a",
+        displayName: "A",
+        wavePhase: 3,
+        secondsInAccount: 12
+    )
+    let stopped = MenuBarLiquidAnimation.advance(
+        state: start, levels: levels, gate: .stop, dt: 5
+    )
+    #expect(stopped == start)
+}

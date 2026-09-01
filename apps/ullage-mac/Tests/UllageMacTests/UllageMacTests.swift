@@ -63,31 +63,21 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
-    func testMenuBarLiquidPixelsIncreaseWithFillRatio() throws {
+    func testMenuBarStrokeLevelsProduceDistinctImages() throws {
         let ratios = [0.0, 0.25, 0.5, 0.75, 1.0]
-        let rendered = try ratios.map { try rasterizedMenuBarImage(fillRatio: $0) }
-        let filledPixelCounts = rendered.map { representation in
-            (0..<representation.pixelsHigh).reduce(into: 0) { count, y in
-                for x in 0..<representation.pixelsWide {
-                    if (representation.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1 {
-                        count += 1
-                    }
-                }
-            }
-        }
-        XCTAssertEqual(filledPixelCounts, filledPixelCounts.sorted())
-        XCTAssertEqual(Set(filledPixelCounts).count, ratios.count)
+        let pngs = try ratios.map { try pngData(rasterizedMenuBarImage(fillRatio: $0)) }
+        XCTAssertEqual(Set(pngs).count, ratios.count)
     }
 
     @MainActor
     func testMenuBarZeroFillLeavesTheVisibleCavityEmpty() throws {
         let representation = try rasterizedMenuBarImage(fillRatio: 0)
         let pixelSize = CGFloat(representation.pixelsWide)
-        for y in [20.0, 40.0, 60.0, 80.0, 88.0] {
+        for y in [20.0, 40.0, 60.0, 80.0] {
             let xPixel = Int((0.5 * pixelSize).rounded(.down))
             let yPixel = Int((y / 100 * pixelSize).rounded(.down))
             let alpha = try XCTUnwrap(representation.colorAt(x: xPixel, y: yPixel)).alphaComponent
-            XCTAssertLessThanOrEqual(alpha, 0.05, "Unexpected liquid at y=\(y)")
+            XCTAssertLessThanOrEqual(alpha, 0.05, "Unexpected liquid fill at y=\(y)")
         }
     }
 
@@ -102,14 +92,25 @@ final class UllageMacTests: XCTestCase {
             "Ullage — 30% remaining"
         )
         XCTAssertEqual(
+            UllageMark.menuBarImage(fillRatio: 0.3, accountLabel: "Claude").accessibilityDescription,
+            "Ullage — 30% remaining · Claude"
+        )
+        XCTAssertEqual(
             UllageMark.menuBarImage(fillRatio: nil).accessibilityDescription,
             "Ullage — no data"
         )
     }
 
     @MainActor
-    func testMenuBarMarkRasterizationPreservesWallLiquidAndVoidAlpha() throws {
-        let image = UllageMark.menuBarImage()
+    func testMenuBarWavePhaseChangesPixelsWithoutChangingFill() throws {
+        let still = try pngData(rasterizedMenuBarImage(fillRatio: 0.5, wavePhase: 0))
+        let wobbling = try pngData(rasterizedMenuBarImage(fillRatio: 0.5, wavePhase: .pi / 2))
+        XCTAssertNotEqual(still, wobbling)
+    }
+
+    @MainActor
+    func testMenuBarMarkRasterizationKeepsWallAndHollowCavity() throws {
+        let image = UllageMark.menuBarImage(fillRatio: 0.5)
         let scale = 2
         let pixelSize = Int(image.size.width) * scale
         let representation = try XCTUnwrap(NSBitmapImageRep(
@@ -146,10 +147,8 @@ final class UllageMacTests: XCTestCase {
         }
 
         let wallAlpha = try alpha(atMarkPoint: CGPoint(x: 12, y: 30))
-        let liquidAlpha = try alpha(atMarkPoint: CGPoint(x: 50, y: 75))
         let voidAlpha = try alpha(atMarkPoint: CGPoint(x: 50, y: 30))
         XCTAssertGreaterThanOrEqual(wallAlpha, 0.95)
-        XCTAssertTrue(0.35...0.55 ~= liquidAlpha)
         XCTAssertLessThanOrEqual(voidAlpha, 0.05)
     }
 
@@ -552,8 +551,11 @@ private func iconColor(
 }
 
 @MainActor
-private func rasterizedMenuBarImage(fillRatio: Double?) throws -> NSBitmapImageRep {
-    let image = UllageMark.menuBarImage(fillRatio: fillRatio)
+private func rasterizedMenuBarImage(
+    fillRatio: Double?,
+    wavePhase: Double = 0
+) throws -> NSBitmapImageRep {
+    let image = UllageMark.menuBarImage(fillRatio: fillRatio, wavePhase: wavePhase)
     let scale = 2
     let pixelSize = Int(image.size.width) * scale
     let representation = try XCTUnwrap(NSBitmapImageRep(

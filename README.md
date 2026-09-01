@@ -43,23 +43,28 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 
 The menu bar mark and application icon share one Swift/CoreGraphics drawing
 implementation in the `UllageMac` executable. The menu bar variant uses
-dedicated geometry for legibility at 18 points. Its liquid level tracks the
-lowest usable remaining quota shown in Overview across enabled accounts, with
-Overview using a provider-specific catalog: ChatGPT weekly windows and reset
-credits, Claude 5h and Fable, Cursor auto and api, and Grok usage and GrokBuild.
-Unknown providers keep every window in the shortest available time tier. A
-reached limit in those retained windows takes precedence as 0%. After
-the first refresh, an exclamation mark replaces the liquid when no usable quota
-is available or the connection enters an error state. The glass application
-icon keeps a static liquid level and has six built-in palettes: Amber, Oxblood,
-Propellant, Copper, Paper, and Plum; Oxblood is the default. At launch the app
-applies the stored `iconPalette` preference (or Oxblood when unset) to the icon
-used by the About panel and system dialogs. Finder and Launchpad use the signed
-`AppIcon.icns`, so that palette is selected at build time instead. During
-`bundle`, the executable renders the standard ten-file `build/AppIcon.iconset`,
-`iconutil` converts it to `AppIcon.icns`, and the build copies that file into
-the application bundle. No source bitmap or SVG asset is required. Set the build
-palette with `ICON_PALETTE`, for example:
+dedicated geometry for legibility at 18 points. Its liquid is a stroked wave
+(not a solid fill) at the remaining height of the currently shown enabled
+account. When more than one enabled account has countable Overview remaining,
+the mark cycles those accounts every 60 seconds and eases the wave height to
+the next target. A light wobble runs at about 10 fps while the Mac is on AC
+power and Reduce Motion is off; battery power or Reduce Motion freezes the
+wave. Overview uses a provider-specific catalog: ChatGPT weekly windows and
+reset credits, Claude 5h and Fable, Cursor auto and api, and Grok usage and
+GrokBuild. Unknown providers keep every window in the shortest available time
+tier. A reached limit in those retained windows takes precedence as 0% for
+that account and still participates in the cycle. After the first refresh, an
+exclamation mark replaces the liquid when no usable quota is available or the
+connection enters an error state, and animation stops. The glass application
+icon keeps a static filled liquid level and has six built-in palettes: Amber,
+Oxblood, Propellant, Copper, Paper, and Plum; Oxblood is the default. At launch
+the app applies the stored `iconPalette` preference (or Oxblood when unset) to
+the icon used by the About panel and system dialogs. Finder and Launchpad use
+the signed `AppIcon.icns`, so that palette is selected at build time instead.
+During `bundle`, the executable renders the standard ten-file
+`build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and the
+build copies that file into the application bundle. No source bitmap or SVG
+asset is required. Set the build palette with `ICON_PALETTE`, for example:
 
 ```sh
 make -C apps/ullage-mac bundle ICON_PALETTE=paper

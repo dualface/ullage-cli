@@ -86,25 +86,55 @@ enum UllageMark {
     private static let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
     static func menuBarImage() -> NSImage {
-        menuBarImage(fillRatio: 0.3865, accessibilityDescription: "Ullage")
+        menuBarImage(
+            fillRatio: 0.3865,
+            wavePhase: 0,
+            accountLabel: nil,
+            accessibilityDescription: "Ullage"
+        )
     }
 
-    static func menuBarImage(fillRatio: Double?) -> NSImage {
+    static func menuBarImage(
+        fillRatio: Double?,
+        wavePhase: Double = 0,
+        accountLabel: String? = nil
+    ) -> NSImage {
         let quantizedRatio = fillRatio.map(quantizedMenuBarFillRatio)
-        let description = quantizedRatio.map {
-            "Ullage — \(Int(($0 * 100).rounded()))% remaining"
-        } ?? "Ullage — no data"
-        return menuBarImage(fillRatio: quantizedRatio, accessibilityDescription: description)
+        let description: String
+        if let quantizedRatio {
+            let percent = "Ullage — \(Int((quantizedRatio * 100).rounded()))% remaining"
+            if let accountLabel, !accountLabel.isEmpty {
+                description = percent + " · " + accountLabel
+            } else {
+                description = percent
+            }
+        } else {
+            description = "Ullage — no data"
+        }
+        return menuBarImage(
+            fillRatio: quantizedRatio,
+            wavePhase: wavePhase,
+            accountLabel: accountLabel,
+            accessibilityDescription: description
+        )
     }
 
     private static func menuBarImage(
         fillRatio: Double?,
+        wavePhase: Double,
+        accountLabel _: String?,
         accessibilityDescription: String
     ) -> NSImage {
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size, flipped: false) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            draw(in: context, canvasSize: rect.width, style: .template, fillRatio: fillRatio)
+            draw(
+                in: context,
+                canvasSize: rect.width,
+                style: .template,
+                fillRatio: fillRatio,
+                wavePhase: wavePhase
+            )
             return true
         }
         image.accessibilityDescription = accessibilityDescription
@@ -148,7 +178,8 @@ enum UllageMark {
         canvasSize: CGFloat,
         style: Style,
         palette: Palette = .default,
-        fillRatio: Double? = nil
+        fillRatio: Double? = nil,
+        wavePhase: Double = 0
     ) {
         context.saveGState()
         defer { context.restoreGState() }
@@ -189,7 +220,8 @@ enum UllageMark {
             style: style,
             palette: palette,
             unit: markScale,
-            fillRatio: fillRatio
+            fillRatio: fillRatio,
+            wavePhase: wavePhase
         )
         context.restoreGState()
     }
@@ -245,13 +277,14 @@ enum UllageMark {
         style: Style,
         palette: Palette,
         unit: CGFloat,
-        fillRatio: Double?
+        fillRatio: Double?,
+        wavePhase: Double
     ) {
         switch style {
         case .applicationIcon:
             drawApplicationIconVessel(in: context, palette: palette, unit: unit)
         case .template:
-            drawTemplateVessel(in: context, fillRatio: fillRatio)
+            drawTemplateVessel(in: context, fillRatio: fillRatio, wavePhase: wavePhase)
         }
     }
 
@@ -427,7 +460,11 @@ enum UllageMark {
         }
     }
 
-    private static func drawTemplateVessel(in context: CGContext, fillRatio: Double?) {
+    private static func drawTemplateVessel(
+        in context: CGContext,
+        fillRatio: Double?,
+        wavePhase: Double
+    ) {
         let vessel = CGMutablePath()
         vessel.move(to: CGPoint(x: 12, y: 6))
         vessel.addLine(to: CGPoint(x: 12, y: 58))
@@ -441,14 +478,11 @@ enum UllageMark {
         vessel.addLine(to: CGPoint(x: 88, y: 6))
 
         if let fillRatio {
-            let surfaceY = 91.5 - 81.5 * CGFloat(min(max(fillRatio, 0), 1))
-            context.saveGState()
-            context.addPath(closedU(radius: 33.5, top: 10, centerY: 58))
-            context.clip()
-            context.clip(to: CGRect(x: 0, y: surfaceY, width: 100, height: 100 - surfaceY))
-            context.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
-            context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
-            context.restoreGState()
+            drawTemplateLiquidStroke(
+                in: context,
+                fillRatio: min(max(fillRatio, 0), 1),
+                wavePhase: wavePhase
+            )
         } else {
             context.setFillColor(NSColor.black.withAlphaComponent(0.65).cgColor)
             context.addPath(CGPath(
@@ -465,6 +499,57 @@ enum UllageMark {
         context.setLineCap(.butt)
         context.addPath(vessel)
         context.strokePath()
+    }
+
+    /// Stroke-only liquid surface: a short wavy line at the remaining height.
+    private static func drawTemplateLiquidStroke(
+        in context: CGContext,
+        fillRatio: Double,
+        wavePhase: Double
+    ) {
+        let surfaceY = 91.5 - 81.5 * CGFloat(fillRatio)
+        guard let (minX, maxX) = cavityXRange(at: surfaceY) else { return }
+
+        let amplitude: CGFloat = 1.8
+        let wave = CGMutablePath()
+        let steps = 16
+        for step in 0...steps {
+            let t = CGFloat(step) / CGFloat(steps)
+            let x = minX + (maxX - minX) * t
+            let phase = wavePhase + Double(t) * .pi * 2
+            let y = surfaceY + amplitude * CGFloat(sin(phase))
+            if step == 0 {
+                wave.move(to: CGPoint(x: x, y: y))
+            } else {
+                wave.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+
+        context.saveGState()
+        context.addPath(closedU(radius: 33.5, top: 10, centerY: 58))
+        context.clip()
+        context.setStrokeColor(NSColor.black.withAlphaComponent(0.9).cgColor)
+        context.setLineWidth(2.8)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.addPath(wave)
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    private static func cavityXRange(
+        at y: CGFloat,
+        radius: CGFloat = 33.5,
+        centerY: CGFloat = 58
+    ) -> (CGFloat, CGFloat)? {
+        if y < 10 { return nil }
+        if y <= centerY {
+            return (50 - radius, 50 + radius)
+        }
+        let dy = y - centerY
+        guard dy <= radius else { return nil }
+        let half = sqrt(radius * radius - dy * dy)
+        return (50 - half, 50 + half)
     }
 
     private static func closedU(

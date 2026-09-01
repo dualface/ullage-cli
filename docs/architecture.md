@@ -66,14 +66,18 @@ into `Contents/Resources` so both tests and mock mode use the same canonical fix
 The executable also owns the shared Swift/CoreGraphics U-vessel drawing implementation used for the
 template menu bar mark and full-color application icon. `UllageMark.Palette` owns the six canonical
 application-icon palettes and their glass-rendering colors. The template variant uses dedicated
-geometry to remain legible at 18 points. Its liquid level is a 20-step rendering of the minimum
-usable Overview ratio across enabled accounts. Overview uses a provider-specific catalog
-(ChatGPT weekly and reset credits, Claude 5h and Fable, Cursor auto and api, Grok usage and
-GrokBuild). Unknown providers keep every window in the shortest available time tier, and a
-reached limit in those retained windows takes precedence as 0%.
-The headless dump uses that same projection, while account tabs retain all windows. The mark shows an
-exclamation point after the first refresh when no usable ratio remains or the connection is in an
-error state. The application icon retains its full-color geometry and static liquid level.
+geometry to remain legible at 18 points. Menu bar liquid is a stroked wave at a 20-step height for
+the currently displayed enabled account; `UllageKit` exposes per-account Overview remaining levels
+and pure animation helpers that rotate accounts every 60 seconds with eased height changes and an
+approximately 10 fps wobble. Animation freezes on battery power or when Reduce Motion is enabled.
+Overview uses a provider-specific catalog (ChatGPT weekly and reset credits, Claude 5h and Fable,
+Cursor auto and api, Grok usage and GrokBuild). Unknown providers keep every window in the shortest
+available time tier, and a reached limit in those retained windows takes precedence as 0% for that
+account while still participating in rotation.
+The headless dump still reports the global minimum usable Overview ratio across enabled accounts,
+while account tabs retain all windows. The mark shows an exclamation point after the first refresh
+when no usable ratio remains or the connection is in an error state, and stops animation. The
+application icon retains its full-color geometry and static filled liquid level.
 The macOS app's usage progress bars use ten cells of 10% each and fill remaining quota from the
 right, including a partial last cell (5% remaining paints half of one cell). Colors are fixed
 semantic values selected solely by each row's remaining-percentage tier. The executable's headless `--render-iconset` command produces the ten
