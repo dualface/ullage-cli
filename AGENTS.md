@@ -22,3 +22,7 @@ the current task.
 
 - Place macOS app build artifacts on `pro2026` under `~/ullage-build/`.
 - Also copy the final runnable `.app` bundle to `pro2026:~/Desktop/`.
+- Building the macOS app always includes notarization: run
+  `apps/ullage-mac/scripts/remote.sh notarize` (which signs, submits to Apple's
+  notary service, and staples the ticket), not just `sign`. Copy the stapled
+  `.app` to `pro2026:~/Desktop/` after notarization succeeds.
