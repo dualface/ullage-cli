@@ -80,8 +80,9 @@ snapshots, or the private control socket directly. Settings accepts the daemon's
 tailnet, and private-LAN address classes and rejects domains and URL components that could redirect
 credentials. `UllageKit` sends the bearer-free pairing request, then the executable stores the returned
 per-device token as a generic password in the macOS Keychain with device-local, unlocked-only
-accessibility. A successful pair removes the retired shared-token Keychain entry. Only the paired
-device name and local pairing time are kept in `UserDefaults` for display. Non-loopback access declares
+accessibility. A successful pair makes a best-effort attempt to remove the retired shared-token
+Keychain entry without discarding the new credential when an old-item ACL denies deletion. Only the
+paired device name and local pairing time are kept in `UserDefaults` for display. Non-loopback access declares
 `NSLocalNetworkUsageDescription`, so macOS can request Local Network permission with an explanation.
 The executable-owned `UsageDataSource` boundary selects either the real `DaemonClient` or bundled mock
 fixtures. Daemon HTTP responses and the Mac client both use the version 9 result envelope. Probes

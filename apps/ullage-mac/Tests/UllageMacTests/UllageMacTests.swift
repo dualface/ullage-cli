@@ -224,6 +224,7 @@ final class UllageMacTests: XCTestCase {
         var savedToken: String?
         let settings = AppSettings(defaults: defaults) { savedToken = $0 }
         let pairedAt = Date(timeIntervalSince1970: 1_777_777_777)
+        XCTAssertNil(settings.pairedServerURL(matching: "http://192.168.50.10:7878"))
 
         try settings.completePairing(
             serverURL: "http://192.168.50.10:7878",

@@ -153,10 +153,6 @@ private struct SettingsView: View {
             message = ConnectionTestResult.hostRejected.rawValue
             return
         }
-        guard settings.pairedServerURL(matching: serverURL) != nil else {
-            message = ConnectionTestResult.notPaired.rawValue
-            return
-        }
         guard mode == .daemon else {
             message = "pairing unavailable in mock mode"
             return
@@ -187,6 +183,10 @@ private struct SettingsView: View {
     private func testConnection() {
         guard let url = AppSettings.validatedServerURL(serverURL) else {
             message = ConnectionTestResult.hostRejected.rawValue
+            return
+        }
+        guard settings.pairedServerURL(matching: serverURL) != nil else {
+            message = ConnectionTestResult.notPaired.rawValue
             return
         }
         isTesting = true
