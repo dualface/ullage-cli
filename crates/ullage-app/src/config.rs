@@ -497,12 +497,12 @@ mod tests {
 
         tokio::fs::write(
             &path,
-            br#"{"version":1,"http":{"enabled":false,"bind":"192.168.50.10:7878"}}"#,
+            br#"{"version":1,"http":{"enabled":false,"bind":"not-a-bind"}}"#,
         )
         .await
         .unwrap();
         make_private(&path);
-        assert_eq!(load(&path).await.unwrap().http.bind, "192.168.50.10:7878");
+        assert_eq!(load(&path).await.unwrap().http.bind, "not-a-bind");
     }
 
     #[tokio::test]

@@ -151,8 +151,8 @@ or a reverse forward from the daemon machine to the Mac:
 ssh -N -R 7878:127.0.0.1:7878 mac-host
 ```
 
-Do not enable `GatewayPorts`; the daemon permits only loopback and Tailscale
-bind addresses and rejects Host values other than its allowlist.
+Do not enable `GatewayPorts`; the daemon permits only loopback, Tailscale, and
+private LAN bind addresses and rejects Host values other than its allowlist.
 
 Default paths:
 

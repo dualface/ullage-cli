@@ -43,8 +43,9 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-provider-*`: vendor-specific DTOs, API behavior, and conversion into `ullage-core`
   DTOs. Vendor DTOs must not be moved into a shared crate.
 - `ullage-daemon`: local transport and scheduling.
-- `ullage-http`: loopback or Tailscale HTTP query transport, bearer token file, Host/Origin checks, and
-  per-account probe cooldown. Assembled only by `ullage-app`.
+- `ullage-http`: loopback, Tailscale, or private LAN HTTP query transport with explicit or automatic
+  multi-address binding, bearer token file, Host/Origin checks, and per-account probe cooldown.
+  Assembled only by `ullage-app`.
 - `ullage-cli`: command-line client of the local control protocol.
 - `ullage-app`: single executable composition root for the CLI client and daemon process.
 
