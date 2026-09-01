@@ -59,6 +59,40 @@ final class UllageMacTests: XCTestCase {
         let image = UllageMark.menuBarImage()
         XCTAssertEqual(image.size, NSSize(width: 18, height: 18))
         XCTAssertTrue(image.isTemplate)
+        XCTAssertEqual(image.accessibilityDescription, "Ullage")
+    }
+
+    @MainActor
+    func testMenuBarLiquidPixelsIncreaseWithFillRatio() throws {
+        let ratios = [0.0, 0.25, 0.5, 0.75, 1.0]
+        let rendered = try ratios.map { try rasterizedMenuBarImage(fillRatio: $0) }
+        let filledPixelCounts = rendered.map { representation in
+            (0..<representation.pixelsHigh).reduce(into: 0) { count, y in
+                for x in 0..<representation.pixelsWide {
+                    if (representation.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1 {
+                        count += 1
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(filledPixelCounts, filledPixelCounts.sorted())
+        XCTAssertEqual(Set(filledPixelCounts).count, ratios.count)
+    }
+
+    @MainActor
+    func testMenuBarNoDataMarkDiffersFromEveryLiquidLevel() throws {
+        let noData = try pngData(rasterizedMenuBarImage(fillRatio: nil))
+        for ratio in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            XCTAssertNotEqual(noData, try pngData(rasterizedMenuBarImage(fillRatio: ratio)))
+        }
+        XCTAssertEqual(
+            UllageMark.menuBarImage(fillRatio: 0.3).accessibilityDescription,
+            "Ullage — 30% remaining"
+        )
+        XCTAssertEqual(
+            UllageMark.menuBarImage(fillRatio: nil).accessibilityDescription,
+            "Ullage — no data"
+        )
     }
 
     @MainActor
@@ -468,6 +502,38 @@ private func iconColor(
     let x = Int((tileOrigin + markPoint.x / 100 * tileSide).rounded(.down))
     let y = Int((tileOrigin + markPoint.y / 100 * tileSide).rounded(.down))
     return try XCTUnwrap(icon.colorAt(x: x, y: y), file: file, line: line)
+}
+
+@MainActor
+private func rasterizedMenuBarImage(fillRatio: Double?) throws -> NSBitmapImageRep {
+    let image = UllageMark.menuBarImage(fillRatio: fillRatio)
+    let scale = 2
+    let pixelSize = Int(image.size.width) * scale
+    let representation = try XCTUnwrap(NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: pixelSize,
+        pixelsHigh: pixelSize,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ))
+    representation.size = image.size
+    let graphicsContext = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: representation))
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = graphicsContext
+    graphicsContext.cgContext.clear(CGRect(origin: .zero, size: image.size))
+    image.draw(in: CGRect(origin: .zero, size: image.size), from: .zero, operation: .copy, fraction: 1)
+    graphicsContext.flushGraphics()
+    NSGraphicsContext.restoreGraphicsState()
+    return representation
+}
+
+private func pngData(_ representation: NSBitmapImageRep) throws -> Data {
+    try XCTUnwrap(representation.representation(using: .png, properties: [:]))
 }
 
 private func luminance(_ color: NSColor) -> CGFloat {

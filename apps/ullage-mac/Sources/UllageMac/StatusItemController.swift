@@ -1,5 +1,7 @@
 import AppKit
+import Observation
 import ServiceManagement
+import UllageKit
 
 @MainActor
 final class StatusItemController: NSObject {
@@ -10,6 +12,13 @@ final class StatusItemController: NSObject {
     private let applicationIconController: ApplicationIconController
     private var popoverController: PopoverController?
     private var settingsController: SettingsPanelController?
+    private var menuBarIconState = MenuBarIconState.initial
+
+    private enum MenuBarIconState: Equatable {
+        case initial
+        case fill(Double)
+        case noData
+    }
 
     init(
         store: UsageStore,
@@ -29,6 +38,45 @@ final class StatusItemController: NSObject {
         button.target = self
         button.action = #selector(handleStatusItem(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        observeStore()
+    }
+
+    private func observeStore() {
+        withObservationTracking {
+            updateMenuBarImage()
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.observeStore() }
+        }
+    }
+
+    private func updateMenuBarImage() {
+        let accounts = store.accounts
+        let snapshots = store.snapshots
+        let connectionState = store.connectionState
+        let state: MenuBarIconState
+        if store.lastRefreshedAt == nil {
+            state = .initial
+        } else if connectionState.hasMenuBarData {
+            if let ratio = menuBarFillRatio(accounts: accounts, snapshots: snapshots) {
+                state = .fill(quantizedMenuBarFillRatio(ratio))
+            } else {
+                state = .noData
+            }
+        } else if connectionState == .loading {
+            return
+        } else {
+            state = .noData
+        }
+        guard state != menuBarIconState, let button = statusItem.button else { return }
+        menuBarIconState = state
+        switch state {
+        case .initial:
+            button.image = UllageMark.menuBarImage()
+        case .fill(let ratio):
+            button.image = UllageMark.menuBarImage(fillRatio: ratio)
+        case .noData:
+            button.image = UllageMark.menuBarImage(fillRatio: nil)
+        }
     }
 
     @objc private func handleStatusItem(_ sender: NSStatusBarButton) {
@@ -128,6 +176,12 @@ final class StatusItemController: NSObject {
     @objc private func quit() {
         store.stop()
         NSApp.terminate(nil)
+    }
+}
+
+private extension ConnectionState {
+    var hasMenuBarData: Bool {
+        self == .connected
     }
 }
 

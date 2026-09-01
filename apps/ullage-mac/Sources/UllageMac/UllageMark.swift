@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import UllageKit
 
 @MainActor
 enum UllageMark {
@@ -85,13 +86,28 @@ enum UllageMark {
     private static let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
     static func menuBarImage() -> NSImage {
+        menuBarImage(fillRatio: 0.3865, accessibilityDescription: "Ullage")
+    }
+
+    static func menuBarImage(fillRatio: Double?) -> NSImage {
+        let quantizedRatio = fillRatio.map(quantizedMenuBarFillRatio)
+        let description = quantizedRatio.map {
+            "Ullage — \(Int(($0 * 100).rounded()))% remaining"
+        } ?? "Ullage — no data"
+        return menuBarImage(fillRatio: quantizedRatio, accessibilityDescription: description)
+    }
+
+    private static func menuBarImage(
+        fillRatio: Double?,
+        accessibilityDescription: String
+    ) -> NSImage {
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size, flipped: false) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            draw(in: context, canvasSize: rect.width, style: .template)
+            draw(in: context, canvasSize: rect.width, style: .template, fillRatio: fillRatio)
             return true
         }
-        image.accessibilityDescription = "Ullage"
+        image.accessibilityDescription = accessibilityDescription
         image.isTemplate = true
         return image
     }
@@ -131,7 +147,8 @@ enum UllageMark {
         in context: CGContext,
         canvasSize: CGFloat,
         style: Style,
-        palette: Palette = .default
+        palette: Palette = .default,
+        fillRatio: Double? = nil
     ) {
         context.saveGState()
         defer { context.restoreGState() }
@@ -167,7 +184,13 @@ enum UllageMark {
         context.saveGState()
         context.translateBy(x: markOrigin, y: markOrigin)
         context.scaleBy(x: markScale, y: markScale)
-        drawVessel(in: context, style: style, palette: palette, unit: markScale)
+        drawVessel(
+            in: context,
+            style: style,
+            palette: palette,
+            unit: markScale,
+            fillRatio: fillRatio
+        )
         context.restoreGState()
     }
 
@@ -221,13 +244,14 @@ enum UllageMark {
         in context: CGContext,
         style: Style,
         palette: Palette,
-        unit: CGFloat
+        unit: CGFloat,
+        fillRatio: Double?
     ) {
         switch style {
         case .applicationIcon:
             drawApplicationIconVessel(in: context, palette: palette, unit: unit)
         case .template:
-            drawTemplateVessel(in: context)
+            drawTemplateVessel(in: context, fillRatio: fillRatio)
         }
     }
 
@@ -403,7 +427,7 @@ enum UllageMark {
         }
     }
 
-    private static func drawTemplateVessel(in context: CGContext) {
+    private static func drawTemplateVessel(in context: CGContext, fillRatio: Double?) {
         let vessel = CGMutablePath()
         vessel.move(to: CGPoint(x: 12, y: 6))
         vessel.addLine(to: CGPoint(x: 12, y: 58))
@@ -416,22 +440,26 @@ enum UllageMark {
         )
         vessel.addLine(to: CGPoint(x: 88, y: 6))
 
-        let liquid = CGMutablePath()
-        liquid.move(to: CGPoint(x: 16.5, y: 60))
-        liquid.addLine(to: CGPoint(x: 16.5, y: 58))
-        liquid.addArc(
-            center: CGPoint(x: 50, y: 58),
-            radius: 33.5,
-            startAngle: .pi,
-            endAngle: 0,
-            clockwise: true
-        )
-        liquid.addLine(to: CGPoint(x: 83.5, y: 60))
-        liquid.closeSubpath()
-
-        context.addPath(liquid)
-        context.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
-        context.fillPath()
+        if let fillRatio {
+            let surfaceY = 91.5 - 81.5 * CGFloat(min(max(fillRatio, 0), 1))
+            context.saveGState()
+            context.addPath(closedU(radius: 33.5, top: 10))
+            context.clip()
+            context.clip(to: CGRect(x: 0, y: surfaceY, width: 100, height: 100 - surfaceY))
+            context.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+            context.restoreGState()
+        } else {
+            context.setFillColor(NSColor.black.withAlphaComponent(0.65).cgColor)
+            context.addPath(CGPath(
+                roundedRect: CGRect(x: 44.5, y: 32, width: 11, height: 36),
+                cornerWidth: 5.5,
+                cornerHeight: 5.5,
+                transform: nil
+            ))
+            context.fillPath()
+            context.fillEllipse(in: CGRect(x: 43.5, y: 73.5, width: 13, height: 13))
+        }
         context.setStrokeColor(NSColor.black.cgColor)
         context.setLineWidth(9)
         context.setLineCap(.butt)

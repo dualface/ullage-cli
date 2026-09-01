@@ -43,10 +43,13 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 
 The menu bar mark and application icon share one Swift/CoreGraphics drawing
 implementation in the `UllageMac` executable. The menu bar variant uses
-dedicated geometry for legibility at 18 points. The glass application icon has
-six built-in palettes: Amber, Oxblood, Propellant, Copper, Paper, and Plum;
-Oxblood is the default. The runtime choice in Settings updates the icon used by
-the About panel and system dialogs.
+dedicated geometry for legibility at 18 points. Its liquid level tracks the
+lowest remaining quota shown in Overview across enabled accounts; after the
+first refresh, an exclamation mark replaces the liquid when no usable quota is
+available. The glass application icon keeps a static liquid level and has six
+built-in palettes: Amber, Oxblood, Propellant, Copper, Paper, and Plum; Oxblood
+is the default. The runtime choice in Settings updates the icon used by the
+About panel and system dialogs.
 Finder and Launchpad use the signed `AppIcon.icns`, so that palette is selected
 at build time instead. During `bundle`, the executable renders the standard
 ten-file `build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and

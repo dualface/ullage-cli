@@ -153,6 +153,31 @@ private func overviewFallbackRow(for window: UsageWindow) -> SummaryRow? {
     )
 }
 
+public func menuBarFillRatio(
+    accounts: [Account],
+    snapshots: [SnapshotPayload]
+) -> Double? {
+    let enabledAccountIDs = Set(accounts.lazy.filter(\.enabled).map(\.id))
+    var minimumRatio: Double?
+
+    for snapshot in snapshots where enabledAccountIDs.contains(snapshot.accountId) {
+        guard let usage = snapshot.usage.data else { continue }
+        if usage.windows.contains(where: windowHitItsLimit) { return 0 }
+
+        for row in overviewRows(for: usage) where !row.disabled {
+            guard let ratio = row.remainingRatio else { continue }
+            minimumRatio = min(minimumRatio ?? ratio, ratio)
+        }
+    }
+
+    return minimumRatio
+}
+
+public func quantizedMenuBarFillRatio(_ ratio: Double) -> Double {
+    let clampedRatio = min(max(ratio.isFinite ? ratio : 0, 0), 1)
+    return (clampedRatio * 20).rounded() / 20
+}
+
 private func projectedWindows(for usage: SubscriptionUsage) -> [[ProjectedRow]] {
     let projected = usage.windows.map(summarizeWindow)
     let kindCounts = Dictionary(grouping: usage.windows.compactMap { windowKindKey($0.window) }, by: { $0 })

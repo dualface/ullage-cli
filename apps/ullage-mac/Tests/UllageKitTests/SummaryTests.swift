@@ -206,3 +206,63 @@ private func date(_ value: String) throws -> Date {
     #expect(rows.suffix(3).map(\.metric) == ["availability", "availability", "availability"])
     #expect(rows.suffix(3).map(\.remainingRatio) == [0, 1, 0])
 }
+
+@Test func menuBarFillUsesTheMinimumAcrossEnabledAccounts() throws {
+    let snapshots = try [fixture("claude"), fixture("cursor"), fixture("grok")]
+    let accounts = snapshots.map {
+        Account(id: $0.accountId, provider: "fixture", label: nil, enabled: true)
+    }
+    #expect(menuBarFillRatio(accounts: accounts, snapshots: snapshots) == 0.18)
+
+    let cursorDisabled = accounts.map {
+        Account(id: $0.id, provider: $0.provider, label: $0.label, enabled: $0.id != "fixture-cursor")
+    }
+    #expect(menuBarFillRatio(accounts: cursorDisabled, snapshots: snapshots) == 0.45)
+}
+
+@Test func menuBarFillSkipsDisabledRows() throws {
+    let data = Data(#"""
+    {
+      "provider":"test","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"five_hours"},"resets_at":null,"measurements":[
+          {"name":"enabled","used":0,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}},
+          {"name":"total","used":99,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"weekly"},"resets_at":null,"measurements":[
+          {"name":"total","used":60,"limit":100,"unit":{"kind":"percent"}}
+        ]}
+      ]
+    }
+    """#.utf8)
+    let usage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: data)
+    let snapshot = SnapshotPayload(
+        accountId: "test", usage: .complete(usage), lastSuccessAt: Date(),
+        stale: true, lastError: .network, lastErrorAt: Date()
+    )
+    let account = Account(id: "test", provider: "test", label: nil, enabled: true)
+    #expect(menuBarFillRatio(accounts: [account], snapshots: [snapshot]) == 0.4)
+}
+
+@Test func menuBarFillReturnsZeroForReachedLimitsAndNilWithoutRows() throws {
+    let limited = try fixture("chatgpt")
+    let account = Account(id: limited.accountId, provider: "chatgpt", label: nil, enabled: true)
+    #expect(menuBarFillRatio(accounts: [account], snapshots: [limited]) == 0)
+
+    let unknown = SnapshotPayload(
+        accountId: account.id, usage: .unknown("unavailable"), lastSuccessAt: Date(),
+        stale: false, lastError: .network, lastErrorAt: Date()
+    )
+    #expect(menuBarFillRatio(accounts: [account], snapshots: [unknown]) == nil)
+    #expect(menuBarFillRatio(accounts: [], snapshots: [limited]) == nil)
+}
+
+@Test func menuBarFillQuantizationUsesTwentyEqualSteps() {
+    #expect(quantizedMenuBarFillRatio(-1) == 0)
+    #expect(quantizedMenuBarFillRatio(0.0249) == 0)
+    #expect(quantizedMenuBarFillRatio(0.0251) == 0.05)
+    #expect(quantizedMenuBarFillRatio(0.5249) == 0.5)
+    #expect(quantizedMenuBarFillRatio(0.5251) == 0.55)
+    #expect(quantizedMenuBarFillRatio(2) == 1)
+}

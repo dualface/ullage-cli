@@ -66,7 +66,10 @@ into `Contents/Resources` so both tests and mock mode use the same canonical fix
 The executable also owns the shared Swift/CoreGraphics U-vessel drawing implementation used for the
 template menu bar mark and full-color application icon. `UllageMark.Palette` owns the six canonical
 application-icon palettes and their glass-rendering colors. The template variant uses dedicated
-geometry to remain legible at 18 points, while the application icon retains its full-color geometry.
+geometry to remain legible at 18 points. Its liquid level is a 20-step rendering of the minimum
+remaining Overview ratio across enabled accounts, and it shows an exclamation mark after a refresh
+that yields no usable ratio. The application icon retains its full-color geometry and static liquid
+level.
 The macOS app's usage progress bars use fixed semantic colors selected solely by each row's
 remaining-percentage tier. The executable's headless `--render-iconset` command produces the ten
 standard PNG renditions during `bundle`;
