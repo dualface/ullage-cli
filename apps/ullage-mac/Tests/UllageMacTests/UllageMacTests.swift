@@ -228,7 +228,6 @@ final class UllageMacTests: XCTestCase {
         )
         let height = controller.window?.contentRect(forFrameRect: controller.window!.frame).height
             ?? 0
-        print("Settings content height: \(height)")
         XCTAssertGreaterThan(height, 100)
         XCTAssertLessThan(height, 460)
     }
