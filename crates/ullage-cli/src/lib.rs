@@ -33,8 +33,9 @@ mod table;
 
 use summary::{UsageSummary, summarize};
 use table::{
-    Cell, Palette, Style, relative_past, render_line, render_pairs, render_section_header,
-    render_summary_rows, render_table,
+    Cell, Palette, Style, SummaryLayout, measure_summary_layout, relative_past, render_line,
+    render_pairs, render_section_header, render_summary_rows, render_summary_rows_aligned,
+    render_table,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2488,6 +2489,7 @@ fn render_probe(
         diagnose,
         palette,
         Utc::now(),
+        None,
     ));
     block
 }
@@ -2500,6 +2502,14 @@ fn render_snapshots(
     palette: &Palette,
 ) -> String {
     let now = Utc::now();
+    let layout = (!raw).then(|| {
+        let mut layout = SummaryLayout::default();
+        for snapshot in snapshots {
+            let summary = summarize(usage_data(&snapshot.usage));
+            layout.expand(measure_summary_layout(&summary.rows, now));
+        }
+        layout
+    });
     let mut blocks = Vec::new();
     for snapshot in snapshots {
         let mut block = if raw {
@@ -2533,6 +2543,7 @@ fn render_snapshots(
                 diagnose,
                 palette,
                 now,
+                layout.as_ref(),
             ));
             block
         };
@@ -2579,6 +2590,7 @@ fn render_usage_summary(
     diagnose: bool,
     palette: &Palette,
     now: DateTime<Utc>,
+    layout: Option<&SummaryLayout>,
 ) -> String {
     let usage = usage_data(outcome);
     let summary = summarize(usage);
@@ -2609,7 +2621,10 @@ fn render_usage_summary(
             palette,
         ));
     }
-    output.push_str(&render_summary_rows(&summary.rows, now, palette));
+    output.push_str(&match layout {
+        Some(layout) => render_summary_rows_aligned(&summary.rows, now, palette, layout),
+        None => render_summary_rows(&summary.rows, now, palette),
+    });
     output.push_str(&render_summary_notes(
         &summary, outcome, stale, diagnose, palette,
     ));

@@ -3,6 +3,7 @@
 //! Color is applied only after cell text has been sanitized. Untrusted provider
 //! strings never become part of an escape sequence.
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io::IsTerminal as _;
 
@@ -276,66 +277,151 @@ pub fn render_line(text: &str, style: Style, palette: &Palette) -> String {
     output
 }
 
-/// Renders the summary grid: identity, value, reset, progress bar.
+/// Shared column widths for the four summary fields: identity, reading,
+/// reset time, and progress bar.
+///
+/// `show --all` measures every account first, then renders each block with
+/// the same layout so those fields line up across section headers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SummaryLayout {
+    identity_width: usize,
+    verb_width: usize,
+    amount_width: usize,
+    suffix_width: usize,
+    resets_width: usize,
+}
+
+impl SummaryLayout {
+    fn from_cells(cells: &[SummaryCells]) -> Self {
+        Self {
+            identity_width: max_width(cells.iter().map(|cell| cell.identity.as_str())),
+            verb_width: max_width(cells.iter().map(|cell| cell.verb)),
+            amount_width: max_width(cells.iter().map(|cell| cell.amount.as_str())),
+            suffix_width: max_width(cells.iter().map(|cell| cell.suffix)),
+            resets_width: max_width(cells.iter().map(|cell| cell.resets.as_str())),
+        }
+    }
+
+    /// Widens each column to the larger of `self` and `other`.
+    pub fn expand(&mut self, other: Self) {
+        self.identity_width = self.identity_width.max(other.identity_width);
+        self.verb_width = self.verb_width.max(other.verb_width);
+        self.amount_width = self.amount_width.max(other.amount_width);
+        self.suffix_width = self.suffix_width.max(other.suffix_width);
+        self.resets_width = self.resets_width.max(other.resets_width);
+    }
+}
+
+/// Measures the four summary columns for `rows` without rendering them.
+pub fn measure_summary_layout(rows: &[SummaryRow], now: DateTime<Utc>) -> SummaryLayout {
+    SummaryLayout::from_cells(&collect_summary_cells(rows, now))
+}
+
+/// Renders the summary grid: identity, reading, reset, progress bar.
 ///
 /// Window and metric collapse into one identity cell (for example `5h`,
 /// `5h-5.3`, or `GrokBuild`) so the table does not repeat `usage` or a full
-/// model name. The bar is always the last column so every row shares one
-/// aligned slot, including rows without a reset time.
+/// model name. Verb, amount, and suffix are fixed-width fields: empty verbs
+/// still occupy the verb column, and amounts are left-aligned so `$12.50`,
+/// `85%`, and `1` start on the same column. The bar is always last so every
+/// row shares one aligned slot, including rows without a reset time.
 pub fn render_summary_rows(rows: &[SummaryRow], now: DateTime<Utc>, palette: &Palette) -> String {
-    let cells: Vec<SummaryCells> = rows.iter().map(|row| summary_cells(row, now)).collect();
-    let identity_width = max_width(cells.iter().map(|cell| cell.identity.as_str()));
-    let verb_width = max_width(cells.iter().map(|cell| cell.verb));
-    let suffix_width = max_width(cells.iter().map(|cell| cell.suffix));
-    let resets_width = max_width(cells.iter().map(|cell| cell.resets.as_str()));
+    let cells = collect_summary_cells(rows, now);
+    render_summary_cells(&cells, &SummaryLayout::from_cells(&cells), palette)
+}
 
-    let values: Vec<String> = cells
+/// Renders `rows` using a layout measured from a larger set of accounts.
+pub fn render_summary_rows_aligned(
+    rows: &[SummaryRow],
+    now: DateTime<Utc>,
+    palette: &Palette,
+    layout: &SummaryLayout,
+) -> String {
+    render_summary_cells(&collect_summary_cells(rows, now), layout, palette)
+}
+
+fn collect_summary_cells(rows: &[SummaryRow], now: DateTime<Utc>) -> Vec<SummaryCells> {
+    let rows: Vec<&SummaryRow> = rows.iter().filter(|row| !hidden_in_table(row)).collect();
+    let named_windows: HashSet<String> = rows
         .iter()
-        .map(|cell| {
-            // Amounts line up within one reading of the number. Aligning a
-            // percentage against a spend range would only push them apart.
-            let amount_width = max_width(
-                cells
-                    .iter()
-                    .filter(|other| other.verb == cell.verb)
-                    .map(|other| other.amount.as_str()),
-            );
-            let mut value = pad(cell.verb, verb_width, Align::Left);
-            value.push(' ');
-            value.push_str(&pad(&cell.amount, amount_width, Align::Right));
-            if suffix_width > 0 {
-                value.push(' ');
-                value.push_str(&pad(cell.suffix, suffix_width, Align::Left));
+        .filter_map(|row| {
+            let window = visible_cell_text(&row.window);
+            let metric = visible_cell_text(&row.metric);
+            if metric.is_empty() || metric == "usage" {
+                return None;
             }
-            value
+            if metric.eq_ignore_ascii_case("GrokBuild") {
+                return None;
+            }
+            Some(window)
         })
         .collect();
-    let value_width = max_width(values.iter().map(String::as_str));
+    rows.iter()
+        .map(|row| summary_cells(row, now, &named_windows))
+        .collect()
+}
+
+fn render_summary_cells(
+    cells: &[SummaryCells],
+    layout: &SummaryLayout,
+    palette: &Palette,
+) -> String {
+    let readings: Vec<String> = cells
+        .iter()
+        .map(|cell| {
+            format_reading(
+                cell,
+                layout.verb_width,
+                layout.amount_width,
+                layout.suffix_width,
+            )
+        })
+        .collect();
+    let reading_width = max_width(readings.iter().map(String::as_str));
 
     let gap = " ".repeat(COLUMN_GAP);
     let mut output = String::new();
-    for (cell, value) in cells.iter().zip(&values) {
-        let mut columns = vec![
-            pad(&cell.identity, identity_width, Align::Left),
-            pad(value, value_width, Align::Left),
-        ];
-        if resets_width > 0 {
-            columns.push(pad(&cell.resets, resets_width, Align::Left));
+    for (cell, reading) in cells.iter().zip(&readings) {
+        let mut columns = vec![pad(&cell.identity, layout.identity_width, Align::Left)];
+        if reading_width > 0 {
+            columns.push(pad(reading, reading_width, Align::Left));
+        }
+        if layout.resets_width > 0 {
+            columns.push(pad(&cell.resets, layout.resets_width, Align::Left));
         }
         let mut line = columns.join(&gap);
-        // Padding is kept ahead of a bar so bars share one column even when a
-        // neighbouring row has no reset time.
-        match cell.remaining_ratio {
-            Some(ratio) => {
-                line.push_str(&gap);
-                line.push_str(&palette.wrap(bar_style(ratio), &progress_bar(ratio)));
-            }
-            None => line = line.trim_end().to_owned(),
+        if let Some(ratio) = cell.remaining_ratio {
+            line.push_str(&gap);
+            line.push_str(&palette.wrap(bar_style(ratio), &progress_bar(ratio)));
+        } else {
+            // Empty reset padding is only needed to hold the bar column.
+            line = line.trim_end().to_owned();
         }
         output.push_str(&line);
         output.push('\n');
     }
     output
+}
+
+fn format_reading(
+    cell: &SummaryCells,
+    verb_width: usize,
+    amount_width: usize,
+    suffix_width: usize,
+) -> String {
+    let mut parts = Vec::new();
+    if verb_width > 0 {
+        parts.push(pad(cell.verb, verb_width, Align::Left));
+    }
+    if amount_width > 0 {
+        // Left-align mixed units (`$12.50` vs `85%` vs `1`). Right-aligning
+        // them to the longest amount only shoves the shorter values around.
+        parts.push(pad(&cell.amount, amount_width, Align::Left));
+    }
+    if suffix_width > 0 {
+        parts.push(pad(cell.suffix, suffix_width, Align::Left));
+    }
+    parts.join(" ")
 }
 
 /// The pre-alignment text of one summary row.
@@ -348,13 +434,16 @@ struct SummaryCells {
     remaining_ratio: Option<f64>,
 }
 
-fn summary_cells(row: &SummaryRow, now: DateTime<Utc>) -> SummaryCells {
+fn summary_cells(
+    row: &SummaryRow,
+    now: DateTime<Utc>,
+    leftover_windows: &HashSet<String>,
+) -> SummaryCells {
+    let window = visible_cell_text(&row.window);
+    let metric = visible_cell_text(&row.metric);
     let (verb, amount) = summary_value_text(&row.value);
     SummaryCells {
-        identity: compact_identity(
-            &visible_cell_text(&row.window),
-            &visible_cell_text(&row.metric),
-        ),
+        identity: compact_identity(&window, &metric, leftover_windows.contains(&window)),
         verb,
         amount,
         suffix: if row.disabled { "(off)" } else { "" },
@@ -367,21 +456,40 @@ fn summary_cells(row: &SummaryRow, now: DateTime<Utc>) -> SummaryCells {
 }
 
 /// Collapses window + metric into the single label the table prints.
-fn compact_identity(window: &str, metric: &str) -> String {
+fn compact_identity(window: &str, metric: &str, keep_usage: bool) -> String {
     let metric = metric.trim();
+    if window.eq_ignore_ascii_case("resets") || window.eq_ignore_ascii_case("reset") {
+        if metric.is_empty() || metric == "available count" {
+            return "Reset".into();
+        }
+    }
+    if window.eq_ignore_ascii_case("credits") && (metric.is_empty() || metric == "credit balance") {
+        return "Balance".into();
+    }
     if metric.eq_ignore_ascii_case("GrokBuild") {
         return "GrokBuild".into();
     }
+    if metric == "total spend" {
+        return format!("{window} spend");
+    }
     if metric.is_empty() || metric == "usage" {
+        if metric == "usage" && keep_usage {
+            return format!("{window}-usage");
+        }
         return window.to_string();
     }
     if let Some(rest) = strip_gpt_prefix(metric) {
         return format!("{window}-{rest}");
     }
-    if metric == "Codex" {
+    if matches!(metric, "Codex" | "auto" | "api") {
         return format!("{window}-{metric}");
     }
     format!("{window}{}{metric}", " ".repeat(COLUMN_GAP))
+}
+
+fn hidden_in_table(row: &SummaryRow) -> bool {
+    let on_demand = row.metric == "on demand" || row.metric.starts_with("on demand ");
+    on_demand && (row.disabled || matches!(row.value, SummaryValue::Disabled))
 }
 
 fn strip_gpt_prefix(metric: &str) -> Option<&str> {
@@ -399,17 +507,8 @@ fn summary_value_text(value: &SummaryValue) -> (&'static str, String) {
             ("balance", format_money(*amount, &currency.code))
         }
         SummaryValue::Spent {
-            amount,
-            limit,
-            currency,
-        } => (
-            "spent",
-            format!(
-                "{} of {}",
-                format_money(*amount, &currency.code),
-                format_money(*limit, &currency.code)
-            ),
-        ),
+            amount, currency, ..
+        } => ("", format_money(*amount, &currency.code)),
         SummaryValue::Credits { used, limit } => (
             "credits",
             match limit {
@@ -750,17 +849,80 @@ mod tests {
 
     #[test]
     fn compact_identity_omits_usage_and_shortens_models() {
-        assert_eq!(compact_identity("5h", "usage"), "5h");
-        assert_eq!(compact_identity("weekly", "usage"), "weekly");
-        assert_eq!(compact_identity("fable", "usage"), "fable");
-        assert_eq!(compact_identity("5h", "GPT-5.3"), "5h-5.3");
-        assert_eq!(compact_identity("weekly", "GPT-5.3"), "weekly-5.3");
-        assert_eq!(compact_identity("weekly", "Codex"), "weekly-Codex");
-        assert_eq!(compact_identity("weekly", "GrokBuild"), "GrokBuild");
+        assert_eq!(compact_identity("5h", "usage", false), "5h");
+        assert_eq!(compact_identity("weekly", "usage", false), "weekly");
+        assert_eq!(compact_identity("fable", "usage", false), "fable");
+        assert_eq!(compact_identity("5h", "GPT-5.3", false), "5h-5.3");
+        assert_eq!(compact_identity("weekly", "GPT-5.3", false), "weekly-5.3");
+        assert_eq!(compact_identity("weekly", "Codex", false), "weekly-Codex");
+        assert_eq!(compact_identity("weekly", "GrokBuild", false), "GrokBuild");
+        assert_eq!(compact_identity("monthly", "usage", true), "monthly-usage");
+        assert_eq!(compact_identity("monthly", "auto", false), "monthly-auto");
+        assert_eq!(compact_identity("monthly", "api", false), "monthly-api");
         assert_eq!(
-            compact_identity("Resets", "available count"),
-            "Resets  available count"
+            compact_identity("monthly", "total spend", false),
+            "monthly spend"
         );
+        assert_eq!(
+            compact_identity("Resets", "available count", false),
+            "Reset"
+        );
+        assert_eq!(
+            compact_identity("Credits", "credit balance", false),
+            "Balance"
+        );
+    }
+
+    #[test]
+    fn usage_stays_when_the_same_window_has_other_metrics() {
+        let block = render_summary_rows(
+            &[
+                summary_row(
+                    "monthly",
+                    "total spend",
+                    SummaryValue::Spent {
+                        amount: 3.0,
+                        limit: 20.0,
+                        currency: Currency { code: "USD".into() },
+                    },
+                ),
+                SummaryRow {
+                    remaining_ratio: Some(0.73),
+                    ..summary_row("monthly", "usage", SummaryValue::Remains(73.0))
+                },
+            ],
+            at(12, 0),
+            &Palette::off(),
+        );
+        assert!(block.contains("monthly-usage"), "{block}");
+        assert!(block.contains("monthly spend"), "{block}");
+    }
+
+    #[test]
+    fn disabled_on_demand_rows_are_omitted() {
+        let block = render_summary_rows(
+            &[
+                summary_row("monthly", "auto", SummaryValue::Remains(85.0)),
+                summary_row("monthly", "on demand", SummaryValue::Disabled),
+                SummaryRow {
+                    disabled: true,
+                    ..summary_row(
+                        "monthly",
+                        "on demand spend",
+                        SummaryValue::Spent {
+                            amount: 0.0,
+                            limit: 50.0,
+                            currency: Currency { code: "USD".into() },
+                        },
+                    )
+                },
+            ],
+            at(12, 0),
+            &Palette::off(),
+        );
+        assert!(block.contains("monthly-auto"), "{block}");
+        assert!(!block.contains("on demand"), "{block}");
+        assert!(!block.contains("disabled"), "{block}");
     }
 
     #[test]
@@ -792,10 +954,10 @@ mod tests {
         assert_eq!(
             block,
             concat!(
-                "5h            remains  97%  resets in 3h57m  [##########]\n",
+                "5h            remains 97%   resets in 3h57m  [##########]\n",
                 "weekly-5.3    remains 100%  resets in 8h30m  [##########]\n",
-                "weekly-Codex  remains  50%  resets in 8h30m  [-----#####]\n",
-                "GrokBuild     remains  40%                   [------####]\n",
+                "weekly-Codex  remains 50%   resets in 8h30m  [-----#####]\n",
+                "GrokBuild     remains 40%                    [------####]\n",
             ),
             "{block}"
         );
@@ -809,6 +971,130 @@ mod tests {
                 "nothing may follow the bar: {line}"
             );
         }
+    }
+
+    #[test]
+    fn mixed_readings_share_amount_reset_and_bar_columns() {
+        let block = render_summary_rows(
+            &[
+                SummaryRow {
+                    resets_at: Some(at(16, 0)),
+                    remaining_ratio: Some(1.0),
+                    ..summary_row("5h", "GPT-5.3", SummaryValue::Remains(100.0))
+                },
+                summary_row(
+                    "Credits",
+                    "credit balance",
+                    SummaryValue::Credits {
+                        used: 1.0,
+                        limit: None,
+                    },
+                ),
+                SummaryRow {
+                    resets_at: Some(at(16, 0)),
+                    ..summary_row(
+                        "monthly",
+                        "total spend",
+                        SummaryValue::Spent {
+                            amount: 12.5,
+                            limit: 20.0,
+                            currency: Currency { code: "USD".into() },
+                        },
+                    )
+                },
+            ],
+            at(12, 0),
+            &Palette::off(),
+        );
+        let lines: Vec<&str> = block.lines().collect();
+        assert_eq!(lines.len(), 3, "{block}");
+        let resets: Vec<usize> = lines
+            .iter()
+            .filter_map(|line| line.find("resets"))
+            .collect();
+        assert_eq!(resets.len(), 2, "{block}");
+        assert_eq!(resets[0], resets[1], "{block}");
+        let amounts = [(lines[0], "100%"), (lines[1], "1"), (lines[2], "$12.50")];
+        let amount_starts: Vec<usize> = amounts
+            .iter()
+            .map(|(line, amount)| {
+                line.find(amount)
+                    .unwrap_or_else(|| panic!("{amount} missing from {line}"))
+            })
+            .collect();
+        assert_eq!(amount_starts[0], amount_starts[1], "{block}");
+        assert_eq!(amount_starts[0], amount_starts[2], "{block}");
+        let bar_at = lines[0].find('[').expect("{block}");
+        assert!(
+            !lines[1].contains('[') && lines[1].len() <= bar_at,
+            "rows without a bar must not overrun the bar column: {block}"
+        );
+        assert!(
+            !lines[2].contains('[') && lines[2].len() <= bar_at,
+            "rows without a bar must not overrun the bar column: {block}"
+        );
+    }
+
+    #[test]
+    fn summary_columns_align_across_accounts() {
+        let now = at(12, 0);
+        let short = [SummaryRow {
+            resets_at: Some(at(12, 40)),
+            remaining_ratio: Some(0.17),
+            ..summary_row("5h", "usage", SummaryValue::Remains(17.0))
+        }];
+        let long = [
+            SummaryRow {
+                resets_at: Some(at(16, 0)),
+                remaining_ratio: Some(0.04),
+                ..summary_row("weekly", "Codex", SummaryValue::Remains(4.0))
+            },
+            SummaryRow {
+                resets_at: Some(at(23, 0)),
+                ..summary_row(
+                    "monthly",
+                    "total spend",
+                    SummaryValue::Spent {
+                        amount: 953.12,
+                        limit: 400.0,
+                        currency: Currency { code: "USD".into() },
+                    },
+                )
+            },
+        ];
+        let mut layout = measure_summary_layout(&short, now);
+        layout.expand(measure_summary_layout(&long, now));
+        let claude = render_summary_rows_aligned(&short, now, &Palette::off(), &layout);
+        let cursor = render_summary_rows_aligned(&long, now, &Palette::off(), &layout);
+        let five_hours = claude.lines().next().expect(&claude);
+        let weekly = cursor.lines().next().expect(&cursor);
+        let spend = cursor.lines().nth(1).expect(&cursor);
+        assert_eq!(
+            five_hours.find("remains"),
+            weekly.find("remains"),
+            "{claude}{cursor}"
+        );
+        assert_eq!(
+            five_hours.find("17%"),
+            weekly.find("4%"),
+            "{claude}{cursor}"
+        );
+        assert_eq!(
+            five_hours.find("17%"),
+            spend.find("$953.12"),
+            "{claude}{cursor}"
+        );
+        assert_eq!(
+            five_hours.find("resets"),
+            weekly.find("resets"),
+            "{claude}{cursor}"
+        );
+        assert_eq!(
+            five_hours.find("resets"),
+            spend.find("resets"),
+            "{claude}{cursor}"
+        );
+        assert_eq!(five_hours.find('['), weekly.find('['), "{claude}{cursor}");
     }
 
     #[test]
@@ -854,8 +1140,7 @@ mod tests {
             &Palette::off(),
         );
         assert_eq!(
-            block,
-            "Credits  credit balance  balance $0.00\nCredits  reset           credits unlimited\n",
+            block, "Balance         balance $0.00\nCredits  reset  credits unlimited\n",
             "{block}"
         );
         assert!(!block.lines().any(|line| line.ends_with(']')), "{block}");
@@ -898,7 +1183,7 @@ mod tests {
             at(12, 0),
             &Palette::off(),
         );
-        assert_eq!(block, "Credits  credit balance  credits 0\n", "{block}");
+        assert_eq!(block, "Balance  credits 0\n", "{block}");
         assert!(!block.contains(']'), "{block}");
     }
 
@@ -917,10 +1202,7 @@ mod tests {
             at(12, 0),
             &Palette::off(),
         );
-        assert_eq!(
-            block, "monthly  total spend  spent $925.11 of $400.00\n",
-            "{block}"
-        );
+        assert_eq!(block, "monthly spend  $925.11\n", "{block}");
         assert!(!block.contains(']'), "{block}");
     }
 
@@ -936,7 +1218,7 @@ mod tests {
             &Palette::off(),
         );
         assert_eq!(
-            block, "monthly  auto  remains 85% (off)  [-#########]\n",
+            block, "monthly-auto  remains 85% (off)  [-#########]\n",
             "{block}"
         );
     }
