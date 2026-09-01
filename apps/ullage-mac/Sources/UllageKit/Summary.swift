@@ -44,6 +44,8 @@ public struct SummaryRow: Equatable, Sendable {
     public let metric: String
     public let value: SummaryValue
     public let resetsAt: Date?
+    /// Fraction of quota still available, `0.0...1.0`, when the value is remaining
+    /// quota. Money spent is an amount, so it stays `nil`.
     public let remainingRatio: Double?
     public let disabled: Bool
 }
@@ -117,14 +119,13 @@ public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
 public func overviewItems(for usage: SubscriptionUsage) -> [OverviewItem] {
     let windows = projectedWindows(for: usage)
     var occurrences: [OverviewIdentityBase: Int] = [:]
-    return overviewWindowIndexes(for: usage)
-        .compactMap { index -> OverviewItem? in
-            let window = usage.windows[index]
-            let rows = windows[index]
-            let selected = rows.first(where: { poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage" })
-                ?? rows.first(where: { $0.row.remainingRatio != nil })
-                ?? rows.first
-            guard let row = selected?.row ?? overviewFallbackRow(for: window) else { return nil }
+    return overviewSelections(windows: windows, usage: usage)
+        .compactMap { selection -> OverviewItem? in
+            let window = usage.windows[selection.windowIndex]
+            let selected = selection.projected
+            let allowFallback = selection.usesRepresentative
+            guard let row = selected?.row ?? (allowFallback ? overviewFallbackRow(for: window) : nil)
+            else { return nil }
             let identity = OverviewIdentityBase(
                 windowKey: overviewIdentityKey(window.window),
                 measurementName: selected?.measurementName ?? row.metric
@@ -155,6 +156,144 @@ private func overviewIdentityKey(_ window: UsageWindowKind) -> String {
     case .other(let id, _): "other:" + id
     case .unknown(let kind): "unknown:" + kind
     }
+}
+
+/// Provider-specific Overview catalog. Known providers list the windows and
+/// measurements to show, in display order. Unknown providers keep the
+/// shortest available time-tier fallback so a new account is still visible.
+private struct OverviewSelector {
+    enum Window {
+        case fiveHours
+        case weekly
+        case monthly
+        case otherContaining(String)
+        case any
+    }
+
+    enum Measurement {
+        case representative
+        case named(String)
+        case nameContains(String)
+        case pool
+    }
+
+    let window: Window
+    let measurement: Measurement
+}
+
+private struct OverviewSelection {
+    let windowIndex: Int
+    let projected: ProjectedRow?
+    let usesRepresentative: Bool
+}
+
+private func overviewCatalog(for provider: String) -> [OverviewSelector]? {
+    switch provider {
+    case "chatgpt":
+        [
+            OverviewSelector(window: .weekly, measurement: .representative),
+            OverviewSelector(window: .otherContaining("reset credits"), measurement: .representative),
+        ]
+    case "claude":
+        [
+            OverviewSelector(window: .fiveHours, measurement: .representative),
+            OverviewSelector(window: .otherContaining("fable"), measurement: .representative),
+        ]
+    case "cursor":
+        [
+            OverviewSelector(window: .any, measurement: .named("auto")),
+            OverviewSelector(window: .any, measurement: .named("api")),
+        ]
+    case "grok":
+        [
+            OverviewSelector(window: .any, measurement: .pool),
+            OverviewSelector(window: .any, measurement: .nameContains("grokbuild")),
+        ]
+    default:
+        nil
+    }
+}
+
+private func overviewSelections(
+    windows: [[ProjectedRow]],
+    usage: SubscriptionUsage
+) -> [OverviewSelection] {
+    if let catalog = overviewCatalog(for: usage.provider) {
+        return catalog.flatMap { pick in
+            usage.windows.enumerated().compactMap { index, window -> OverviewSelection? in
+                guard overviewWindowMatches(window.window, pick.window) else { return nil }
+                let rows = windows[index]
+                switch pick.measurement {
+                case .representative:
+                    return OverviewSelection(
+                        windowIndex: index,
+                        projected: representativeRow(in: rows),
+                        usesRepresentative: true
+                    )
+                case .named(let name):
+                    guard let projected = rows.first(where: { $0.measurementName == name }) else {
+                        return nil
+                    }
+                    return OverviewSelection(
+                        windowIndex: index, projected: projected, usesRepresentative: false
+                    )
+                case .nameContains(let needle):
+                    guard let projected = rows.first(where: {
+                        overviewContains($0.measurementName, needle) || overviewContains($0.row.metric, needle)
+                    }) else { return nil }
+                    return OverviewSelection(
+                        windowIndex: index, projected: projected, usesRepresentative: false
+                    )
+                case .pool:
+                    guard let projected = rows.first(where: {
+                        poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage"
+                    }) else { return nil }
+                    return OverviewSelection(
+                        windowIndex: index, projected: projected, usesRepresentative: false
+                    )
+                }
+            }
+        }
+    }
+
+    return overviewWindowIndexes(for: usage).map { index in
+        OverviewSelection(
+            windowIndex: index,
+            projected: representativeRow(in: windows[index]),
+            usesRepresentative: true
+        )
+    }
+}
+
+private func overviewWindowMatches(_ window: UsageWindowKind, _ selector: OverviewSelector.Window) -> Bool {
+    switch selector {
+    case .fiveHours:
+        if case .fiveHours = window { return true }
+        return false
+    case .weekly:
+        if case .weekly = window { return true }
+        return false
+    case .monthly:
+        if case .monthly = window { return true }
+        return false
+    case .otherContaining(let needle):
+        switch window {
+        case .other(let id, let label):
+            return overviewContains(id, needle) || overviewContains(label, needle)
+        default:
+            return false
+        }
+    case .any:
+        return true
+    }
+}
+
+private func overviewContains(_ haystack: String, _ needle: String) -> Bool {
+    overviewNormalized(haystack).contains(overviewNormalized(needle))
+}
+
+private func overviewNormalized(_ value: String) -> String {
+    value.lowercased().replacingOccurrences(of: "_", with: " ")
 }
 
 private func overviewWindowIndexes(for usage: SubscriptionUsage) -> [Int] {
@@ -208,10 +347,15 @@ public func menuBarFillRatio(
 
     for snapshot in snapshots where enabledAccountIDs.contains(snapshot.accountId) {
         guard let usage = snapshot.usage.data else { continue }
-        if overviewWindowIndexes(for: usage).contains(where: { windowHitItsLimit(usage.windows[$0]) }) { return 0 }
+        let projected = projectedWindows(for: usage)
+        let selections = overviewSelections(windows: projected, usage: usage)
+        if selections.contains(where: { windowHitItsLimit(usage.windows[$0.windowIndex]) }) { return 0 }
 
-        for row in overviewRows(for: usage) where !row.disabled {
-            guard let ratio = row.remainingRatio else { continue }
+        for selection in selections {
+            let window = usage.windows[selection.windowIndex]
+            let row = selection.projected?.row
+                ?? (selection.usesRepresentative ? overviewFallbackRow(for: window) : nil)
+            guard let row, !row.disabled, let ratio = row.remainingRatio else { continue }
             minimumRatio = min(minimumRatio ?? ratio, ratio)
         }
     }
@@ -353,8 +497,7 @@ private func remainingRatio(_ value: SummaryValue) -> Double? {
     switch value {
     case .remains(let percent):
         return min(max(percent / 100, 0), 1)
-    case .spent(let amount, let limit, _),
-         .credits(let amount, .some(let limit)),
+    case .credits(let amount, .some(let limit)),
          .counted(let amount, .some(let limit)) where limit > 0:
         return min(max((limit - amount) / limit, 0), 1)
     default:

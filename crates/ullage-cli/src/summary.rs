@@ -80,7 +80,8 @@ pub struct SummaryRow {
     pub metric: String,
     pub value: SummaryValue,
     pub resets_at: Option<DateTime<Utc>>,
-    /// Fraction of quota still available, `0.0..=1.0`, when it is knowable.
+    /// Fraction of quota still available, `0.0..=1.0`, when the value is remaining
+    /// quota. Money spent is an amount, so it stays `None`.
     pub remaining_ratio: Option<f64>,
     /// The provider reported this row's feature as switched off.
     pub disabled: bool,
@@ -227,12 +228,11 @@ fn measurement_value(measurement: &UsageMeasurement, unlimited: bool) -> Summary
     }
 }
 
-/// The share of quota left, when the provider gave enough to compute one.
+/// The share of quota left, when the value is remaining quota rather than an amount.
 fn remaining_ratio(value: &SummaryValue) -> Option<f64> {
     match value {
         SummaryValue::Remains(percent) => Some((percent / 100.0).clamp(0.0, 1.0)),
-        SummaryValue::Spent { amount, limit, .. }
-        | SummaryValue::Credits {
+        SummaryValue::Credits {
             used: amount,
             limit: Some(limit),
         }
@@ -250,6 +250,9 @@ fn window_display_name(window: &UsageWindowKind) -> String {
         UsageWindowKind::Weekly => "weekly".into(),
         UsageWindowKind::Monthly => "monthly".into(),
         UsageWindowKind::Other { id, label } => {
+            if let Some(short) = other_window_display_name(id, label) {
+                return short.into();
+            }
             if label.trim().is_empty() {
                 id.clone()
             } else {
@@ -259,12 +262,29 @@ fn window_display_name(window: &UsageWindowKind) -> String {
     }
 }
 
+fn other_window_display_name(id: &str, label: &str) -> Option<&'static str> {
+    if token_is("fable", id) || token_is("fable", label) {
+        return Some("fable");
+    }
+    if id == "rate_limit_reset_credits" || label.eq_ignore_ascii_case("Rate limit reset credits") {
+        return Some("Resets");
+    }
+    None
+}
+
+fn token_is(needle: &str, value: &str) -> bool {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|part| part.eq_ignore_ascii_case(needle))
+}
+
 fn metric_display_name(name: &str) -> String {
     if POOL_MEASUREMENTS.contains(&name) {
         return "usage".into();
     }
     let name = name.strip_prefix("product:").unwrap_or(name);
     let name = name.strip_suffix("_usage").unwrap_or(name);
+    let name = name.strip_suffix("-Codex-Spark").unwrap_or(name);
     if name.is_empty() {
         return "usage".into();
     }
@@ -431,6 +451,24 @@ mod tests {
     }
 
     #[test]
+    fn spent_amounts_do_not_report_remaining_ratio() {
+        let summary = summarize(&usage(vec![window(
+            UsageWindowKind::Monthly,
+            vec![money("total_spend", 925.11, Some(400.0))],
+        )]));
+
+        assert_eq!(
+            summary.rows[0].value,
+            SummaryValue::Spent {
+                amount: 925.11,
+                limit: 400.0,
+                currency: Currency { code: "USD".into() },
+            }
+        );
+        assert_eq!(summary.rows[0].remaining_ratio, None);
+    }
+
+    #[test]
     fn credits_with_a_positive_limit_report_remaining_ratio() {
         let summary = summarize(&usage(vec![window(
             UsageWindowKind::Monthly,
@@ -545,8 +583,9 @@ mod tests {
                 currency: Currency { code: "USD".into() },
             }
         );
-        assert_eq!(summary.rows[0].remaining_ratio, Some(0.85));
+        assert_eq!(summary.rows[0].remaining_ratio, None);
         assert!(!summary.rows[0].disabled);
+        assert_eq!(summary.rows[2].remaining_ratio, None);
         assert!(summary.rows[2].disabled, "on-demand is switched off");
     }
 
@@ -707,7 +746,7 @@ mod tests {
     fn an_other_window_without_a_label_falls_back_to_its_id() {
         let summary = summarize(&usage(vec![window(
             UsageWindowKind::Other {
-                id: "rate_limit_reset_credits".into(),
+                id: "custom_quota".into(),
                 label: "   ".into(),
             },
             vec![UsageMeasurement {
@@ -718,7 +757,7 @@ mod tests {
             }],
         )]));
 
-        assert_eq!(summary.rows[0].window, "rate_limit_reset_credits");
+        assert_eq!(summary.rows[0].window, "custom_quota");
         assert_eq!(
             summary.rows[0].value,
             SummaryValue::Credits {
@@ -726,6 +765,49 @@ mod tests {
                 limit: None,
             }
         );
+    }
+
+    #[test]
+    fn reset_credits_windows_use_a_short_table_name() {
+        let summary = summarize(&usage(vec![window(
+            UsageWindowKind::Other {
+                id: "rate_limit_reset_credits".into(),
+                label: "Rate limit reset credits".into(),
+            },
+            vec![UsageMeasurement {
+                name: "available_count".into(),
+                used: 1.0,
+                limit: None,
+                unit: MeasurementUnit::Credits,
+            }],
+        )]));
+
+        assert_eq!(summary.rows[0].window, "Resets");
+        assert_eq!(summary.rows[0].metric, "available count");
+    }
+
+    #[test]
+    fn fable_windows_use_a_short_table_name() {
+        let summary = summarize(&usage(vec![window(
+            UsageWindowKind::Other {
+                id: "model_weekly_scoped_weekly_fable".into(),
+                label: "Fable (weekly_scoped)".into(),
+            },
+            vec![percent("included_usage", 89.0)],
+        )]));
+
+        assert_eq!(summary.rows[0].window, "fable");
+        assert_eq!(summary.rows[0].metric, "usage");
+    }
+
+    #[test]
+    fn chatgpt_spark_usage_shortens_to_the_model_version() {
+        let summary = summarize(&usage(vec![window(
+            UsageWindowKind::Weekly,
+            vec![percent("GPT-5.3-Codex-Spark_usage", 42.0)],
+        )]));
+
+        assert_eq!(summary.rows[0].metric, "GPT-5.3");
     }
 
     #[test]

@@ -13,6 +13,7 @@
           "window": { "kind": "weekly" },
           "resets_at": "2026-09-04T01:18:04.090314+00:00",
           "measurements": [
+            { "name": "weekly_pool", "used": 60.0, "limit": 100.0, "unit": { "kind": "percent" } },
             { "name": "product:GrokBuild", "used": 55.0, "limit": 100.0, "unit": { "kind": "percent" } }
           ]
         },

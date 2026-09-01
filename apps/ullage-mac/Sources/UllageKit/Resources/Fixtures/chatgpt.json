@@ -38,6 +38,13 @@
           ]
         },
         {
+          "window": { "kind": "other", "id": "rate_limit_reset_credits", "label": "Rate limit reset credits" },
+          "resets_at": null,
+          "measurements": [
+            { "name": "available_count", "used": 1.0, "limit": null, "unit": { "kind": "credits" } }
+          ]
+        },
+        {
           "window": { "kind": "other", "id": "credits", "label": "Credits" },
           "resets_at": null,
           "measurements": [

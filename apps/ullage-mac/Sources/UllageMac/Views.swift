@@ -124,13 +124,13 @@ private struct TabBar: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 18) {
+            HStack(spacing: 0) {
                 tab(title: "Overview", value: .overview, enabled: true)
                 ForEach(accounts, id: \.id) { account in
                     tab(title: titles[account.id] ?? account.provider, value: .account(account.id), enabled: account.enabled)
                 }
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 5)
         }
         .frame(height: 44)
     }
@@ -145,6 +145,9 @@ private struct TabBar: View {
                     .fill(selected == value ? Color.accentColor : Color.clear)
                     .frame(height: 2)
             }
+            .padding(.horizontal, 9)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
             .foregroundStyle(enabled ? .primary : .tertiary)
         }
         .buttonStyle(.plain)
@@ -339,16 +342,44 @@ struct SegmentedProgress: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0..<10, id: \.self) { index in
-                Capsule()
-                    .fill(index >= 10 - filledSegments ? color : Color(nsColor: .separatorColor))
-                    .frame(height: 5)
+                ProgressSegment(
+                    fill: progressSegmentFill(ratio: ratio, index: index),
+                    color: color
+                )
             }
         }
     }
 
-    private var filledSegments: Int { min(10, max(0, Int(ceil(ratio * 10)))) }
     var color: Color {
         Color(nsColor: progressColor(for: RemainingTier(ratio: ratio)))
+    }
+}
+
+/// Fraction of a 10% cell that should be filled, counting remaining quota from
+/// the right so a 5% remainder paints half of the last cell.
+func progressSegmentFill(ratio: Double, index: Int, segmentCount: Int = 10) -> Double {
+    guard segmentCount > 0, (0..<segmentCount).contains(index) else { return 0 }
+    let units = min(max(ratio.isFinite ? ratio : 0, 0), 1) * Double(segmentCount)
+    let filledStart = Double(segmentCount) - units
+    return min(max(Double(index + 1) - max(Double(index), filledStart), 0), 1)
+}
+
+private struct ProgressSegment: View {
+    let fill: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            Capsule()
+                .fill(Color(nsColor: .separatorColor))
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(color)
+                        .frame(width: geo.size.width * min(max(fill, 0), 1))
+                }
+                .clipShape(Capsule())
+        }
+        .frame(height: 5)
     }
 }
 

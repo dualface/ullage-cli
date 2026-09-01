@@ -25,4 +25,6 @@ the current task.
 - Building the macOS app always includes notarization: run
   `apps/ullage-mac/scripts/remote.sh notarize` (which signs, submits to Apple's
   notary service, and staples the ticket), not just `sign`. Copy the stapled
-  `.app` to `pro2026:~/Desktop/` after notarization succeeds.
+  `.app` to `pro2026:~/Desktop/` after notarization succeeds, then quit any
+  running `Ullage`/`UllageMac` instance and `open` the Desktop app so the new
+  build starts automatically.

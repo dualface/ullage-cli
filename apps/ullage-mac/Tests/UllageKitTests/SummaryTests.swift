@@ -41,6 +41,11 @@ private func date(_ value: String) throws -> Date {
             remainingRatio: 0.58, disabled: false
         ),
         SummaryRow(
+            window: "Rate limit reset credits", metric: "available count",
+            value: .credits(used: 1, limit: nil),
+            resetsAt: nil, remainingRatio: nil, disabled: false
+        ),
+        SummaryRow(
             window: "Credits", metric: "credit balance", value: .creditsUnlimited,
             resetsAt: nil, remainingRatio: nil, disabled: false
         ),
@@ -60,6 +65,11 @@ private func date(_ value: String) throws -> Date {
             resetsAt: try date("2026-09-07T00:00:00Z"),
             remainingRatio: 0.89, disabled: false
         ),
+        SummaryRow(
+            window: "Fable (weekly_scoped)", metric: "usage", value: .remains(78),
+            resetsAt: try date("2026-09-07T00:00:00Z"),
+            remainingRatio: 0.78, disabled: false
+        ),
     ])
 
     let cursor = summarize(try usage("cursor"))
@@ -68,7 +78,15 @@ private func date(_ value: String) throws -> Date {
         SummaryRow(
             window: "monthly", metric: "total spend",
             value: .spent(amount: 3, limit: 20, currency: Currency(code: "USD")),
-            resetsAt: cursorReset, remainingRatio: 0.85, disabled: false
+            resetsAt: cursorReset, remainingRatio: nil, disabled: false
+        ),
+        SummaryRow(
+            window: "monthly", metric: "auto", value: .remains(70),
+            resetsAt: cursorReset, remainingRatio: 0.7, disabled: false
+        ),
+        SummaryRow(
+            window: "monthly", metric: "api", value: .remains(77),
+            resetsAt: cursorReset, remainingRatio: 0.77, disabled: false
         ),
         SummaryRow(
             window: "monthly", metric: "usage", value: .remains(18),
@@ -77,12 +95,17 @@ private func date(_ value: String) throws -> Date {
         SummaryRow(
             window: "monthly", metric: "on demand spend",
             value: .spent(amount: 0, limit: 50, currency: Currency(code: "USD")),
-            resetsAt: cursorReset, remainingRatio: 1, disabled: true
+            resetsAt: cursorReset, remainingRatio: nil, disabled: true
         ),
     ])
 
     let grok = summarize(try usage("grok"))
     #expect(grok.rows == [
+        SummaryRow(
+            window: "weekly", metric: "usage", value: .remains(40),
+            resetsAt: try date("2026-09-04T01:18:04.090314+00:00"),
+            remainingRatio: 0.4, disabled: false
+        ),
         SummaryRow(
             window: "weekly", metric: "GrokBuild", value: .remains(45),
             resetsAt: try date("2026-09-04T01:18:04.090314+00:00"),
@@ -132,27 +155,49 @@ private func date(_ value: String) throws -> Date {
     #expect(summarize(usage).rows.map(\.window) == ["daily · alpha", "daily · beta"])
 }
 
-@Test func overviewUsesPoolThenRatioThenFirstRowForTheShortestWindows() throws {
-    let cursorRows = overviewRows(for: try usage("cursor"))
-    #expect(cursorRows.count == 1)
-    #expect(cursorRows[0].metric == "usage")
-
+@Test func overviewUsesTheProviderCatalogInListedOrder() throws {
     let chatGPTRows = overviewRows(for: try usage("chatgpt"))
-    #expect(chatGPTRows.map(\.metric) == ["Codex"])
-    #expect(chatGPTRows.map(\.window) == ["5h"])
+    #expect(chatGPTRows.map(\.window) == [
+        "weekly · Codex",
+        "weekly · GPT-5.3-Codex-Spark",
+        "Rate limit reset credits",
+    ])
+    #expect(chatGPTRows.map(\.metric) == ["Codex", "GPT-5.3-Codex-Spark", "available count"])
+    #expect(chatGPTRows.map(\.remainingRatio) == [0.69, 0.58, nil])
+
+    let claudeRows = overviewRows(for: try usage("claude"))
+    #expect(claudeRows.map(\.window) == ["5h", "Fable (weekly_scoped)"])
+    #expect(claudeRows.map(\.remainingRatio) == [0.97, 0.78])
+
+    let cursorRows = overviewRows(for: try usage("cursor"))
+    #expect(cursorRows.map(\.metric) == ["auto", "api"])
+    #expect(cursorRows.map(\.window) == ["monthly", "monthly"])
+    #expect(cursorRows.map(\.remainingRatio) == [0.7, 0.77])
 
     let grokRows = overviewRows(for: try usage("grok"))
-    #expect(grokRows.count == 1)
-    #expect(grokRows[0].window == "weekly")
-    #expect(grokRows[0].metric == "GrokBuild")
-
-    #expect(overviewRows(for: try usage("claude"))[0].remainingRatio == 0.97)
-    #expect(grokRows[0].remainingRatio == 0.45)
-    #expect(overviewRows(for: try usage("cursor"))[0].remainingRatio == 0.18)
-    #expect(chatGPTRows[0].remainingRatio == 0.06)
+    #expect(grokRows.map(\.metric) == ["usage", "GrokBuild"])
+    #expect(grokRows.map(\.window) == ["weekly", "weekly"])
+    #expect(grokRows.map(\.remainingRatio) == [0.4, 0.45])
+    #expect(Set(overviewItems(for: try usage("grok")).map(\.id)).count == 2)
 }
 
-@Test func overviewKeepsOnlyTheShortestKnownWindowTier() throws {
+@Test func overviewSkipsMissingCatalogItems() throws {
+    let data = Data(#"""
+    {
+      "provider":"claude","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"weekly"},"resets_at":null,"measurements":[
+          {"name":"included_usage","used":10,"limit":100,"unit":{"kind":"percent"}}
+        ]}
+      ]
+    }
+    """#.utf8)
+    let usage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: data)
+    #expect(overviewRows(for: usage).isEmpty)
+}
+
+@Test func unknownProvidersKeepTheShortestKnownWindowTier() throws {
     let data = Data(#"""
     {
       "provider":"future","account_label":null,"plan":null,
@@ -197,7 +242,7 @@ private func date(_ value: String) throws -> Date {
     #expect(rows.map(\.remainingRatio) == [0.5])
 }
 
-@Test func overviewKeepsMultipleShortestWindowsInStableOrder() throws {
+@Test func unknownProvidersKeepMultipleShortestWindowsInStableOrder() throws {
     let data = Data(#"""
     {
       "provider":"test","account_label":null,"plan":null,
@@ -222,7 +267,7 @@ private func date(_ value: String) throws -> Date {
     #expect(rows.map(\.metric) == ["usage", "requests"])
 }
 
-@Test func overviewItemsKeepUniqueStableIDsForDuplicateDisplayNames() throws {
+@Test func unknownProvidersKeepUniqueStableIDsForDuplicateDisplayNames() throws {
     let data = Data(#"""
     {
       "provider":"test","account_label":null,"plan":null,
@@ -249,7 +294,7 @@ private func date(_ value: String) throws -> Date {
     #expect(items.map(\.id) == overviewItems(for: updatedUsage).map(\.id))
 }
 
-@Test func overviewKeepsAllOtherAndUnknownWindowsWhenTheyAreTheOnlyTier() throws {
+@Test func unknownProvidersKeepAllOtherAndUnknownWindowsWhenTheyAreTheOnlyTier() throws {
     let data = Data(#"""
     {
       "provider":"future","account_label":null,"plan":null,
@@ -284,12 +329,12 @@ private func date(_ value: String) throws -> Date {
     let accounts = snapshots.map {
         Account(id: $0.accountId, provider: "fixture", label: nil, enabled: true)
     }
-    #expect(menuBarFillRatio(accounts: accounts, snapshots: snapshots) == 0.18)
+    #expect(menuBarFillRatio(accounts: accounts, snapshots: snapshots) == 0.4)
 
     let cursorDisabled = accounts.map {
         Account(id: $0.id, provider: $0.provider, label: $0.label, enabled: $0.id != "fixture-cursor")
     }
-    #expect(menuBarFillRatio(accounts: cursorDisabled, snapshots: snapshots) == 0.45)
+    #expect(menuBarFillRatio(accounts: cursorDisabled, snapshots: snapshots) == 0.4)
 }
 
 @Test func menuBarFillSkipsDisabledRows() throws {
@@ -343,8 +388,34 @@ private func date(_ value: String) throws -> Date {
     #expect(menuBarFillRatio(accounts: [account], snapshots: [snapshot]) == 0.9)
 }
 
-@Test func menuBarFillReturnsZeroForReachedLimitsAndNilWithoutRows() throws {
-    let limited = try fixture("chatgpt")
+@Test func menuBarFillIgnoresLimitsOutsideTheCatalog() throws {
+    let snapshot = try fixture("chatgpt")
+    let account = Account(id: snapshot.accountId, provider: "chatgpt", label: nil, enabled: true)
+    #expect(menuBarFillRatio(accounts: [account], snapshots: [snapshot]) == 0.58)
+}
+
+@Test func menuBarFillReturnsZeroForCatalogWindowLimitsAndNilWithoutRows() throws {
+    let limitedData = Data(#"""
+    {
+      "provider":"chatgpt","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"five_hours"},"resets_at":null,"measurements":[
+          {"name":"codex_usage","used":10,"limit":100,"unit":{"kind":"percent"}},
+          {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]},
+        {"window":{"kind":"weekly"},"resets_at":null,"measurements":[
+          {"name":"codex_usage","used":20,"limit":100,"unit":{"kind":"percent"}},
+          {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]}
+      ]
+    }
+    """#.utf8)
+    let limitedUsage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: limitedData)
+    let limited = SnapshotPayload(
+        accountId: "chatgpt", usage: .complete(limitedUsage), lastSuccessAt: Date(),
+        stale: false, lastError: nil, lastErrorAt: nil
+    )
     let account = Account(id: limited.accountId, provider: "chatgpt", label: nil, enabled: true)
     #expect(menuBarFillRatio(accounts: [account], snapshots: [limited]) == 0)
 

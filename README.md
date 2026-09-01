@@ -45,8 +45,10 @@ The menu bar mark and application icon share one Swift/CoreGraphics drawing
 implementation in the `UllageMac` executable. The menu bar variant uses
 dedicated geometry for legibility at 18 points. Its liquid level tracks the
 lowest usable remaining quota shown in Overview across enabled accounts, with
-Overview retaining every window in each account's shortest available time
-tier. A reached limit in those retained windows takes precedence as 0%. After
+Overview using a provider-specific catalog: ChatGPT weekly windows and reset
+credits, Claude 5h and Fable, Cursor auto and api, and Grok usage and GrokBuild.
+Unknown providers keep every window in the shortest available time tier. A
+reached limit in those retained windows takes precedence as 0%. After
 the first refresh, an exclamation mark replaces the liquid when no usable quota
 is available or the connection enters an error state. The glass application
 icon keeps a static liquid level and has six built-in palettes: Amber, Oxblood,
@@ -75,7 +77,7 @@ from the application bundle. Copy `Ullage.app` to `/Applications` or
 
 `--dump` fetches the same accounts and usage projection as the menu bar UI and
 prints it without starting the AppKit application loop. Its Overview section
-shows every window in each account's shortest available time tier, while the
+uses the same provider-specific catalog as the popover, while the
 per-account sections continue to show all windows. `--render-iconset DIR
 [--palette KEY]` likewise renders build assets without starting that loop and
 defaults to Oxblood. `--mock` and

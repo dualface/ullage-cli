@@ -228,6 +228,22 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(progressColor(for: .critical), .systemRed)
     }
 
+    func testProgressSegmentsAllowPartialCellsFromTheRight() {
+        XCTAssertEqual(progressSegmentFill(ratio: 0, index: 9), 0)
+        XCTAssertEqual(progressSegmentFill(ratio: 0.05, index: 9), 0.5, accuracy: 1e-12)
+        XCTAssertEqual(progressSegmentFill(ratio: 0.05, index: 8), 0)
+        XCTAssertEqual(progressSegmentFill(ratio: 0.10, index: 9), 1)
+        XCTAssertEqual(progressSegmentFill(ratio: 0.10, index: 8), 0)
+        XCTAssertEqual(progressSegmentFill(ratio: 0.15, index: 9), 1)
+        XCTAssertEqual(progressSegmentFill(ratio: 0.15, index: 8), 0.5, accuracy: 1e-12)
+        XCTAssertEqual(progressSegmentFill(ratio: 1, index: 0), 1)
+        XCTAssertEqual(progressSegmentFill(ratio: 1.4, index: 0), 1)
+        XCTAssertEqual(progressSegmentFill(ratio: -.infinity, index: 9), 0)
+        XCTAssertEqual(progressSegmentFill(ratio: .nan, index: 9), 0)
+        XCTAssertEqual(progressSegmentFill(ratio: 0.5, index: -1), 0)
+        XCTAssertEqual(progressSegmentFill(ratio: 0.5, index: 10), 0)
+    }
+
     func testLoginItemRequiresApplicationBundle() {
         XCTAssertTrue(isApplicationBundleURL(URL(fileURLWithPath: "/Applications/Ullage.app")))
         XCTAssertTrue(isApplicationBundleURL(URL(fileURLWithPath: "/Applications/Ullage.APP")))
@@ -442,8 +458,12 @@ final class UllageMacTests: XCTestCase {
         XCTAssertTrue(output.contains("\nACCOUNTS\n"))
         let sections = output.components(separatedBy: "\nACCOUNTS\n")
         XCTAssertEqual(sections.count, 2)
-        XCTAssertFalse(sections[0].contains("weekly · Codex"))
+        XCTAssertTrue(sections[0].contains("weekly · Codex"))
+        XCTAssertTrue(sections[0].contains("Rate limit reset credits"))
+        XCTAssertFalse(sections[0].contains("5h | Codex"))
         XCTAssertTrue(sections[1].contains("weekly · Codex"))
+        XCTAssertTrue(sections[0].contains("auto"))
+        XCTAssertTrue(sections[0].contains("GrokBuild"))
         XCTAssertTrue(output.contains("badges=stale,partial,network"))
         XCTAssertTrue(output.contains("badges=rate_limited"))
         XCTAssertFalse(output.contains("private label"))

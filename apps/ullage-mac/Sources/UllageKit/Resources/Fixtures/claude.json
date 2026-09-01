@@ -22,6 +22,13 @@
           "measurements": [
             { "name": "included_usage", "used": 11.0, "limit": 100.0, "unit": { "kind": "percent" } }
           ]
+        },
+        {
+          "window": { "kind": "other", "id": "model_weekly_scoped_weekly_fable", "label": "Fable (weekly_scoped)" },
+          "resets_at": "2026-09-07T00:00:00Z",
+          "measurements": [
+            { "name": "included_usage", "used": 22.0, "limit": 100.0, "unit": { "kind": "percent" } }
+          ]
         }
       ]
     },

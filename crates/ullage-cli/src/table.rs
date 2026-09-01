@@ -276,14 +276,15 @@ pub fn render_line(text: &str, style: Style, palette: &Palette) -> String {
     output
 }
 
-/// Renders the summary grid: window, metric, value, reset, progress bar.
+/// Renders the summary grid: identity, value, reset, progress bar.
 ///
-/// The bar is always the last column so every row shares one aligned slot,
-/// including rows without a reset time.
+/// Window and metric collapse into one identity cell (for example `5h`,
+/// `5h-5.3`, or `GrokBuild`) so the table does not repeat `usage` or a full
+/// model name. The bar is always the last column so every row shares one
+/// aligned slot, including rows without a reset time.
 pub fn render_summary_rows(rows: &[SummaryRow], now: DateTime<Utc>, palette: &Palette) -> String {
     let cells: Vec<SummaryCells> = rows.iter().map(|row| summary_cells(row, now)).collect();
-    let window_width = max_width(cells.iter().map(|cell| cell.window.as_str()));
-    let metric_width = max_width(cells.iter().map(|cell| cell.metric.as_str()));
+    let identity_width = max_width(cells.iter().map(|cell| cell.identity.as_str()));
     let verb_width = max_width(cells.iter().map(|cell| cell.verb));
     let suffix_width = max_width(cells.iter().map(|cell| cell.suffix));
     let resets_width = max_width(cells.iter().map(|cell| cell.resets.as_str()));
@@ -315,8 +316,7 @@ pub fn render_summary_rows(rows: &[SummaryRow], now: DateTime<Utc>, palette: &Pa
     let mut output = String::new();
     for (cell, value) in cells.iter().zip(&values) {
         let mut columns = vec![
-            pad(&cell.window, window_width, Align::Left),
-            pad(&cell.metric, metric_width, Align::Left),
+            pad(&cell.identity, identity_width, Align::Left),
             pad(value, value_width, Align::Left),
         ];
         if resets_width > 0 {
@@ -340,8 +340,7 @@ pub fn render_summary_rows(rows: &[SummaryRow], now: DateTime<Utc>, palette: &Pa
 
 /// The pre-alignment text of one summary row.
 struct SummaryCells {
-    window: String,
-    metric: String,
+    identity: String,
     verb: &'static str,
     amount: String,
     suffix: &'static str,
@@ -352,8 +351,10 @@ struct SummaryCells {
 fn summary_cells(row: &SummaryRow, now: DateTime<Utc>) -> SummaryCells {
     let (verb, amount) = summary_value_text(&row.value);
     SummaryCells {
-        window: visible_cell_text(&row.window),
-        metric: visible_cell_text(&row.metric),
+        identity: compact_identity(
+            &visible_cell_text(&row.window),
+            &visible_cell_text(&row.metric),
+        ),
         verb,
         amount,
         suffix: if row.disabled { "(off)" } else { "" },
@@ -363,6 +364,31 @@ fn summary_cells(row: &SummaryRow, now: DateTime<Utc>) -> SummaryCells {
             .unwrap_or_default(),
         remaining_ratio: row.remaining_ratio,
     }
+}
+
+/// Collapses window + metric into the single label the table prints.
+fn compact_identity(window: &str, metric: &str) -> String {
+    let metric = metric.trim();
+    if metric.eq_ignore_ascii_case("GrokBuild") {
+        return "GrokBuild".into();
+    }
+    if metric.is_empty() || metric == "usage" {
+        return window.to_string();
+    }
+    if let Some(rest) = strip_gpt_prefix(metric) {
+        return format!("{window}-{rest}");
+    }
+    if metric == "Codex" {
+        return format!("{window}-{metric}");
+    }
+    format!("{window}{}{metric}", " ".repeat(COLUMN_GAP))
+}
+
+fn strip_gpt_prefix(metric: &str) -> Option<&str> {
+    let rest = metric
+        .strip_prefix("GPT-")
+        .or_else(|| metric.strip_prefix("gpt-"))?;
+    (!rest.is_empty()).then_some(rest)
 }
 
 fn summary_value_text(value: &SummaryValue) -> (&'static str, String) {
@@ -734,7 +760,16 @@ mod tests {
             SummaryRow {
                 resets_at: Some(at(20, 30)),
                 remaining_ratio: Some(1.0),
-                ..summary_row("weekly", "Codex Spark", SummaryValue::Remains(100.0))
+                ..summary_row("weekly", "GPT-5.3", SummaryValue::Remains(100.0))
+            },
+            SummaryRow {
+                resets_at: Some(at(20, 30)),
+                remaining_ratio: Some(0.5),
+                ..summary_row("weekly", "Codex", SummaryValue::Remains(50.0))
+            },
+            SummaryRow {
+                remaining_ratio: Some(0.4),
+                ..summary_row("weekly", "GrokBuild", SummaryValue::Remains(40.0))
             },
         ];
 
@@ -742,8 +777,10 @@ mod tests {
         assert_eq!(
             block,
             concat!(
-                "5h      usage        remains  97%  resets in 3h57m  [##########]\n",
-                "weekly  Codex Spark  remains 100%  resets in 8h30m  [##########]\n",
+                "5h            remains  97%  resets in 3h57m  [##########]\n",
+                "weekly-5.3    remains 100%  resets in 8h30m  [##########]\n",
+                "weekly-Codex  remains  50%  resets in 8h30m  [-----#####]\n",
+                "GrokBuild     remains  40%                    [------####]\n",
             ),
             "{block}"
         );
@@ -827,7 +864,7 @@ mod tests {
             &Palette::off(),
         );
         assert_eq!(
-            block, "monthly  usage  credits 285 of 1000  [---#######]\n",
+            block, "monthly  credits 285 of 1000  [---#######]\n",
             "{block}"
         );
     }
@@ -851,26 +888,40 @@ mod tests {
     }
 
     #[test]
+    fn spent_money_shows_the_amount_and_no_bar() {
+        let block = render_summary_rows(
+            &[summary_row(
+                "monthly",
+                "total spend",
+                SummaryValue::Spent {
+                    amount: 925.11,
+                    limit: 400.0,
+                    currency: Currency { code: "USD".into() },
+                },
+            )],
+            at(12, 0),
+            &Palette::off(),
+        );
+        assert_eq!(
+            block, "monthly  total spend  spent $925.11 of $400.00\n",
+            "{block}"
+        );
+        assert!(!block.contains(']'), "{block}");
+    }
+
+    #[test]
     fn a_disabled_row_is_marked_without_displacing_the_bar() {
         let block = render_summary_rows(
             &[SummaryRow {
                 remaining_ratio: Some(0.85),
                 disabled: true,
-                ..summary_row(
-                    "monthly",
-                    "on demand spend",
-                    SummaryValue::Spent {
-                        amount: 3.0,
-                        limit: 20.0,
-                        currency: Currency { code: "USD".into() },
-                    },
-                )
+                ..summary_row("monthly", "auto", SummaryValue::Remains(85.0))
             }],
             at(12, 0),
             &Palette::off(),
         );
         assert_eq!(
-            block, "monthly  on demand spend  spent $3.00 of $20.00 (off)  [-#########]\n",
+            block, "monthly  auto  remains 85% (off)  [-#########]\n",
             "{block}"
         );
     }
