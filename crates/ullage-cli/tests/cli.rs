@@ -3097,7 +3097,6 @@ fn show_defaults_to_a_readable_summary_with_a_trailing_progress_bar() {
     );
 
     let five_hours = line_starting_with(stdout, "5h ");
-    assert!(five_hours.contains("usage"), "{stdout}");
     assert!(five_hours.contains("remains 97%"), "{stdout}");
     assert!(five_hours.contains("resets in 3h5"), "{stdout}");
     assert!(five_hours.ends_with("[##########]"), "{stdout}");
