@@ -278,6 +278,10 @@ impl DeviceStore {
             return Ok(false);
         }
 
+        for index in &matches {
+            let device = &mut state.devices[*index];
+            device.last_seen_at = device.last_seen_at.max(device.created_at).max(now);
+        }
         let persisted = matches
             .iter()
             .filter_map(|index| {
@@ -286,19 +290,23 @@ impl DeviceStore {
                     .last_persisted_seen
                     .get(&device.id)
                     .is_none_or(|last| {
-                        now.signed_duration_since(*last).num_seconds()
+                        device
+                            .last_seen_at
+                            .signed_duration_since(*last)
+                            .num_seconds()
                             >= LAST_SEEN_WRITE_INTERVAL_SECONDS
                     });
-                is_due.then(|| device.id.clone())
+                is_due.then(|| (device.id.clone(), device.last_seen_at))
             })
             .collect::<Vec<_>>();
-        for index in &matches {
-            state.devices[*index].last_seen_at = now;
-        }
         if !persisted.is_empty() {
-            persist_state_with_current_seen(&state, &persisted)?;
-            for id in persisted {
-                state.last_persisted_seen.insert(id, now);
+            let persisted_ids = persisted
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>();
+            persist_state_with_current_seen(&state, &persisted_ids)?;
+            for (id, last_seen_at) in persisted {
+                state.last_persisted_seen.insert(id, last_seen_at);
             }
         }
         Ok(true)
@@ -333,9 +341,12 @@ fn validate_devices(devices: &[DeviceRecord]) -> Result<(), &'static str> {
         }
         if device.name.is_empty()
             || device.name.chars().count() > 64
-            || device.name.chars().any(char::is_control)
+            || !device.name.chars().all(device_name_character_is_safe)
         {
             return Err("device name is malformed");
+        }
+        if device.last_seen_at < device.created_at {
+            return Err("device timestamps are malformed");
         }
         if device.token_hash.len() != 64
             || !device
@@ -352,13 +363,21 @@ fn validate_devices(devices: &[DeviceRecord]) -> Result<(), &'static str> {
 fn sanitize_device_name(name: &str) -> String {
     let cleaned = name
         .chars()
-        .filter(|character| !character.is_control())
+        .filter(|character| device_name_character_is_safe(*character))
         .collect::<String>();
     if cleaned.is_empty() {
         "unknown".to_owned()
     } else {
         cleaned
     }
+}
+
+fn device_name_character_is_safe(character: char) -> bool {
+    !character.is_control()
+        && !matches!(
+            character,
+            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
 }
 
 fn normalize_pair_code(value: &str) -> Option<String> {
@@ -861,9 +880,34 @@ mod tests {
     }
 
     #[test]
-    fn device_names_drop_controls_and_fall_back_when_empty() {
+    fn device_names_drop_unsafe_controls_and_fall_back_when_empty() {
         assert_eq!(sanitize_device_name("pro\0\n2026"), "pro2026");
-        assert_eq!(sanitize_device_name("\0\n\t"), "unknown");
+        assert_eq!(sanitize_device_name("lab\u{202e}host"), "labhost");
+        assert_eq!(sanitize_device_name("\0\n\t\u{202e}"), "unknown");
+    }
+
+    #[test]
+    fn unsafe_device_names_never_reach_list_payloads_or_persisted_validation() {
+        let store = DeviceStore::memory();
+        let code = store.create_pair_code_at(fixed_time(0)).unwrap();
+        let credential = store
+            .pair_at(&code.code, "lab\u{202e}host", fixed_time(0))
+            .unwrap();
+        assert_eq!(credential.device_name, "labhost");
+        assert_eq!(store.list_devices()[0].name, "labhost");
+
+        let invalid = DeviceRecord {
+            id: "222222222222".to_owned(),
+            name: "lab\u{202e}host".to_owned(),
+            token_hash: "00".repeat(32),
+            created_at: fixed_time(0),
+            last_seen_at: fixed_time(0),
+            revoked_at: None,
+        };
+        assert_eq!(
+            validate_devices(&[invalid]),
+            Err("device name is malformed")
+        );
     }
 
     #[test]
@@ -1026,6 +1070,24 @@ mod tests {
                 .unwrap()
         );
         assert_ne!(std::fs::read(&path).unwrap(), initial);
+    }
+
+    #[test]
+    fn last_seen_remains_monotonic_when_the_clock_moves_backward() {
+        let store = DeviceStore::memory();
+        let code = store.create_pair_code_at(fixed_time(100)).unwrap();
+        let credential = store
+            .pair_at(&code.code, "device", fixed_time(100))
+            .unwrap();
+
+        assert!(
+            store
+                .authenticate_at(&credential.device_token, fixed_time(50))
+                .unwrap()
+        );
+        let listed = store.list_devices();
+        assert_eq!(listed[0].created_at, fixed_time(100));
+        assert_eq!(listed[0].last_seen_at, fixed_time(100));
     }
 
     #[cfg(unix)]
