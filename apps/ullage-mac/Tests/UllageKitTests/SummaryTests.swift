@@ -552,8 +552,8 @@ private func date(_ value: String) throws -> Date {
         MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.8),
     ]
     var state = MenuBarLiquidAnimationState(
-        displayedRatio: 0.2,
-        targetRatio: 0.8,
+        displayedRatio: 0.5,
+        targetRatio: 0.2,
         accountIndex: 0,
         accountID: "a",
         displayName: "A",
@@ -564,7 +564,7 @@ private func date(_ value: String) throws -> Date {
     )
     #expect(state.accountID == "a")
     #expect(state.targetRatio == 0.2)
-    #expect(state.displayedRatio == 0.2)
+    #expect(state.displayedRatio == 0.5)
 }
 
 @Test func menuBarLiquidAnimationDoesNotRotateASingleAccount() {
