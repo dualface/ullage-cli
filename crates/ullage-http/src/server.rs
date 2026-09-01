@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -22,7 +22,9 @@ use ullage_protocol::{
     ControlCommand, ControlError, ControlRequest, ControlResponse, ControlResult, ProviderError,
 };
 
+use crate::bind::INVALID_BIND_MESSAGE;
 use crate::token::{constant_time_eq, load_or_create_token, load_token};
+use crate::{BindAddressClass, classify_bind_address};
 
 const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,14 +32,14 @@ const UNAUTHORIZED_BODY: &str = "{\"error\":\"unauthorized\"}";
 
 #[derive(Clone, Debug)]
 pub struct HttpBindConfig {
-    pub bind: SocketAddr,
+    pub binds: Vec<SocketAddr>,
     pub allowed_origins: Vec<String>,
     pub probe_min_interval: Duration,
     pub token_path: PathBuf,
 }
 
 pub struct HttpServer {
-    listener: TcpListener,
+    listeners: Vec<TcpListener>,
     state: Arc<HttpState>,
 }
 
@@ -81,19 +83,9 @@ impl From<HttpBindError> for String {
     }
 }
 
-pub fn bind_address_is_allowed(address: IpAddr) -> bool {
-    if address.is_loopback() {
-        return true;
-    }
-    match address {
-        IpAddr::V4(address) => u32::from(address) & 0xffc0_0000 == 0x6440_0000,
-        IpAddr::V6(address) => address.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
-    }
-}
-
 struct HttpState {
     service: ControlService,
-    bind: SocketAddr,
+    binds: Vec<SocketAddr>,
     allowed_origins: Vec<String>,
     probe_min_interval: Duration,
     token_path: PathBuf,
@@ -115,28 +107,77 @@ impl HttpServer {
         config: HttpBindConfig,
         service: ControlService,
     ) -> Result<Self, HttpBindError> {
-        if !bind_address_is_allowed(config.bind.ip()) {
-            return Err(HttpBindError::message(
-                "http.bind must be a loopback or Tailscale address",
-            ));
-        }
         if config.allowed_origins.iter().any(|origin| origin == "*") {
             return Err(HttpBindError::message(
                 "http.allowed_origins must not contain *",
             ));
         }
+        let requested = config.binds.into_iter().collect::<BTreeSet<_>>();
+        let port = requested
+            .first()
+            .map(SocketAddr::port)
+            .ok_or_else(|| HttpBindError::message("http.bind did not resolve to any address"))?;
+        if requested.iter().any(|address| address.port() != port) {
+            return Err(HttpBindError::message(
+                "http.bind addresses must use the same port",
+            ));
+        }
+        if port == 0 && requested.len() > 1 {
+            return Err(HttpBindError::message(
+                "http.bind port 0 requires a single address",
+            ));
+        }
+        let requested = requested
+            .into_iter()
+            .map(|address| {
+                classify_bind_address(address.ip())
+                    .map(|class| (address, class))
+                    .ok_or_else(|| HttpBindError::message(INVALID_BIND_MESSAGE))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         load_or_create_token(&config.token_path).map_err(HttpBindError::message)?;
-        let listener = TcpListener::bind(config.bind).await.map_err(|error| {
-            HttpBindError::io(format!("http.bind could not listen: {error}"), &error)
-        })?;
-        let bind = listener.local_addr().map_err(|error| {
-            HttpBindError::io(format!("http.bind address is unavailable: {error}"), &error)
-        })?;
+
+        let mut listeners = Vec::new();
+        let mut binds = Vec::new();
+        let mut last_error = None;
+        for (requested_address, class) in requested {
+            let listener = match TcpListener::bind(requested_address).await {
+                Ok(listener) => listener,
+                Err(error) if class != BindAddressClass::Loopback => {
+                    eprintln!(
+                        "warning: http.bind could not listen on {requested_address} ({class}); skipping: {error}"
+                    );
+                    last_error = Some(error);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(HttpBindError::io(
+                        format!("http.bind could not listen on {requested_address}: {error}"),
+                        &error,
+                    ));
+                }
+            };
+            let address = listener.local_addr().map_err(|error| {
+                HttpBindError::io(format!("http.bind address is unavailable: {error}"), &error)
+            })?;
+            eprintln!("http.bind listening {address} ({class})");
+            binds.push(address);
+            listeners.push(listener);
+        }
+        if listeners.is_empty() {
+            return Err(match last_error {
+                Some(error) => HttpBindError::io(
+                    format!("http.bind could not listen on any address: {error}"),
+                    &error,
+                ),
+                None => HttpBindError::message("http.bind did not resolve to any address"),
+            });
+        }
         Ok(Self {
-            listener,
+            listeners,
             state: Arc::new(HttpState {
                 service,
-                bind,
+                binds,
                 allowed_origins: config.allowed_origins,
                 probe_min_interval: config.probe_min_interval,
                 token_path: config.token_path,
@@ -145,48 +186,56 @@ impl HttpServer {
         })
     }
 
-    pub fn local_addr(&self) -> SocketAddr {
-        self.state.bind
+    pub fn local_addrs(&self) -> Vec<SocketAddr> {
+        self.state.binds.clone()
     }
 
     pub async fn run(self) -> Result<(), String> {
         let mut tasks = tokio::task::JoinSet::new();
-        let mut accept_error = None;
-        loop {
-            tokio::select! {
-                accepted = self.listener.accept() => {
-                    let (stream, _) = match accepted {
-                        Ok(accepted) => accepted,
-                        Err(error) => {
-                            accept_error = Some(error.to_string());
-                            break;
-                        }
-                    };
-                    let state = self.state.clone();
-                    tasks.spawn(async move {
-                        let io = TokioIo::new(stream);
-                        let service = service_fn(move |request| {
-                            let state = state.clone();
-                            async move { handle_connection(state, request).await }
-                        });
-                        let _ = http1::Builder::new()
-                            .timer(TokioTimer::new())
-                            .header_read_timeout(READ_TIMEOUT)
-                            .serve_connection(io, service)
-                            .await;
-                    });
-                }
-                _ = self.state.service.wait_for_shutdown() => break,
-                _ = tasks.join_next(), if !tasks.is_empty() => {}
-            }
+        for listener in self.listeners {
+            tasks.spawn(run_listener(listener, self.state.clone()));
         }
+        let result = match tasks.join_next().await {
+            Some(Ok(result)) => result,
+            Some(Err(_)) => Err("http listener task failed".to_owned()),
+            None => Err("http.bind did not create a listener".to_owned()),
+        };
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
-        match accept_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        result
     }
+}
+
+async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<(), String> {
+    let mut connections = tokio::task::JoinSet::new();
+    let result = loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => break Err(error.to_string()),
+                };
+                let state = state.clone();
+                connections.spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let service = service_fn(move |request| {
+                        let state = state.clone();
+                        async move { handle_connection(state, request).await }
+                    });
+                    let _ = http1::Builder::new()
+                        .timer(TokioTimer::new())
+                        .header_read_timeout(READ_TIMEOUT)
+                        .serve_connection(io, service)
+                        .await;
+                });
+            }
+            _ = state.service.wait_for_shutdown() => break Ok(()),
+            _ = connections.join_next(), if !connections.is_empty() => {}
+        }
+    };
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
+    result
 }
 
 async fn handle_connection(
@@ -206,7 +255,7 @@ async fn handle_request(
     let headers = request.headers().clone();
     let origin = header_str(&headers, &header::ORIGIN).map(str::to_owned);
 
-    if !host_is_allowed(header_str(&headers, &header::HOST), state.bind) {
+    if !host_is_allowed(header_str(&headers, &header::HOST), &state.binds) {
         return finish(
             json_status(
                 StatusCode::FORBIDDEN,
@@ -505,18 +554,21 @@ fn decode_component(value: &str) -> Result<String, ()> {
     Ok(decoded.into_owned())
 }
 
-fn host_is_allowed(host: Option<&str>, bind: SocketAddr) -> bool {
+fn host_is_allowed(host: Option<&str>, binds: &[SocketAddr]) -> bool {
     let Some(host) = host else {
         return false;
     };
+    let Some(port) = binds.first().map(SocketAddr::port) else {
+        return false;
+    };
     let normalized = host.trim().to_ascii_lowercase();
-    let port = bind.port();
-    let mut allowed = vec![
-        format!("127.0.0.1:{port}"),
-        format!("localhost:{port}"),
-        bind.to_string().to_ascii_lowercase(),
-    ];
-    if bind.is_ipv6() {
+    let mut allowed = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    allowed.extend(
+        binds
+            .iter()
+            .map(|bind| bind.to_string().to_ascii_lowercase()),
+    );
+    if binds.iter().any(SocketAddr::is_ipv6) {
         allowed.push(format!("[::1]:{port}"));
     }
     allowed.iter().any(|candidate| candidate == &normalized)
@@ -784,52 +836,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bind_address_allowlist_covers_tailscale_boundaries() {
-        for address in [
-            "127.0.0.1",
-            "::1",
-            "100.64.0.0",
-            "100.127.255.255",
-            "fd7a:115c:a1e0::1",
-        ] {
-            assert!(
-                bind_address_is_allowed(address.parse().unwrap()),
-                "{address}"
-            );
-        }
-        for address in [
-            "100.63.255.255",
-            "100.128.0.0",
-            "192.168.50.10",
-            "10.0.0.1",
-            "0.0.0.0",
-            "fd7a:115c:a1e1::1",
-            "::",
-        ] {
-            assert!(
-                !bind_address_is_allowed(address.parse().unwrap()),
-                "{address}"
-            );
-        }
-    }
-
-    #[test]
     fn host_whitelist_accepts_loopback_spellings() {
         let bind = "127.0.0.1:7878".parse().unwrap();
-        assert!(host_is_allowed(Some("127.0.0.1:7878"), bind));
-        assert!(host_is_allowed(Some("localhost:7878"), bind));
-        assert!(host_is_allowed(Some("LOCALHOST:7878"), bind));
-        assert!(!host_is_allowed(Some("example.com"), bind));
-        assert!(!host_is_allowed(Some("127.0.0.1"), bind));
-        assert!(!host_is_allowed(None, bind));
+        assert!(host_is_allowed(Some("127.0.0.1:7878"), &[bind]));
+        assert!(host_is_allowed(Some("localhost:7878"), &[bind]));
+        assert!(host_is_allowed(Some("LOCALHOST:7878"), &[bind]));
+        assert!(!host_is_allowed(Some("example.com"), &[bind]));
+        assert!(!host_is_allowed(Some("127.0.0.1"), &[bind]));
+        assert!(!host_is_allowed(None, &[bind]));
     }
 
     #[test]
-    fn host_whitelist_accepts_only_the_configured_tailscale_address() {
-        let bind = "100.64.0.1:7878".parse().unwrap();
-        assert!(host_is_allowed(Some("100.64.0.1:7878"), bind));
-        assert!(!host_is_allowed(Some("100.64.0.2:7878"), bind));
-        assert!(!host_is_allowed(Some("evil.example:7878"), bind));
+    fn host_whitelist_accepts_every_bound_address() {
+        let binds = [
+            "127.0.0.1:7878".parse().unwrap(),
+            "100.64.0.1:7878".parse().unwrap(),
+            "192.168.50.10:7878".parse().unwrap(),
+        ];
+        assert!(host_is_allowed(Some("100.64.0.1:7878"), &binds));
+        assert!(host_is_allowed(Some("192.168.50.10:7878"), &binds));
+        assert!(!host_is_allowed(Some("100.64.0.2:7878"), &binds));
+        assert!(!host_is_allowed(Some("evil.example:7878"), &binds));
     }
 
     #[test]

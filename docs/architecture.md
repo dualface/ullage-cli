@@ -200,18 +200,23 @@ workspace commands are not exposed.
 
 Security model:
 
-- When `http.enabled` is true, the bind address must be loopback or in Tailscale's
-  `100.64.0.0/10` or `fd7a:115c:a1e0::/48` ranges. Other `http.bind` values fail configuration
-  loading and name that setting. A Tailscale address that is temporarily unavailable is retried for
-  up to 60 seconds.
-  Non-loopback traffic is limited to the tailnet and encrypted by WireGuard; Ullage does not add TLS.
+- When `http.enabled` is true, `http.bind` accepts `auto:<port>` or one explicit loopback,
+  Tailscale (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), RFC 1918, or IPv6 ULA address.
+  Wildcard, link-local, multicast, and public addresses fail configuration loading and name that
+  setting. `auto` enumerates local interfaces and listens on every eligible unique address, always
+  including `127.0.0.1`. It retries discovery for up to 60 seconds when only loopback exists, then
+  starts with the available set. Explicit non-loopback `EADDRNOTAVAIL` retries keep the same budget.
+  A loopback bind failure stops startup; other bind failures are logged and skipped. Startup logs
+  each listener as `http.bind listening <addr> (<class>)`.
+- Tailscale traffic is encrypted by WireGuard. Private LAN traffic has no transport encryption, so
+  its bearer token is sent in plaintext; Ullage does not add TLS.
 - Token: 256-bit `getrandom`, base64url, stored as `http-token` next to the state file. Unix
   files must be current-user-owned `0600`; Windows files use the same protected DACL primitive as
   credentials and snapshots. Permission mismatches refuse to start or rotate and are not repaired
   in place. Comparison is constant-time. `ullage http token --rotate` replaces the file so a
   running daemon rejects the old token on the next request.
-- Host whitelist: `127.0.0.1:<port>`, `localhost:<port>`, and the actual bind address. An IPv6
-  listener additionally accepts `[::1]:<port>`. Other Host values return 403.
+- Host whitelist: `127.0.0.1:<port>`, `localhost:<port>`, and every actual listener address. Any
+  IPv6 listener additionally enables `[::1]:<port>`. Other Host values return 403.
 - CORS: `http.allowed_origins` defaults to empty. A matching Origin is echoed with `Vary:
   Origin`. Unmatched origins receive no `Access-Control-Allow-*` headers. The server never
   returns `*` or `Access-Control-Allow-Credentials: true`. OPTIONS preflight is supported. CORS
@@ -222,9 +227,9 @@ Security model:
 - HTTP `/v1` is independent of `CONTROL_PROTOCOL_VERSION`. Status payloads still carry the
   control protocol version.
 
-This release does not offer TLS, arbitrary non-loopback binds, Cookie authentication,
-SSE/WebSocket, or static page hosting. Remote use is direct over Tailscale or SSH tunneling onto
-the loopback listener.
+This release does not offer TLS, public or link-local binds, Cookie authentication,
+SSE/WebSocket, or static page hosting. Remote use is direct over Tailscale or a private LAN, or
+through an SSH tunnel onto the loopback listener.
 
 ## User service hosting
 

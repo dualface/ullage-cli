@@ -172,7 +172,7 @@ impl Harness {
         let token = load_or_create_token(&token_path).unwrap();
         let server = HttpServer::bind(
             HttpBindConfig {
-                bind: "127.0.0.1:0".parse().unwrap(),
+                binds: vec!["127.0.0.1:0".parse().unwrap()],
                 allowed_origins,
                 probe_min_interval,
                 token_path,
@@ -181,7 +181,7 @@ impl Harness {
         )
         .await
         .unwrap();
-        let addr = server.local_addr();
+        let addr = server.local_addrs()[0];
         let task = tokio::spawn(server.run());
         Self {
             addr,
@@ -333,7 +333,7 @@ async fn rejects_disallowed_bind_and_names_the_setting() {
     }
     let error = match HttpServer::bind(
         HttpBindConfig {
-            bind: "0.0.0.0:0".parse().unwrap(),
+            binds: vec!["0.0.0.0:0".parse().unwrap()],
             allowed_origins: Vec::new(),
             probe_min_interval: Duration::from_secs(60),
             token_path: directory.path().join("http-token"),
@@ -347,6 +347,60 @@ async fn rejects_disallowed_bind_and_names_the_setting() {
     };
     assert!(error.contains("http.bind"), "{error}");
     assert!(error.contains("loopback"), "{error}");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn serves_two_loopback_addresses_and_whitelists_every_listener() {
+    let engine = DaemonEngine::new(
+        ullage_daemon::DaemonConfig::default(),
+        Arc::new(ProviderRegistry::default()),
+        Arc::new(SystemClock),
+        Arc::new(MemorySnapshotStore::default()),
+    )
+    .await
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    let first = SocketAddr::from(([127, 0, 0, 1], port));
+    let second = SocketAddr::from(([127, 0, 0, 2], port));
+    let server = HttpServer::bind(
+        HttpBindConfig {
+            binds: vec![first, second],
+            allowed_origins: Vec::new(),
+            probe_min_interval: Duration::from_secs(60),
+            token_path: directory.path().join("http-token"),
+        },
+        ControlService::new(engine.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(server.local_addrs(), vec![first, second]);
+    let task = tokio::spawn(server.run());
+
+    for (address, host) in [(first, second), (second, first)] {
+        let response = exchange(
+            address,
+            &format!("GET /v1/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+        );
+        assert_eq!(response.status, 401);
+    }
+    let forbidden = exchange(
+        first,
+        &format!("GET /v1/status HTTP/1.1\r\nHost: 127.0.0.3:{port}\r\nConnection: close\r\n\r\n"),
+    );
+    assert_eq!(forbidden.status, 403);
+
+    engine.shutdown();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

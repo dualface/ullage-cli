@@ -20,7 +20,10 @@ use ullage_core::{
     Capability, ProviderDescriptor, ProviderError, ProviderId, ProviderRegistry, RegisteredProvider,
 };
 use ullage_daemon::{ControlService, DaemonEngine, JsonSnapshotStore, SystemClock};
-use ullage_http::{HttpBindConfig, HttpServer, bind_address_is_allowed};
+use ullage_http::{
+    BindAddressClass, HttpBindConfig, HttpBindTarget, HttpServer, classify_bind_address,
+    discover_bind_addresses, parse_http_bind,
+};
 use ullage_protocol::{ControlRequest, ControlResponse, CredentialBackendId};
 use ullage_provider_chatgpt::{
     ChatGptConfig, ChatGptHttpConfig, ChatGptProvider, ReqwestChatGptApi,
@@ -188,19 +191,37 @@ pub async fn run_daemon_with(
     merge_configured_accounts(&engine, &config.accounts).await?;
     let service = ControlService::new(engine.clone()).with_credential_backend(credential_backend);
     let http = if config.http.enabled {
-        let bind_config = http_bind_config(&config)?;
-        let bind_address = bind_config.bind;
-        Some(
-            retry_http_bind(
-                bind_address,
-                HTTP_BIND_RETRY_INTERVAL,
-                HTTP_BIND_RETRY_TIMEOUT,
-                || HttpServer::bind(bind_config.clone(), service.clone()),
-                |error| error.io_kind() == Some(std::io::ErrorKind::AddrNotAvailable),
-            )
-            .await
-            .map_err(String::from)?,
-        )
+        let target = parse_http_bind(&config.http.bind)?;
+        Some(match target {
+            HttpBindTarget::Explicit(bind) => {
+                let bind_config = http_bind_config(&config, vec![bind])?;
+                retry_http_bind(
+                    bind,
+                    HTTP_BIND_RETRY_INTERVAL,
+                    HTTP_BIND_RETRY_TIMEOUT,
+                    || HttpServer::bind(bind_config.clone(), service.clone()),
+                    |error| error.io_kind() == Some(std::io::ErrorKind::AddrNotAvailable),
+                )
+                .await
+                .map_err(String::from)?
+            }
+            HttpBindTarget::Auto(port) => {
+                let binds = wait_for_auto_bind_addresses(
+                    port,
+                    HTTP_BIND_RETRY_INTERVAL,
+                    HTTP_BIND_RETRY_TIMEOUT,
+                    |port| {
+                        discover_bind_addresses(port).map_err(|error| {
+                            format!("http.bind could not enumerate local addresses: {error}")
+                        })
+                    },
+                )
+                .await?;
+                HttpServer::bind(http_bind_config(&config, binds)?, service.clone())
+                    .await
+                    .map_err(String::from)?
+            }
+        })
     } else {
         None
     };
@@ -245,7 +266,7 @@ where
         match attempt().await {
             Ok(value) => return Ok(value),
             Err(error)
-                if bind_address_is_allowed(bind.ip())
+                if classify_bind_address(bind.ip()).is_some()
                     && !bind.ip().is_loopback()
                     && retryable(&error)
                     && started.elapsed() < timeout =>
@@ -260,6 +281,37 @@ where
             }
             Err(error) => return Err(error),
         }
+    }
+}
+
+async fn wait_for_auto_bind_addresses<F>(
+    port: u16,
+    interval: Duration,
+    timeout: Duration,
+    mut discover: F,
+) -> Result<Vec<SocketAddr>, String>
+where
+    F: FnMut(u16) -> Result<Vec<SocketAddr>, String>,
+{
+    let started = tokio::time::Instant::now();
+    loop {
+        let addresses = discover(port)?;
+        let has_remote_address = addresses.iter().any(|address| {
+            matches!(
+                classify_bind_address(address.ip()),
+                Some(BindAddressClass::Tailnet | BindAddressClass::Lan)
+            )
+        });
+        if has_remote_address || started.elapsed() >= timeout {
+            return Ok(addresses);
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        let delay = interval.min(remaining);
+        eprintln!(
+            "http.bind auto discovery found only loopback; retrying in {} seconds",
+            delay.as_secs_f64()
+        );
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -298,12 +350,7 @@ fn merge_server_results(
     }
 }
 
-fn http_bind_config(config: &AppConfig) -> Result<HttpBindConfig, String> {
-    let bind = config
-        .http
-        .bind
-        .parse::<SocketAddr>()
-        .map_err(|_| "http.bind is not a valid socket address".to_owned())?;
+fn http_bind_config(config: &AppConfig, binds: Vec<SocketAddr>) -> Result<HttpBindConfig, String> {
     if config
         .http
         .allowed_origins
@@ -313,7 +360,7 @@ fn http_bind_config(config: &AppConfig) -> Result<HttpBindConfig, String> {
         return Err("http.allowed_origins must not contain *".into());
     }
     Ok(HttpBindConfig {
-        bind,
+        binds,
         allowed_origins: config.http.allowed_origins.clone(),
         probe_min_interval: Duration::from_secs(config.http.probe_min_interval_seconds),
         token_path: http_token_path()?,
@@ -444,7 +491,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
-    async fn retries_only_unavailable_tailscale_binds() {
+    async fn retries_only_unavailable_allowed_non_loopback_binds() {
         let attempts = AtomicUsize::new(0);
         let result = retry_http_bind(
             "100.64.0.1:7878".parse().unwrap(),
@@ -505,6 +552,45 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::AddrNotAvailable);
+        assert!(attempts.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
+    async fn auto_bind_discovery_retries_until_a_remote_address_exists() {
+        let attempts = AtomicUsize::new(0);
+        let addresses =
+            wait_for_auto_bind_addresses(7878, Duration::ZERO, Duration::from_secs(1), |_| {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Ok(vec!["127.0.0.1:7878".parse().unwrap()])
+                } else {
+                    Ok(vec![
+                        "127.0.0.1:7878".parse().unwrap(),
+                        "192.168.50.10:7878".parse().unwrap(),
+                    ])
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(addresses.len(), 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn auto_bind_discovery_uses_loopback_after_timeout() {
+        let attempts = AtomicUsize::new(0);
+        let addresses = wait_for_auto_bind_addresses(
+            7878,
+            Duration::from_millis(1),
+            Duration::from_millis(3),
+            |_| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Ok(vec!["127.0.0.1:7878".parse().unwrap()])
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(addresses, vec!["127.0.0.1:7878".parse().unwrap()]);
         assert!(attempts.load(Ordering::SeqCst) >= 2);
     }
 

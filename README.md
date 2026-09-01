@@ -232,9 +232,12 @@ downgrading. Old configuration files that omit the `credentials` object still
 load with the switch off.
 
 `http.enabled` is false by default. While it is off the daemon does not listen
-on any TCP port. When enabled, the daemon binds `http.bind` (a loopback or
-Tailscale address; any other address refuses to start and names `http.bind`)
-and serves a read-only HTTP query API:
+on any TCP port. When enabled, `http.bind` accepts `auto:<port>` or one explicit
+loopback, Tailscale, or private LAN address. For example, `auto:7878` discovers
+all eligible local addresses and listens on each of them, while
+`<tailscale-ipv4>:7878` or `<lan-ipv4>:7878` keeps the single-address behavior.
+Wildcard, link-local, multicast, and public addresses refuse to start and name
+`http.bind`. The server exposes this read-only HTTP query API:
 
 ```text
 GET  /v1/status
@@ -261,13 +264,17 @@ The token is a 256-bit value stored as `http-token` next to the state file,
 owned by the current user (`0600` / protected DACL). A permission mismatch
 refuses to start or rotate rather than repairing the file. The HTTP server
 accepts only Host values `127.0.0.1:<port>`, `localhost:<port>`, and the actual
-bind address; an IPv6 listener additionally accepts `[::1]:<port>`.
+listener addresses; any IPv6 listener additionally enables `[::1]:<port>`.
 `http.allowed_origins` is empty by default:
 matching origins are echoed with `Vary: Origin`; unmatched origins get no
 CORS headers. The server never returns `Access-Control-Allow-Origin: *` or
-`Access-Control-Allow-Credentials: true`. Remote access may use a direct
-Tailscale address or an SSH tunnel. Ullage does not offer TLS; encryption for a
-Tailscale bind is provided by WireGuard.
+`Access-Control-Allow-Credentials: true`. In `auto` mode, startup logs one
+`http.bind listening <addr> (<class>)` line per listener. If no Tailscale or LAN
+address is initially available, discovery retries for up to 60 seconds and then
+starts with loopback. A failed loopback bind stops startup; a failed non-loopback
+bind emits a warning and is skipped. Remote access may use a direct Tailscale or
+LAN address, or an SSH tunnel. Ullage does not offer TLS. Tailscale traffic is
+encrypted by WireGuard, but LAN traffic and its bearer token are plaintext.
 
 Error mapping is stable: missing or invalid Bearer tokens are `401`, unknown
 routes `404`, illegal parameters `400`, `AccountNotFound` `404`,
