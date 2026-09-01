@@ -532,10 +532,18 @@ private func date(_ value: String) throws -> Date {
         secondsInAccount: 50
     )
     state = MenuBarLiquidAnimation.advance(
-        state: state, levels: levels, gate: .animate, dt: 10
+        state: state, levels: levels, gate: .animate, dt: 75
     )
-    #expect(state.accountID == "b")
-    #expect(abs(state.secondsInAccount - 0) < 0.001)
+    #expect(state.accountID == "c")
+    #expect(abs(state.secondsInAccount - 5) < 0.001)
+    #expect(state.targetRatio == 0.5)
+    #expect(state.displayedRatio == 0.2)
+
+    state = MenuBarLiquidAnimation.advance(
+        state: state, levels: levels, gate: .animate, dt: 0.1
+    )
+    #expect(state.displayedRatio > 0.2)
+    #expect(state.displayedRatio < 0.5)
 }
 
 @Test func menuBarLiquidAnimationDoesNotRotateASingleAccount() {

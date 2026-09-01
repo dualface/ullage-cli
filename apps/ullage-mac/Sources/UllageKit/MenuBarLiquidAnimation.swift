@@ -96,6 +96,7 @@ public enum MenuBarLiquidAnimation {
             return next
         }
 
+        let accountBeforeRotation = next.accountID
         if levels.count > 1 {
             next.secondsInAccount += clampedDT
             while next.secondsInAccount >= accountRotateInterval {
@@ -110,14 +111,20 @@ public enum MenuBarLiquidAnimation {
             next.secondsInAccount = 0
         }
 
+        // Keep height easing on a separate cadence from account bookkeeping so a
+        // delayed tick that crosses a rotation boundary does not snap to the new
+        // target in the same frame.
+        let heightDT = next.accountID == accountBeforeRotation ? clampedDT : 0
         next.displayedRatio = approachRatio(
             current: next.displayedRatio,
             target: next.targetRatio,
-            dt: clampedDT
+            dt: heightDT
         )
-        next.wavePhase = next.wavePhase + waveRadiansPerSecond * clampedDT
-        if next.wavePhase > .pi * 2 {
-            next.wavePhase -= .pi * 2
+        if heightDT > 0 {
+            next.wavePhase = next.wavePhase + waveRadiansPerSecond * heightDT
+            if next.wavePhase > .pi * 2 {
+                next.wavePhase -= .pi * 2
+            }
         }
         return next
     }
