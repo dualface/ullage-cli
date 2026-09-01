@@ -35,8 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemController = StatusItemController(
             store: store,
             settings: settings,
-            mode: mode,
-            applicationIconController: iconController
+            mode: mode
         )
     }
 }

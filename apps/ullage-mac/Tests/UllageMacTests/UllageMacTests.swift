@@ -204,20 +204,15 @@ final class UllageMacTests: XCTestCase {
         XCTAssertNotEqual(pngs[0], pngs[1])
     }
 
-    @MainActor
-    func testSettingsPreviewChangesWithTheSelectedPalette() throws {
-        let oxblood = try XCTUnwrap(iconPreviewImage(palette: .oxblood))
-        let paper = try XCTUnwrap(iconPreviewImage(palette: .paper))
-        XCTAssertEqual(oxblood.size, NSSize(width: 64, height: 64))
-        XCTAssertEqual(paper.size, NSSize(width: 64, height: 64))
-
-        let previews = try [oxblood, paper].map { image -> Data in
-            let representation = try XCTUnwrap(image.representations.first as? NSBitmapImageRep)
-            XCTAssertEqual(representation.pixelsWide, 128)
-            XCTAssertEqual(representation.pixelsHigh, 128)
-            return try XCTUnwrap(representation.representation(using: .png, properties: [:]))
-        }
-        XCTAssertNotEqual(previews[0], previews[1])
+    func testNormalizePairCodeInputStripsSeparatorsAndUppercases() {
+        XCTAssertEqual(normalizePairCodeInput("abc-def"), "ABCDEF")
+        XCTAssertEqual(normalizePairCodeInput(" ab c-de f "), "ABCDEF")
+        XCTAssertEqual(normalizePairCodeInput("a1b2c3d4"), "A1B2C3")
+        XCTAssertEqual(normalizePairCodeInput("***"), "")
+        XCTAssertEqual(normalizePairCodeInput("ab!c@d#e$f%g"), "ABCDEF")
+        XCTAssertEqual(formattedPairCode("ABCDEF"), "ABC-DEF")
+        XCTAssertNil(formattedPairCode("ABCDE"))
+        XCTAssertNil(formattedPairCode("ABCDEFG"))
     }
 
     @MainActor

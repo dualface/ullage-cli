@@ -52,13 +52,14 @@ reached limit in those retained windows takes precedence as 0%. After
 the first refresh, an exclamation mark replaces the liquid when no usable quota
 is available or the connection enters an error state. The glass application
 icon keeps a static liquid level and has six built-in palettes: Amber, Oxblood,
-Propellant, Copper, Paper, and Plum; Oxblood is the default. The runtime choice
-in Settings updates the icon used by the About panel and system dialogs.
-Finder and Launchpad use the signed `AppIcon.icns`, so that palette is selected
-at build time instead. During `bundle`, the executable renders the standard
-ten-file `build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and
-the build copies that file into the application bundle. No source bitmap or SVG
-asset is required. Set the build palette with `ICON_PALETTE`, for example:
+Propellant, Copper, Paper, and Plum; Oxblood is the default. At launch the app
+applies the stored `iconPalette` preference (or Oxblood when unset) to the icon
+used by the About panel and system dialogs. Finder and Launchpad use the signed
+`AppIcon.icns`, so that palette is selected at build time instead. During
+`bundle`, the executable renders the standard ten-file `build/AppIcon.iconset`,
+`iconutil` converts it to `AppIcon.icns`, and the build copies that file into
+the application bundle. No source bitmap or SVG asset is required. Set the build
+palette with `ICON_PALETTE`, for example:
 
 ```sh
 make -C apps/ullage-mac bundle ICON_PALETTE=paper
@@ -67,9 +68,11 @@ make -C apps/ullage-mac bundle ICON_PALETTE=paper
 The client reads the server URL from its Settings panel and defaults to
 `http://127.0.0.1:7878`. Enable the daemon's HTTP interface as described under
 Configuration, create a one-use code with `ullage device pair`, and enter that
-code in Settings. The client sends its hostname, exchanges the code for a
-per-device token, and stores the token in the macOS Keychain rather than
-`UserDefaults`.
+code in Settings as six single-character fields (`XXX-XXX`). Paste accepts
+values with or without the hyphen, mixed case, and incidental whitespace; the
+client normalizes to six uppercase alphanumeric characters before pairing. The
+client sends its hostname, exchanges the code for a per-device token, and stores
+the token in the macOS Keychain rather than `UserDefaults`.
 
 `Launch at Login` is available from the status-item menu when Ullage is running
 from the application bundle. Copy `Ullage.app` to `/Applications` or
@@ -137,12 +140,13 @@ ullage device pair
 ```
 
 Open Ullage Mac Settings, leave the default server URL as
-`http://127.0.0.1:7878` (or use `http://localhost:7878`), enter the displayed
-pairing code, and select **Pair**. The client sends its hostname as the device
-name, receives the device token once, and stores it in the current macOS user's
-Keychain. Settings then shows the paired device name and local pairing time.
-Pairing codes are one-use, expire after 300 seconds, and a new code invalidates
-the previous one. Use `ullage device list` to inspect active devices and
+`http://127.0.0.1:7878` (or use `http://localhost:7878`), type or paste the
+displayed pairing code into the six OTP fields (`XXX-XXX`), and select **Pair**.
+The client sends its hostname as the device name, receives the device token once,
+and stores it in the current macOS user's Keychain. Settings then shows the
+paired device name and local pairing time. Pairing codes are one-use, expire
+after 300 seconds, and a new code invalidates the previous one. Use
+`ullage device list` to inspect active devices and
 `ullage device revoke <DEVICE_ID>` to revoke one without affecting the others.
 
 The Mac client accepts the same literal address classes as the daemon:

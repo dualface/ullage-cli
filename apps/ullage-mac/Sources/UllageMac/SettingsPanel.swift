@@ -7,22 +7,20 @@ final class SettingsPanelController: NSWindowController {
     init(
         settings: AppSettings,
         mode: AppMode,
-        onSaved: @escaping () -> Void,
-        onPaletteChanged: @escaping (UllageMark.Palette) -> Void
+        onSaved: @escaping () -> Void
     ) {
         let view = SettingsView(
             settings: settings,
             mode: mode,
-            onSaved: onSaved,
-            onPaletteChanged: onPaletteChanged
+            onSaved: onSaved
         )
         let hostingController = NSHostingController(rootView: view)
         let panel = NSPanel(contentViewController: hostingController)
         panel.title = "Ullage Settings"
         panel.styleMask = [.titled, .closable]
-        panel.setContentSize(NSSize(width: 440, height: 460))
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
+        panel.setContentSize(hostingController.view.fittingSize)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -71,6 +69,23 @@ func localDeviceName() -> String {
     ProcessInfo.processInfo.hostName
 }
 
+/// Keeps only uppercase alphanumeric characters, capped at six.
+func normalizePairCodeInput(_ raw: String, maxLength: Int = 6) -> String {
+    String(
+        raw.uppercased()
+            .unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .prefix(maxLength)
+    )
+}
+
+/// Formats a normalized six-character code as `XXX-XXX`.
+func formattedPairCode(_ normalized: String) -> String? {
+    guard normalized.count == 6 else { return nil }
+    let characters = Array(normalized)
+    return "\(String(characters[0..<3]))-\(String(characters[3..<6]))"
+}
+
 struct PairingServerTarget {
     let rawValue: String
     let url: URL
@@ -95,9 +110,9 @@ private struct SettingsView: View {
     @Bindable var settings: AppSettings
     let mode: AppMode
     let onSaved: () -> Void
-    let onPaletteChanged: (UllageMark.Palette) -> Void
     @State private var serverURL: String
-    @State private var pairCode = ""
+    @State private var digits = Array(repeating: "", count: 6)
+    @FocusState private var focusedDigit: Int?
     @State private var message = ""
     @State private var isPairing = false
     @State private var isTesting = false
@@ -105,31 +120,68 @@ private struct SettingsView: View {
     init(
         settings: AppSettings,
         mode: AppMode,
-        onSaved: @escaping () -> Void,
-        onPaletteChanged: @escaping (UllageMark.Palette) -> Void
+        onSaved: @escaping () -> Void
     ) {
         self.settings = settings
         self.mode = mode
         self.onSaved = onSaved
-        self.onPaletteChanged = onPaletteChanged
         _serverURL = State(initialValue: settings.serverURL.absoluteString)
     }
 
+    private var normalizedPairCode: String {
+        digits.joined()
+    }
+
+    private var canPair: Bool {
+        !isPairing && formattedPairCode(normalizedPairCode) != nil
+    }
+
     var body: some View {
-        Form {
+        VStack(alignment: .leading, spacing: 18) {
+            connectionSection
+            Divider()
+            pairingSection
+            Divider()
+            statusSection
+        }
+        .padding(20)
+        .frame(width: 420)
+        .background(.regularMaterial)
+    }
+
+    private var connectionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Connection")
+                .font(.headline)
             TextField("Server URL", text: $serverURL)
                 .textFieldStyle(.roundedBorder)
                 .disabled(isPairing)
             Text("Use HTTP with localhost or a literal loopback, tailnet, or private LAN address.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            HStack {
-                TextField("Pair code", text: $pairCode)
-                    .textFieldStyle(.roundedBorder)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var pairingSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Pairing")
+                .font(.headline)
+            HStack(spacing: 8) {
+                pairDigitGroup(indices: 0..<3)
+                Text("-")
+                    .font(.title2.monospacedDigit().weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                pairDigitGroup(indices: 3..<6)
                 Button("Pair") { pair() }
-                    .disabled(isPairing || pairCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if isPairing { ProgressView().controlSize(.small) }
+                    .disabled(!canPair)
+                if isPairing {
+                    ProgressView().controlSize(.small)
+                }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Pair code")
             if let name = settings.pairedDeviceName, let pairedAt = settings.pairedAt {
                 Text("Paired as \(name) on \(pairedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption)
@@ -138,40 +190,107 @@ private struct SettingsView: View {
                 Text("Run ullage device pair on the daemon host, then enter the one-use code here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            HStack {
-                Picker("Icon palette", selection: $settings.iconPalette) {
-                    ForEach(UllageMark.Palette.allCases) { palette in
-                        Text(palette.displayName).tag(palette)
-                    }
-                }
-                Spacer()
-                if let preview = iconPreviewImage(palette: settings.iconPalette) {
-                    Image(nsImage: preview)
-                        .resizable()
-                        .frame(width: 64, height: 64)
-                        .accessibilityLabel("\(settings.iconPalette.displayName) icon preview")
-                }
-            }
-            HStack {
+        }
+    }
+
+    private var statusSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Status")
+                .font(.headline)
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Button("Test connection") { testConnection() }
                     .disabled(isTesting)
-                if isTesting { ProgressView().controlSize(.small) }
-                Spacer()
-                Text(message).foregroundStyle(.secondary)
+                if isTesting {
+                    ProgressView().controlSize(.small)
+                }
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
             }
         }
-        .formStyle(.grouped)
-        .padding()
-        .frame(width: 440, height: 460)
-        .onChange(of: settings.iconPalette) { _, palette in
-            onPaletteChanged(palette)
+    }
+
+    private func pairDigitGroup(indices: Range<Int>) -> some View {
+        HStack(spacing: 6) {
+            ForEach(Array(indices), id: \.self) { index in
+                pairDigitField(index: index)
+            }
         }
+    }
+
+    private func pairDigitField(index: Int) -> some View {
+        TextField("", text: digitBinding(at: index))
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.center)
+            .font(.body.monospaced())
+            .frame(width: 34)
+            .focused($focusedDigit, equals: index)
+            .disabled(isPairing)
+            .accessibilityLabel("Pair code digit \(index + 1)")
+            .onKeyPress(.delete) {
+                handleDelete(at: index)
+            }
+            .onChange(of: digits[index]) { _, newValue in
+                handleDigitChange(at: index, newValue: newValue)
+            }
+    }
+
+    private func digitBinding(at index: Int) -> Binding<String> {
+        Binding(
+            get: { digits[index] },
+            set: { digits[index] = $0 }
+        )
+    }
+
+    private func handleDigitChange(at index: Int, newValue: String) {
+        let normalized = normalizePairCodeInput(newValue)
+        if normalized.count > 1 {
+            applyPaste(normalized)
+            return
+        }
+        if digits[index] != normalized {
+            digits[index] = normalized
+        }
+        if !normalized.isEmpty, index < 5 {
+            focusedDigit = index + 1
+        }
+    }
+
+    private func applyPaste(_ normalized: String) {
+        let characters = Array(normalized)
+        for offset in 0..<6 {
+            digits[offset] = offset < characters.count ? String(characters[offset]) : ""
+        }
+        focusedDigit = min(characters.count, 5)
+    }
+
+    private func handleDelete(at index: Int) -> KeyPress.Result {
+        if !digits[index].isEmpty {
+            return .ignored
+        }
+        guard index > 0 else { return .ignored }
+        digits[index - 1] = ""
+        focusedDigit = index - 1
+        return .handled
+    }
+
+    private func clearPairCode() {
+        digits = Array(repeating: "", count: 6)
+        focusedDigit = 0
     }
 
     private func pair() {
         guard let target = PairingServerTarget(serverURL) else {
             message = ConnectionTestResult.hostRejected.rawValue
+            return
+        }
+        guard let pairCode = formattedPairCode(normalizedPairCode) else {
+            message = "enter all six pair-code characters"
             return
         }
         guard mode == .daemon else {
@@ -188,7 +307,7 @@ private struct SettingsView: View {
                     deviceName: localDeviceName()
                 )
                 try settings.completePairing(serverURL: target.rawValue, credential: credential)
-                pairCode = ""
+                clearPairCode()
                 message = "paired"
                 onSaved()
             } catch SettingsError.invalidServerURL {
@@ -239,15 +358,4 @@ private struct SettingsView: View {
             }
         }
     }
-}
-
-@MainActor
-func iconPreviewImage(palette: UllageMark.Palette) -> NSImage? {
-    guard let representation = try? UllageMark.applicationIcon(
-        pixelSize: 128,
-        palette: palette
-    ) else { return nil }
-    let image = NSImage(size: NSSize(width: 64, height: 64))
-    image.addRepresentation(representation)
-    return image
 }

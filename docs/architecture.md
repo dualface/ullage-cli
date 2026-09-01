@@ -90,7 +90,9 @@ snapshots, or the private control socket directly. Settings accepts the daemon's
 tailnet, and private-LAN address classes and rejects domains and URL components that could redirect
 credentials. `UllageKit` sends the bearer-free pairing request, then the executable stores the returned
 per-device token as a generic password in the macOS Keychain with device-local, unlocked-only
-accessibility. A successful pair makes a best-effort attempt to remove the retired shared-token
+accessibility. Settings presents the one-use pair code as six single-character fields with a fixed
+middle hyphen (`XXX-XXX`); paste input is normalized to at most six uppercase alphanumeric
+characters before the request is sent. A successful pair makes a best-effort attempt to remove the retired shared-token
 Keychain entry without discarding the new credential when an old-item ACL denies deletion. Only the
 paired device name and local pairing time are kept in `UserDefaults` for display. Non-loopback access declares
 `NSLocalNetworkUsageDescription`, so macOS can request Local Network permission with an explanation.
@@ -98,7 +100,8 @@ The executable-owned `UsageDataSource` boundary selects either the real `DaemonC
 fixtures. Daemon HTTP responses and the Mac client both use the version 9 result envelope. Probes
 distinguish acknowledged and completed responses. The headless `--dump` path reuses the same summary projection as the menu
 bar UI, while `--render-iconset` reuses the executable's canonical mark geometry without entering
-the AppKit application loop.
+the AppKit application loop. Runtime application-icon color follows the stored `iconPalette`
+preference (default Oxblood); Settings no longer exposes a palette picker.
 
 ## Dependency rules
 
