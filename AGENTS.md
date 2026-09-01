@@ -18,6 +18,11 @@ the current task.
 - Conversation with the user is not affected by this rule; reply in whatever
   language the user is using.
 
+## Workflow
+
+- After finishing a change, create a git commit. Do not leave completed work
+  sitting uncommitted in the working tree.
+
 ## Remote macOS builds
 
 - Place macOS app build artifacts on `pro2026` under `~/ullage-build/`.

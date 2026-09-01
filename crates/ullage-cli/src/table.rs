@@ -749,6 +749,21 @@ mod tests {
     }
 
     #[test]
+    fn compact_identity_omits_usage_and_shortens_models() {
+        assert_eq!(compact_identity("5h", "usage"), "5h");
+        assert_eq!(compact_identity("weekly", "usage"), "weekly");
+        assert_eq!(compact_identity("fable", "usage"), "fable");
+        assert_eq!(compact_identity("5h", "GPT-5.3"), "5h-5.3");
+        assert_eq!(compact_identity("weekly", "GPT-5.3"), "weekly-5.3");
+        assert_eq!(compact_identity("weekly", "Codex"), "weekly-Codex");
+        assert_eq!(compact_identity("weekly", "GrokBuild"), "GrokBuild");
+        assert_eq!(
+            compact_identity("Resets", "available count"),
+            "Resets  available count"
+        );
+    }
+
+    #[test]
     fn summary_rows_put_the_progress_bar_last_and_align_the_columns() {
         let now = at(12, 0);
         let rows = vec![
@@ -780,7 +795,7 @@ mod tests {
                 "5h            remains  97%  resets in 3h57m  [##########]\n",
                 "weekly-5.3    remains 100%  resets in 8h30m  [##########]\n",
                 "weekly-Codex  remains  50%  resets in 8h30m  [-----#####]\n",
-                "GrokBuild     remains  40%                    [------####]\n",
+                "GrokBuild     remains  40%                   [------####]\n",
             ),
             "{block}"
         );
