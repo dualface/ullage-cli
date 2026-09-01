@@ -101,21 +101,24 @@ public func summarize(_ usage: SubscriptionUsage) -> UsageSummary {
 
 public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
     let windows = projectedWindows(for: usage)
-    return usage.windows.enumerated()
-        .compactMap { index, window -> (Int, Int, SummaryRow)? in
-            let rank = overviewRank(window.window)
+    return overviewWindowIndexes(for: usage)
+        .compactMap { index -> SummaryRow? in
+            let window = usage.windows[index]
             let rows = windows[index]
             guard let selected = rows.first(where: { poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage" })
                 ?? rows.first(where: { $0.row.remainingRatio != nil })
                 ?? rows.first else {
-                return overviewFallbackRow(for: window).map { (rank, index, $0) }
+                return overviewFallbackRow(for: window)
             }
-            return (rank, index, selected.row)
+            return selected.row
         }
-        .sorted { lhs, rhs in
-            lhs.0 == rhs.0 ? lhs.1 < rhs.1 : lhs.0 < rhs.0
-        }
-        .map(\.2)
+}
+
+private func overviewWindowIndexes(for usage: SubscriptionUsage) -> [Int] {
+    guard let shortestRank = usage.windows.lazy.map({ overviewRank($0.window) }).min() else { return [] }
+    return usage.windows.enumerated().compactMap { index, window in
+        overviewRank(window.window) == shortestRank ? index : nil
+    }
 }
 
 private func overviewFallbackRow(for window: UsageWindow) -> SummaryRow? {
@@ -162,7 +165,7 @@ public func menuBarFillRatio(
 
     for snapshot in snapshots where enabledAccountIDs.contains(snapshot.accountId) {
         guard let usage = snapshot.usage.data else { continue }
-        if usage.windows.contains(where: windowHitItsLimit) { return 0 }
+        if overviewWindowIndexes(for: usage).contains(where: { windowHitItsLimit(usage.windows[$0]) }) { return 0 }
 
         for row in overviewRows(for: usage) where !row.disabled {
             guard let ratio = row.remainingRatio else { continue }

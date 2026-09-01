@@ -45,12 +45,13 @@ The menu bar mark and application icon share one Swift/CoreGraphics drawing
 implementation in the `UllageMac` executable. The menu bar variant uses
 dedicated geometry for legibility at 18 points. Its liquid level tracks the
 lowest usable remaining quota shown in Overview across enabled accounts, with
-any reported reached limit taking precedence as 0%. After the first refresh,
-an exclamation mark replaces the liquid when no usable quota is available or
-the connection enters an error state. The glass application icon keeps a
-static liquid level and has six built-in palettes: Amber, Oxblood, Propellant,
-Copper, Paper, and Plum; Oxblood is the default. The runtime choice in Settings
-updates the icon used by the About panel and system dialogs.
+Overview retaining every window in each account's shortest available time
+tier. A reached limit in those retained windows takes precedence as 0%. After
+the first refresh, an exclamation mark replaces the liquid when no usable quota
+is available or the connection enters an error state. The glass application
+icon keeps a static liquid level and has six built-in palettes: Amber, Oxblood,
+Propellant, Copper, Paper, and Plum; Oxblood is the default. The runtime choice
+in Settings updates the icon used by the About panel and system dialogs.
 Finder and Launchpad use the signed `AppIcon.icns`, so that palette is selected
 at build time instead. During `bundle`, the executable renders the standard
 ten-file `build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and
@@ -73,7 +74,9 @@ from the application bundle. Copy `Ullage.app` to `/Applications` or
 `~/Applications` before enabling it so the registered path remains stable.
 
 `--dump` fetches the same accounts and usage projection as the menu bar UI and
-prints it without starting the AppKit application loop. `--render-iconset DIR
+prints it without starting the AppKit application loop. Its Overview section
+shows every window in each account's shortest available time tier, while the
+per-account sections continue to show all windows. `--render-iconset DIR
 [--palette KEY]` likewise renders build assets without starting that loop and
 defaults to Oxblood. `--mock` and
 `ULLAGE_MOCK=1` remain available for demonstrations with bundled fixtures.

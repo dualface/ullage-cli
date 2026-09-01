@@ -156,7 +156,7 @@ private struct OverviewView: View {
     let store: UsageStore
 
     var body: some View {
-        LazyVStack(spacing: 14) {
+        VStack(spacing: 14) {
             ForEach(store.accounts, id: \.id) { account in
                 if let snapshot = store.snapshot(for: account.id), let usage = snapshot.usage.data {
                     UsageCardHeader(
@@ -166,7 +166,7 @@ private struct OverviewView: View {
                         timestampLabel: "updated",
                         timestamp: snapshot.lastSuccessAt
                     )
-                    ForEach(Array(overviewRows(for: usage).enumerated()), id: \.offset) { _, row in
+                    ForEach(overviewRows(for: usage), id: \.window) { row in
                         SummaryRowView(row: row)
                     }
                     Divider()
