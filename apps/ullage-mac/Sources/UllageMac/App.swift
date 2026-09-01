@@ -5,7 +5,6 @@ import UllageKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
-    private var applicationIconController: ApplicationIconController?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -14,13 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let mode = AppMode.current
         let settings = AppSettings()
-        let iconController = ApplicationIconController()
         do {
-            try iconController.apply(palette: settings.iconPalette)
+            try ApplicationIconController().apply(palette: settings.iconPalette)
         } catch {
             NSLog("Could not set the application icon: \(error.localizedDescription)")
         }
-        applicationIconController = iconController
         let store = UsageStore(dataSourceFactory: {
             switch mode {
             case .mock:

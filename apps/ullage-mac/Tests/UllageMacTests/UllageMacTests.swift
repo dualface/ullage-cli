@@ -216,6 +216,24 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsPanelContentHeightIsCompact() {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults)
+        let controller = SettingsPanelController(
+            settings: settings,
+            mode: .mock,
+            onSaved: {}
+        )
+        let height = controller.window?.contentRect(forFrameRect: controller.window!.frame).height
+            ?? 0
+        print("Settings content height: \(height)")
+        XCTAssertGreaterThan(height, 100)
+        XCTAssertLessThan(height, 460)
+    }
+
+    @MainActor
     func testProgressColorsUseSemanticTierColors() {
         XCTAssertEqual(progressColor(for: .healthy), .systemGreen)
         XCTAssertEqual(progressColor(for: .caution), .systemYellow)
