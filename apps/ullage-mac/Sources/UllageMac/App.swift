@@ -26,8 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .mock:
                 return MockDataSource()
             case .daemon:
-                guard let token = try Keychain.loadToken(), !token.isEmpty else {
-                    throw DataSourceSetupError.tokenNotConfigured
+                guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
+                    throw DataSourceSetupError.deviceNotPaired
                 }
                 return DaemonClient(baseURL: settings.serverURL, token: token)
             }

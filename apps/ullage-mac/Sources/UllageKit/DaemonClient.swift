@@ -41,8 +41,26 @@ public enum DaemonError: Error, @unchecked Sendable, CustomStringConvertible {
     }
 }
 
+public struct PairedDeviceCredential: Decodable, Equatable, Sendable {
+    public let deviceId: String
+    public let deviceName: String
+    public let deviceToken: String
+
+    public init(deviceId: String, deviceName: String, deviceToken: String) {
+        self.deviceId = deviceId
+        self.deviceName = deviceName
+        self.deviceToken = deviceToken
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case deviceId = "device_id"
+        case deviceName = "device_name"
+        case deviceToken = "device_token"
+    }
+}
+
 public final class DaemonClient: @unchecked Sendable {
-    public static let protocolVersion: UInt16 = 8
+    public static let protocolVersion: UInt16 = 9
     private let baseURL: URL
     private let token: String
     private let session: URLSession
@@ -70,6 +88,35 @@ public final class DaemonClient: @unchecked Sendable {
             accounts: envelope.payload.accounts,
             credentialBackend: envelope.payload.credentialBackend
         )
+    }
+
+    public static func pair(
+        baseURL: URL,
+        pairCode: String,
+        deviceName: String,
+        configuration: URLSessionConfiguration? = nil
+    ) async throws -> PairedDeviceCredential {
+        let client = DaemonClient(baseURL: baseURL, token: "", configuration: configuration)
+        let requestBody: Data
+        do {
+            requestBody = try JSONEncoder().encode(PairRequest(
+                pairCode: pairCode,
+                deviceName: deviceName
+            ))
+        } catch {
+            throw DaemonError.decoding(underlying: error)
+        }
+        let (data, _) = try await client.perform(
+            path: ["v1", "pair"],
+            method: "POST",
+            body: requestBody,
+            authenticated: false
+        )
+        do {
+            return try client.decoder.decode(PairedDeviceCredential.self, from: data)
+        } catch {
+            throw DaemonError.decoding(underlying: error)
+        }
     }
 
     public func accounts() async throws -> [Account] {
@@ -129,7 +176,9 @@ public final class DaemonClient: @unchecked Sendable {
     private func perform(
         path: [String],
         method: String,
-        queryItems: [URLQueryItem] = []
+        queryItems: [URLQueryItem] = [],
+        body: Data? = nil,
+        authenticated: Bool = true
     ) async throws -> (Data, HTTPURLResponse) {
         var url = baseURL
         for component in path {
@@ -147,7 +196,13 @@ public final class DaemonClient: @unchecked Sendable {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = body
+        if body != nil {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        if authenticated {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
 
         let data: Data
         let response: URLResponse
@@ -218,7 +273,7 @@ public final class DaemonClient: @unchecked Sendable {
                 retryAfter: response.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init),
                 kind: kind
             )
-        case 504: .timeout(kind: kind)
+        case 408, 504: .timeout(kind: kind)
         case 500: .storage(kind: kind)
         default: .unexpectedStatus(response.statusCode, kind: kind)
         }
@@ -261,3 +316,13 @@ private struct EnvelopeResultMismatch: Error {
 private struct StringErrorDocument: Decodable { let error: String }
 
 private struct ControlErrorDocument: Decodable { let kind: String }
+
+private struct PairRequest: Encodable {
+    let pairCode: String
+    let deviceName: String
+
+    enum CodingKeys: String, CodingKey {
+        case pairCode = "pair_code"
+        case deviceName = "device_name"
+    }
+}

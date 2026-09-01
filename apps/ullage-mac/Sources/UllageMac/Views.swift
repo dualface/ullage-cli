@@ -55,10 +55,10 @@ struct RootView: View {
             return AnyView(EmptyStateView(title: "Loading usage…", detail: nil, actionTitle: nil, action: nil))
         case .loading where store.snapshots.isEmpty:
             return AnyView(EmptyStateView(title: "Loading usage…", detail: nil, actionTitle: nil, action: nil))
-        case .tokenNotConfigured:
+        case .deviceNotPaired:
             return AnyView(EmptyStateView(
-                title: "Token not configured",
-                detail: "Paste the output of ullage http token in Settings.",
+                title: "Device not paired",
+                detail: "Create a pair code with ullage device pair, then pair this Mac in Settings.",
                 actionTitle: "Open Settings",
                 action: openSettings
             ))
@@ -71,15 +71,15 @@ struct RootView: View {
             ))
         case .unauthorized:
             return AnyView(EmptyStateView(
-                title: "Token rejected",
-                detail: "Open Settings and paste a fresh ullage http token.",
+                title: "Device token rejected",
+                detail: "Create a fresh pair code and pair this Mac again in Settings.",
                 actionTitle: "Open Settings",
                 action: openSettings
             ))
         case .forbiddenHost:
             return AnyView(EmptyStateView(
                 title: "Host rejected",
-                detail: "Only an http:// loopback server is accepted.",
+                detail: "Use an http:// loopback, tailnet, or private LAN address.",
                 actionTitle: "Open Settings",
                 action: openSettings
             ))

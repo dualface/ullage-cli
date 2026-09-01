@@ -11,8 +11,8 @@ enum DumpCommand {
                 source = MockDataSource()
             case .daemon:
                 let settings = AppSettings()
-                guard let token = try Keychain.loadToken(), !token.isEmpty else {
-                    throw DataSourceSetupError.tokenNotConfigured
+                guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
+                    throw DataSourceSetupError.deviceNotPaired
                 }
                 source = DaemonClient(baseURL: settings.serverURL, token: token)
             }
@@ -26,7 +26,7 @@ enum DumpCommand {
             writeDumpError(error.description)
             return 1
         } catch is DataSourceSetupError {
-            writeDumpError("token not configured")
+            writeDumpError("device not paired")
             return 1
         } catch {
             // Keychain and other setup failures are not `DaemonError`s; keep

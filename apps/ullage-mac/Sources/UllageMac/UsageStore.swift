@@ -7,7 +7,7 @@ enum ConnectionState: Equatable {
     case idle
     case loading
     case connected
-    case tokenNotConfigured
+    case deviceNotPaired
     case unreachable
     case unauthorized
     case forbiddenHost
@@ -191,7 +191,7 @@ final class UsageStore {
     }
 
     private static func connectionState(for error: Error) -> ConnectionState {
-        if error is DataSourceSetupError { return .tokenNotConfigured }
+        if error is DataSourceSetupError { return .deviceNotPaired }
         guard let error = error as? DaemonError else { return .unreachable }
         return switch error {
         case .unauthorized, .authenticationInvalid: .unauthorized

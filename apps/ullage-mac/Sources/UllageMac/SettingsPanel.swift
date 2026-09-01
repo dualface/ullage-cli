@@ -20,7 +20,7 @@ final class SettingsPanelController: NSWindowController {
         let panel = NSPanel(contentViewController: hostingController)
         panel.title = "Ullage Settings"
         panel.styleMask = [.titled, .closable]
-        panel.setContentSize(NSSize(width: 420, height: 340))
+        panel.setContentSize(NSSize(width: 440, height: 460))
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
     }
@@ -35,11 +35,40 @@ final class SettingsPanelController: NSWindowController {
     }
 }
 
-private enum ConnectionTestResult: String {
+enum ConnectionTestResult: String {
     case connected
-    case tokenRejected = "token rejected"
+    case notPaired = "pair this Mac first"
+    case deviceRejected = "device token rejected; pair again"
     case hostRejected = "host rejected"
     case unreachable
+}
+
+func pairingMessage(for error: DaemonError) -> String {
+    switch error {
+    case .unauthorized(let kind) where kind == "pair_code_invalid":
+        "pair code is invalid, expired, or already used"
+    case .rateLimited(let retryAfter, _):
+        retryAfter.map { "too many pair attempts; retry in \(Int(ceil($0)))s" }
+            ?? "too many pair attempts; retry shortly"
+    case .forbiddenHost:
+        "daemon rejected this server address"
+    case .storage:
+        "daemon could not store the device"
+    case .timeout(let kind) where kind == "request_timeout":
+        "pair request timed out"
+    case .unexpectedStatus(400, let kind) where kind == "bad_request":
+        "daemon rejected the pair request"
+    case .unexpectedStatus(413, let kind) where kind == "payload_too_large":
+        "pair request is too large"
+    case .decoding:
+        "daemon returned an invalid pair response"
+    default:
+        "daemon unreachable"
+    }
+}
+
+func localDeviceName() -> String {
+    ProcessInfo.processInfo.hostName
 }
 
 private struct SettingsView: View {
@@ -48,8 +77,9 @@ private struct SettingsView: View {
     let onSaved: () -> Void
     let onPaletteChanged: (UllageMark.Palette) -> Void
     @State private var serverURL: String
-    @State private var token = ""
+    @State private var pairCode = ""
     @State private var message = ""
+    @State private var isPairing = false
     @State private var isTesting = false
 
     init(
@@ -69,11 +99,25 @@ private struct SettingsView: View {
         Form {
             TextField("Server URL", text: $serverURL)
                 .textFieldStyle(.roundedBorder)
-            SecureField("Token", text: $token)
-                .textFieldStyle(.roundedBorder)
-            Text("The saved token is never displayed. Leave it blank to keep the current token.")
+            Text("Use HTTP with localhost or a literal loopback, tailnet, or private LAN address.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            HStack {
+                TextField("Pair code", text: $pairCode)
+                    .textFieldStyle(.roundedBorder)
+                Button("Pair") { pair() }
+                    .disabled(isPairing || pairCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if isPairing { ProgressView().controlSize(.small) }
+            }
+            if let name = settings.pairedDeviceName, let pairedAt = settings.pairedAt {
+                Text("Paired as \(name) on \(pairedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Run ullage device pair on the daemon host, then enter the one-use code here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 Picker("Icon palette", selection: $settings.iconPalette) {
                     ForEach(UllageMark.Palette.allCases) { palette in
@@ -89,7 +133,6 @@ private struct SettingsView: View {
                 }
             }
             HStack {
-                Button("Save") { save() }
                 Button("Test connection") { testConnection() }
                     .disabled(isTesting)
                 if isTesting { ProgressView().controlSize(.small) }
@@ -99,22 +142,45 @@ private struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 420, height: 340)
+        .frame(width: 440, height: 460)
         .onChange(of: settings.iconPalette) { _, palette in
             onPaletteChanged(palette)
         }
     }
 
-    private func save() {
-        do {
-            try settings.save(serverURL: serverURL, token: token.isEmpty ? nil : token)
-            token = ""
-            message = "saved"
-            onSaved()
-        } catch SettingsError.invalidServerURL {
-            message = "host rejected"
-        } catch {
-            message = "could not save token"
+    private func pair() {
+        guard let url = AppSettings.validatedServerURL(serverURL) else {
+            message = ConnectionTestResult.hostRejected.rawValue
+            return
+        }
+        guard settings.pairedServerURL(matching: serverURL) != nil else {
+            message = ConnectionTestResult.notPaired.rawValue
+            return
+        }
+        guard mode == .daemon else {
+            message = "pairing unavailable in mock mode"
+            return
+        }
+        isPairing = true
+        Task {
+            defer { isPairing = false }
+            do {
+                let credential = try await DaemonClient.pair(
+                    baseURL: url,
+                    pairCode: pairCode,
+                    deviceName: localDeviceName()
+                )
+                try settings.completePairing(serverURL: serverURL, credential: credential)
+                pairCode = ""
+                message = "paired"
+                onSaved()
+            } catch SettingsError.invalidServerURL {
+                message = ConnectionTestResult.hostRejected.rawValue
+            } catch let error as DaemonError {
+                message = pairingMessage(for: error)
+            } catch {
+                message = "could not save device token"
+            }
         }
     }
 
@@ -131,17 +197,15 @@ private struct SettingsView: View {
                 return
             }
             do {
-                let saved = try Keychain.loadToken()
-                let effectiveToken = token.isEmpty ? saved : token
-                guard let effectiveToken, !effectiveToken.isEmpty else {
-                    message = ConnectionTestResult.tokenRejected.rawValue
+                guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
+                    message = ConnectionTestResult.notPaired.rawValue
                     return
                 }
-                _ = try await DaemonClient(baseURL: url, token: effectiveToken).status()
+                _ = try await DaemonClient(baseURL: url, token: token).status()
                 message = ConnectionTestResult.connected.rawValue
             } catch let error as DaemonError {
                 message = switch error {
-                case .unauthorized, .authenticationInvalid: ConnectionTestResult.tokenRejected.rawValue
+                case .unauthorized, .authenticationInvalid: ConnectionTestResult.deviceRejected.rawValue
                 case .forbiddenHost: ConnectionTestResult.hostRejected.rawValue
                 default: ConnectionTestResult.unreachable.rawValue
                 }

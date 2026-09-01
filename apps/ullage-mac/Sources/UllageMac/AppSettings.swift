@@ -1,5 +1,7 @@
+import Darwin
 import Foundation
 import Observation
+import UllageKit
 
 @MainActor
 @Observable
@@ -7,14 +9,26 @@ final class AppSettings {
     static let defaultServerURL = URL(string: "http://127.0.0.1:7878")!
     private static let serverURLKey = "serverURL"
     private static let iconPaletteKey = "iconPalette"
+    private static let pairedDeviceNameKey = "pairedDeviceName"
+    private static let pairedAtKey = "pairedAt"
     private let defaults: UserDefaults
+    private let saveDeviceToken: (String) throws -> Void
+
+    private(set) var pairedDeviceName: String?
+    private(set) var pairedAt: Date?
 
     var iconPalette: UllageMark.Palette {
         didSet { defaults.set(iconPalette.rawValue, forKey: Self.iconPaletteKey) }
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        saveDeviceToken: @escaping (String) throws -> Void = { try Keychain.replaceDeviceToken($0) }
+    ) {
         self.defaults = defaults
+        self.saveDeviceToken = saveDeviceToken
+        pairedDeviceName = defaults.string(forKey: Self.pairedDeviceNameKey)
+        pairedAt = defaults.object(forKey: Self.pairedAtKey) as? Date
         iconPalette = defaults.string(forKey: Self.iconPaletteKey)
             .flatMap(UllageMark.Palette.init(rawValue:)) ?? .default
     }
@@ -27,27 +41,71 @@ final class AppSettings {
         return url
     }
 
-    func save(serverURL rawValue: String, token: String?) throws {
+    func pairedServerURL(matching rawValue: String) -> URL? {
+        guard pairedDeviceName != nil,
+              pairedAt != nil,
+              let url = Self.validatedServerURL(rawValue),
+              url == serverURL else { return nil }
+        return url
+    }
+
+    func completePairing(
+        serverURL rawValue: String,
+        credential: PairedDeviceCredential,
+        pairedAt: Date = Date()
+    ) throws {
         guard let url = Self.validatedServerURL(rawValue) else {
             throw SettingsError.invalidServerURL
         }
+        try saveDeviceToken(credential.deviceToken)
         defaults.set(url.absoluteString, forKey: Self.serverURLKey)
-        if let token, !token.isEmpty {
-            try Keychain.saveToken(token)
-        }
+        defaults.set(credential.deviceName, forKey: Self.pairedDeviceNameKey)
+        defaults.set(pairedAt, forKey: Self.pairedAtKey)
+        pairedDeviceName = credential.deviceName
+        self.pairedAt = pairedAt
     }
 
     nonisolated static func validatedServerURL(_ rawValue: String) -> URL? {
         guard let components = URLComponents(string: rawValue),
               components.scheme?.lowercased() == "http",
               let host = components.host?.lowercased(),
-              host == "127.0.0.1" || host == "localhost",
+              let encodedHost = components.percentEncodedHost,
+              !encodedHost.contains("%"),
+              !host.contains("\0"),
+              host == "localhost" || literalServerAddressIsAllowed(host),
               components.user == nil,
               components.password == nil,
               components.query == nil,
               components.fragment == nil else { return nil }
         return components.url
     }
+}
+
+nonisolated func literalServerAddressIsAllowed(_ host: String) -> Bool {
+    var ipv4 = in_addr()
+    if host.withCString({ inet_pton(AF_INET, $0, &ipv4) }) == 1 {
+        let bytes = withUnsafeBytes(of: &ipv4) { Array($0) }
+        return bytes[0] == 127
+            || (bytes[0] == 100 && (64...127).contains(bytes[1]))
+            || bytes[0] == 10
+            || (bytes[0] == 172 && (16...31).contains(bytes[1]))
+            || (bytes[0] == 192 && bytes[1] == 168)
+    }
+
+    let address = if host.first == "[", host.last == "]" {
+        String(host.dropFirst().dropLast())
+    } else {
+        host
+    }
+    var ipv6 = in6_addr()
+    guard address.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 else {
+        return false
+    }
+    let bytes = withUnsafeBytes(of: &ipv6) { Array($0) }
+    let isLoopback = bytes.dropLast().allSatisfy { $0 == 0 } && bytes.last == 1
+    let tailscalePrefix: [UInt8] = [0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0]
+    let isUniqueLocal = bytes[0] & 0xfe == 0xfc
+    return isLoopback || bytes.starts(with: tailscalePrefix) || isUniqueLocal
 }
 
 enum SettingsError: Error {

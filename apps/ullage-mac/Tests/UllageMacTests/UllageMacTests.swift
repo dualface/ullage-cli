@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Security
 import XCTest
 @testable import UllageMac
 import UllageKit
@@ -187,13 +188,142 @@ final class UllageMacTests: XCTestCase {
         XCTAssertFalse(isApplicationBundleURL(URL(fileURLWithPath: "/tmp/UllageMac")))
     }
 
-    func testServerURLAcceptsOnlyHTTPLoopbackHosts() {
-        XCTAssertNotNil(AppSettings.validatedServerURL("http://127.0.0.1:7878"))
-        XCTAssertNotNil(AppSettings.validatedServerURL("http://localhost:7878"))
-        XCTAssertNil(AppSettings.validatedServerURL("https://127.0.0.1:7878"))
-        XCTAssertNil(AppSettings.validatedServerURL("http://example.com:7878"))
-        XCTAssertNil(AppSettings.validatedServerURL("http://user@localhost:7878"))
-        XCTAssertNil(AppSettings.validatedServerURL("http://localhost:7878?token=secret"))
+    func testServerURLMatchesDaemonBindAddressClassification() {
+        for host in [
+            "127.0.0.1", "localhost", "[::1]", "100.64.0.1", "100.127.255.254",
+            "[fd7a:115c:a1e0::1]", "10.0.0.5", "172.16.0.1", "192.168.50.10",
+            "[fd00::1]",
+        ] {
+            XCTAssertNotNil(AppSettings.validatedServerURL("http://\(host):7878"), host)
+        }
+        for host in [
+            "0.0.0.0", "[::]", "100.128.0.1", "172.32.0.1", "169.254.1.1",
+            "[fe80::1]", "8.8.8.8", "example.com", "daemon.ts.net",
+        ] {
+            XCTAssertNil(AppSettings.validatedServerURL("http://\(host):7878"), host)
+        }
+        for value in [
+            "https://127.0.0.1:7878",
+            "http://user@localhost:7878",
+            "http://user:secret@localhost:7878",
+            "http://localhost:7878?token=secret",
+            "http://localhost:7878#fragment",
+            "http://127%2e0%2e0%2e1:7878",
+            "http://local%00host:7878",
+            "http://local\0host:7878",
+        ] {
+            XCTAssertNil(AppSettings.validatedServerURL(value), value)
+        }
+    }
+
+    @MainActor
+    func testPairingMetadataAndDeviceTokenAreStoredTogether() throws {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var savedToken: String?
+        let settings = AppSettings(defaults: defaults) { savedToken = $0 }
+        let pairedAt = Date(timeIntervalSince1970: 1_777_777_777)
+
+        try settings.completePairing(
+            serverURL: "http://192.168.50.10:7878",
+            credential: PairedDeviceCredential(
+                deviceId: "ABCD2345EFGH",
+                deviceName: "pro2026",
+                deviceToken: "device-secret"
+            ),
+            pairedAt: pairedAt
+        )
+
+        XCTAssertEqual(savedToken, "device-secret")
+        XCTAssertEqual(settings.serverURL.absoluteString, "http://192.168.50.10:7878")
+        XCTAssertEqual(settings.pairedDeviceName, "pro2026")
+        XCTAssertEqual(settings.pairedAt, pairedAt)
+        XCTAssertNotNil(settings.pairedServerURL(matching: "http://192.168.50.10:7878"))
+        XCTAssertNil(settings.pairedServerURL(matching: "http://10.0.0.5:7878"))
+        let restored = AppSettings(defaults: defaults) { _ in }
+        XCTAssertEqual(restored.pairedDeviceName, "pro2026")
+        XCTAssertEqual(restored.pairedAt, pairedAt)
+    }
+
+    func testKeychainRoundTripAndLegacyTokenCleanup() throws {
+        let suffix = UUID().uuidString
+        let deviceStore = KeychainStore(service: "dev.ullage.mac.tests.\(suffix)", account: "device")
+        let legacyStore = KeychainStore(service: "dev.ullage.mac.tests.\(suffix)", account: "legacy")
+        defer {
+            try? deviceStore.delete()
+            try? legacyStore.delete()
+        }
+        do {
+            try legacyStore.save("legacy-secret")
+            try Keychain.replaceDeviceToken(
+                "device-secret",
+                deviceStore: deviceStore,
+                legacyStore: legacyStore
+            )
+            XCTAssertEqual(try deviceStore.load(), "device-secret")
+            XCTAssertNil(try legacyStore.load())
+            try deviceStore.save("replacement-secret")
+            XCTAssertEqual(try deviceStore.load(), "replacement-secret")
+            try deviceStore.delete()
+            XCTAssertNil(try deviceStore.load())
+        } catch KeychainError.status(let status) where status == errSecInteractionNotAllowed {
+            throw XCTSkip("The login Keychain is unavailable outside the GUI session")
+        }
+    }
+
+    func testPairingErrorsHaveDistinctUserMessages() {
+        XCTAssertEqual(
+            pairingMessage(for: .unauthorized(kind: "pair_code_invalid")),
+            "pair code is invalid, expired, or already used"
+        )
+        XCTAssertEqual(
+            pairingMessage(for: .rateLimited(retryAfter: 3, kind: "rate_limited")),
+            "too many pair attempts; retry in 3s"
+        )
+        XCTAssertEqual(
+            pairingMessage(for: .storage(kind: "storage")),
+            "daemon could not store the device"
+        )
+        XCTAssertEqual(
+            pairingMessage(for: .unexpectedStatus(400, kind: "bad_request")),
+            "daemon rejected the pair request"
+        )
+        XCTAssertEqual(
+            pairingMessage(for: .decoding(underlying: CocoaError(.fileReadCorruptFile))),
+            "daemon returned an invalid pair response"
+        )
+    }
+
+    @MainActor
+    func testLivePairingStoresDeviceTokenAndReadsFourAccountsWhenConfigured() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let pairCodeFile = environment["ULLAGE_PAIR_CODE_FILE"],
+              let serverURLFile = environment["ULLAGE_PAIR_SERVER_URL_FILE"] else {
+            throw XCTSkip("Set ULLAGE_PAIR_CODE_FILE and ULLAGE_PAIR_SERVER_URL_FILE to run")
+        }
+        let pairCode = try String(contentsOfFile: pairCodeFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let serverURLValue = try String(contentsOfFile: serverURLFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let serverURL = try XCTUnwrap(AppSettings.validatedServerURL(serverURLValue))
+        let credential = try await DaemonClient.pair(
+            baseURL: serverURL,
+            pairCode: pairCode,
+            deviceName: localDeviceName()
+        )
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "com.ullage.mac"))
+        let settings = AppSettings(defaults: defaults)
+        try settings.completePairing(serverURL: serverURLValue, credential: credential)
+
+        let client = DaemonClient(baseURL: serverURL, token: credential.deviceToken)
+        async let accounts = client.accounts()
+        async let usage = client.usage()
+        let (accountValues, usageValues) = try await (accounts, usage)
+        XCTAssertEqual(accountValues.count, 4)
+        XCTAssertEqual(usageValues.count, 4)
+        XCTAssertEqual(settings.pairedDeviceName, credential.deviceName)
+        XCTAssertNotNil(settings.pairedAt)
     }
 
     func testMockDataSourceLoadsFourProviderFixtures() async throws {
@@ -286,7 +416,7 @@ final class UllageMacTests: XCTestCase {
         let store = UsageStore(dataSourceFactory: { source })
         store.start()
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(store.connectionState, .protocolMismatch(client: "8", server: "9"))
+        XCTAssertEqual(store.connectionState, .protocolMismatch(client: "9", server: "10"))
         store.stop()
     }
 }
@@ -331,7 +461,7 @@ private actor CountingDataSource: UsageDataSource {
 
     func status() async throws -> DaemonStatusPayload {
         requestCount += 1
-        let data = Data("{\"version\":8,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
+        let data = Data("{\"version\":9,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
         return try UllageJSON.makeDecoder().decode(DaemonStatusPayload.self, from: data)
     }
 
@@ -360,5 +490,5 @@ private struct ProtocolMismatchDataSource: UsageDataSource {
     func usage() async throws -> [SnapshotPayload] { throw mismatch }
     func probe(accountId: String, wait: Bool) async throws -> ProbeResult { throw mismatch }
 
-    private var mismatch: DaemonError { .protocolMismatch(client: 8, server: 9) }
+    private var mismatch: DaemonError { .protocolMismatch(client: 9, server: 10) }
 }

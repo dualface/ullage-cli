@@ -11,7 +11,7 @@ protocol UsageDataSource: Sendable {
 extension DaemonClient: UsageDataSource {}
 
 enum DataSourceSetupError: Error {
-    case tokenNotConfigured
+    case deviceNotPaired
 }
 
 struct MockDataSource: UsageDataSource {
@@ -28,7 +28,7 @@ struct MockDataSource: UsageDataSource {
     }
 
     func status() async throws -> DaemonStatusPayload {
-        let data = Data("{\"version\":8,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
+        let data = Data("{\"version\":9,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
         return try UllageJSON.makeDecoder().decode(DaemonStatusPayload.self, from: data)
     }
 

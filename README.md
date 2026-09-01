@@ -57,14 +57,12 @@ asset is required. Set the build palette with `ICON_PALETTE`, for example:
 make -C apps/ullage-mac bundle ICON_PALETTE=paper
 ```
 
-A pairing-capable client reads the server URL from its Settings panel and
-defaults to `http://127.0.0.1:7878`. Enable the daemon's HTTP interface as
-described under Configuration, create a one-use code with `ullage device pair`,
-and enter that code in Settings. The client exchanges it for a per-device token
-and stores the token in the macOS Keychain rather than `UserDefaults`. The
-current Mac build still uses the retired shared-token protocol and cannot
-connect to a protocol-version-9 daemon until its companion pairing update is
-installed.
+The client reads the server URL from its Settings panel and defaults to
+`http://127.0.0.1:7878`. Enable the daemon's HTTP interface as described under
+Configuration, create a one-use code with `ullage device pair`, and enter that
+code in Settings. The client sends its hostname, exchanges the code for a
+per-device token, and stores the token in the macOS Keychain rather than
+`UserDefaults`.
 
 `Launch at Login` is available from the status-item menu when Ullage is running
 from the application bundle. Copy `Ullage.app` to `/Applications` or
@@ -129,22 +127,24 @@ ullage daemon start
 ullage device pair
 ```
 
-In a pairing-capable Ullage Mac build, open Settings, leave the default server
-URL as `http://127.0.0.1:7878` (or use `http://localhost:7878`), enter the
-displayed pairing code, and select
-**Save** or **Test connection**. The client sends its hostname as the device
-name, receives the device token once, and stores it in the current macOS
-user's Keychain. Pairing codes are one-use, expire after 300 seconds, and a new
-code invalidates the previous one. Use `ullage device list` to inspect active
-devices and `ullage device revoke <DEVICE_ID>` to revoke one without affecting
-the others.
+Open Ullage Mac Settings, leave the default server URL as
+`http://127.0.0.1:7878` (or use `http://localhost:7878`), enter the displayed
+pairing code, and select **Pair**. The client sends its hostname as the device
+name, receives the device token once, and stores it in the current macOS user's
+Keychain. Settings then shows the paired device name and local pairing time.
+Pairing codes are one-use, expire after 300 seconds, and a new code invalidates
+the previous one. Use `ullage device list` to inspect active devices and
+`ullage device revoke <DEVICE_ID>` to revoke one without affecting the others.
 
-When both machines are in the same tailnet, the daemon HTTP API can bind its
-Tailscale IPv4 address and generic HTTP clients can connect to
-`http://<tailscale-ipv4>:7878`. A Mac build with Tailscale URL support uses the
-same server URL. Traffic stays inside Tailscale's encrypted WireGuard tunnel;
-Ullage does not add TLS. The current Mac client still accepts only loopback
-URLs, so use the SSH alternative below until that client support is installed.
+The Mac client accepts the same literal address classes as the daemon:
+loopback, Tailscale (`100.64.0.0/10` and `fd7a:115c:a1e0::/48`), RFC 1918, and
+IPv6 ULA. It rejects domain names, public and link-local addresses, HTTPS, and
+URLs containing userinfo, query, or fragment data. Tailscale traffic stays
+inside its encrypted WireGuard tunnel; Ullage does not add TLS, so a device
+token sent over a private LAN is plaintext. On the first connection to a daemon
+away from this Mac, macOS requests Local Network access. Denying that permission
+makes pairing and later connections fail until access is enabled in System
+Settings.
 
 As an alternative, keep the HTTP listener on loopback and forward it over SSH.
 Run either a local forward from the Mac:

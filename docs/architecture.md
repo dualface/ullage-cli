@@ -75,14 +75,17 @@ and a secure timestamp, then use the `notarize` target to submit, staple, and pa
 Remote distribution signing runs inside a user-provided tmux session created by the Mac GUI login
 session; the remote workflow passes only identity and Keychain profile names, never credentials.
 
-The current client accesses daemon data only through the loopback HTTP API; it does not read Rust state,
-credentials, snapshots, or the private control socket directly. Its bearer token is stored as a
-generic password in the macOS Keychain with device-local, unlocked-only accessibility. The
-executable-owned `UsageDataSource` boundary selects either the real `DaemonClient` or bundled mock
-fixtures. Daemon HTTP responses now use the version 9 result envelope, while the current Mac client
-still expects version 8 and remains intentionally incompatible until its companion pairing update.
-Probes distinguish acknowledged and completed responses. The headless `--dump` path reuses the same
-summary projection as the menu
+The client accesses daemon data only through HTTP; it does not read Rust state, credentials,
+snapshots, or the private control socket directly. Settings accepts the daemon's literal loopback,
+tailnet, and private-LAN address classes and rejects domains and URL components that could redirect
+credentials. `UllageKit` sends the bearer-free pairing request, then the executable stores the returned
+per-device token as a generic password in the macOS Keychain with device-local, unlocked-only
+accessibility. A successful pair removes the retired shared-token Keychain entry. Only the paired
+device name and local pairing time are kept in `UserDefaults` for display. Non-loopback access declares
+`NSLocalNetworkUsageDescription`, so macOS can request Local Network permission with an explanation.
+The executable-owned `UsageDataSource` boundary selects either the real `DaemonClient` or bundled mock
+fixtures. Daemon HTTP responses and the Mac client both use the version 9 result envelope. Probes
+distinguish acknowledged and completed responses. The headless `--dump` path reuses the same summary projection as the menu
 bar UI, while `--render-iconset` reuses the executable's canonical mark geometry without entering
 the AppKit application loop.
 

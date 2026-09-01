@@ -2,9 +2,46 @@ import Foundation
 import Security
 
 enum Keychain {
-    static let service = "dev.ullage.mac.http-token"
+    static let deviceTokenStore = KeychainStore(
+        service: "dev.ullage.mac.device-token",
+        account: "daemon-device-token"
+    )
+    static let legacyTokenStore = KeychainStore(
+        service: "dev.ullage.mac.http-token",
+        account: "daemon-http-token"
+    )
 
-    static func saveToken(_ token: String) throws {
+    static func replaceDeviceToken(
+        _ token: String,
+        deviceStore: KeychainStore = deviceTokenStore,
+        legacyStore: KeychainStore = legacyTokenStore
+    ) throws {
+        try deviceStore.save(token)
+        removeLegacyTokenIfPossible(from: legacyStore)
+    }
+
+    static func loadDeviceToken() throws -> String? {
+        let token = try deviceTokenStore.load()
+        if token != nil {
+            removeLegacyTokenIfPossible(from: legacyTokenStore)
+        }
+        return token
+    }
+
+    private static func removeLegacyTokenIfPossible(from store: KeychainStore) {
+        do {
+            try store.delete()
+        } catch {
+            NSLog("Could not remove the retired shared-token Keychain item: \(error)")
+        }
+    }
+}
+
+struct KeychainStore {
+    let service: String
+    let account: String
+
+    func save(_ token: String) throws {
         let data = Data(token.utf8)
         let query = baseQuery
         let update: [String: Any] = [
@@ -22,7 +59,7 @@ enum Keychain {
         }
     }
 
-    static func loadToken() throws -> String? {
+    func load() throws -> String? {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -34,20 +71,20 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func deleteToken() throws {
+    func delete() throws {
         let status = SecItemDelete(baseQuery as CFDictionary)
         if status != errSecItemNotFound { try check(status) }
     }
 
-    private static var baseQuery: [String: Any] {
+    private var baseQuery: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: "daemon-http-token",
+            kSecAttrAccount as String: account,
         ]
     }
 
-    private static func check(_ status: OSStatus) throws {
+    private func check(_ status: OSStatus) throws {
         guard status == errSecSuccess else { throw KeychainError.status(status) }
     }
 }
