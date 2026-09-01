@@ -180,6 +180,13 @@ private func date(_ value: String) throws -> Date {
         ]},
         {"window":{"kind":"other","id":"fallback","label":"   "},"resets_at":null,"measurements":[
           {"name":"usage","used":60,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"other","id":"rate_limit_status","label":"Rate limit status"},"resets_at":null,"measurements":[
+          {"name":"allowed","used":0,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}},
+          {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]},
+        {"window":{"kind":"future_status"},"resets_at":null,"measurements":[
+          {"name":"limit_reached","used":0,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
         ]}
       ]
     }
@@ -188,5 +195,10 @@ private func date(_ value: String) throws -> Date {
 
     let rows = overviewRows(for: usage)
     #expect(rows.count == usage.windows.count)
-    #expect(rows.map(\.window) == ["5h", "weekly", "monthly", "daily", "Custom quota", "fallback"])
+    #expect(rows.map(\.window) == [
+        "5h", "weekly", "monthly", "daily", "Custom quota", "fallback",
+        "Rate limit status", "future_status",
+    ])
+    #expect(rows.suffix(2).map(\.metric) == ["availability", "availability"])
+    #expect(rows.suffix(2).map(\.remainingRatio) == [0, 1])
 }

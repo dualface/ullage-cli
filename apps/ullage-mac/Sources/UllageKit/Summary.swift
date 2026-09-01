@@ -107,13 +107,50 @@ public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
             let rows = windows[index]
             guard let selected = rows.first(where: { poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage" })
                 ?? rows.first(where: { $0.row.remainingRatio != nil })
-                ?? rows.first else { return nil }
+                ?? rows.first else {
+                return overviewFallbackRow(for: window).map { (rank, index, $0) }
+            }
             return (rank, index, selected.row)
         }
         .sorted { lhs, rhs in
             lhs.0 == rhs.0 ? lhs.1 < rhs.1 : lhs.0 < rhs.0
         }
         .map(\.2)
+}
+
+private func overviewFallbackRow(for window: UsageWindow) -> SummaryRow? {
+    let availability: Double?
+    if let allowed = booleanMeasurement(window, named: "allowed") {
+        availability = allowed ? 100 : 0
+    } else if let limitReached = booleanMeasurement(window, named: "limit_reached") {
+        availability = limitReached ? 0 : 100
+    } else {
+        availability = nil
+    }
+    if let availability {
+        return SummaryRow(
+            window: windowDisplayName(window.window),
+            metric: "availability",
+            value: .remains(availability),
+            resetsAt: window.resetsAt,
+            remainingRatio: availability / 100,
+            disabled: false
+        )
+    }
+
+    guard let measurement = window.measurements.first else { return nil }
+    let value = measurementValue(
+        measurement,
+        unlimited: booleanMeasurement(window, named: "unlimited") == true
+    )
+    return SummaryRow(
+        window: windowDisplayName(window.window),
+        metric: metricDisplayName(measurement.name),
+        value: value,
+        resetsAt: window.resetsAt,
+        remainingRatio: remainingRatio(value),
+        disabled: false
+    )
 }
 
 private func projectedWindows(for usage: SubscriptionUsage) -> [[ProjectedRow]] {
