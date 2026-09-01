@@ -15,7 +15,7 @@ use ullage_daemon::{
     AccountConfig, AccountId, BackoffConfig, ControlService, DaemonEngine, MemorySnapshotStore,
     SystemClock,
 };
-use ullage_http::{HttpBindConfig, HttpServer, load_or_create_token};
+use ullage_http::{HttpBindConfig, HttpServer};
 use ullage_protocol::{
     AuthChallenge, AuthCompleteRequest, AuthStartRequest, AuthState, LogoutRequest,
 };
@@ -103,11 +103,24 @@ struct Harness {
     token: String,
     _directory: TempDir,
     engine: DaemonEngine,
+    service: ControlService,
     task: tokio::task::JoinHandle<Result<(), String>>,
 }
 
 impl Harness {
     async fn start(allowed_origins: Vec<String>, probe_min_interval: Duration) -> Self {
+        Self::start_with_pairing(allowed_origins, probe_min_interval, true).await
+    }
+
+    async fn start_unpaired() -> Self {
+        Self::start_with_pairing(Vec::new(), Duration::from_secs(60), false).await
+    }
+
+    async fn start_with_pairing(
+        allowed_origins: Vec<String>,
+        probe_min_interval: Duration,
+        pair_device: bool,
+    ) -> Self {
         let mut registry = ProviderRegistry::default();
         registry
             .register(MockProvider::new(
@@ -168,19 +181,28 @@ impl Harness {
             std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
                 .unwrap();
         }
-        let token_path = directory.path().join("http-token");
-        let token = load_or_create_token(&token_path).unwrap();
+        let device_store_path = directory.path().join("devices.json");
+        let service = ControlService::new(engine.clone());
         let server = HttpServer::bind(
             HttpBindConfig {
                 binds: vec!["127.0.0.1:0".parse().unwrap()],
                 allowed_origins,
                 probe_min_interval,
-                token_path,
+                device_store_path,
             },
-            ControlService::new(engine.clone()),
+            service.clone(),
         )
         .await
         .unwrap();
+        let token = if pair_device {
+            let pair_code = service.create_pair_code().unwrap();
+            service
+                .pair_device(&pair_code.code, "test-device")
+                .unwrap()
+                .device_token
+        } else {
+            String::new()
+        };
         let addr = server.local_addrs()[0];
         let task = tokio::spawn(server.run());
         Self {
@@ -188,6 +210,7 @@ impl Harness {
             token,
             _directory: directory,
             engine,
+            service,
             task,
         }
     }
@@ -315,6 +338,17 @@ fn post(addr: SocketAddr, path: &str, token: &str, extra: &str) -> RawResponse {
     )
 }
 
+fn post_pair(addr: SocketAddr, body: &str, content_type: &str) -> RawResponse {
+    exchange(
+        addr,
+        &format!(
+            "POST /v1/pair HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            addr.port(),
+            body.len(),
+        ),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn rejects_disallowed_bind_and_names_the_setting() {
     let engine = DaemonEngine::new(
@@ -336,7 +370,7 @@ async fn rejects_disallowed_bind_and_names_the_setting() {
             binds: vec!["0.0.0.0:0".parse().unwrap()],
             allowed_origins: Vec::new(),
             probe_min_interval: Duration::from_secs(60),
-            token_path: directory.path().join("http-token"),
+            device_store_path: directory.path().join("devices.json"),
         },
         ControlService::new(engine),
     )
@@ -373,7 +407,7 @@ async fn serves_two_loopback_addresses_and_whitelists_every_listener() {
             binds: vec![first, second],
             allowed_origins: Vec::new(),
             probe_min_interval: Duration::from_secs(60),
-            token_path: directory.path().join("http-token"),
+            device_store_path: directory.path().join("devices.json"),
         },
         ControlService::new(engine.clone()),
     )
@@ -409,6 +443,14 @@ async fn authenticates_with_bearer_token_and_maps_control_errors() {
     let missing = get(harness.addr, "/v1/status", None, "");
     assert_eq!(missing.status, 401);
     assert_eq!(missing.body, "{\"error\":\"unauthorized\"}");
+    let wrong_method_without_bearer = exchange(
+        harness.addr,
+        &format!(
+            "POST /v1/status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            harness.addr.port()
+        ),
+    );
+    assert_eq!(wrong_method_without_bearer.status, 401);
     let unauthenticated_body = exchange(
         harness.addr,
         &format!(
@@ -426,7 +468,7 @@ async fn authenticates_with_bearer_token_and_maps_control_errors() {
     assert_eq!(status.status, 200);
     assert!(status.body.contains("daemon_status"), "{}", status.body);
     assert!(
-        status.body.contains("\"version\":8") || status.body.contains("\"version\": 8"),
+        status.body.contains("\"version\":9") || status.body.contains("\"version\": 9"),
         "{}",
         status.body
     );
@@ -464,6 +506,152 @@ async fn authenticates_with_bearer_token_and_maps_control_errors() {
     assert_eq!(auth_invalid.status, 429);
     assert!(auth_invalid.header("retry-after").is_some());
     harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pairs_without_bearer_authenticates_and_honors_revocation() {
+    let harness = Harness::start_unpaired().await;
+    assert_eq!(
+        get(harness.addr, "/v1/status", Some("random"), "").status,
+        401
+    );
+
+    let pair_code = harness.service.create_pair_code().unwrap();
+    let body = serde_json::json!({
+        "pair_code": pair_code.code.to_ascii_lowercase().replace('-', ""),
+        "device_name": "pro\u{0}2026",
+    })
+    .to_string();
+    let paired = post_pair(harness.addr, &body, "application/json; charset=utf-8");
+    assert_eq!(paired.status, 200, "{}", paired.body);
+    let payload: serde_json::Value = serde_json::from_str(&paired.body).unwrap();
+    let token = payload["device_token"].as_str().unwrap();
+    let device_id = payload["device_id"].as_str().unwrap();
+    assert_eq!(device_id.len(), 12);
+    assert_eq!(payload["device_name"], "pro2026");
+    assert_eq!(get(harness.addr, "/v1/status", Some(token), "").status, 200);
+    assert_eq!(
+        exchange(
+            harness.addr,
+            &format!(
+                "GET /v1/pair HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                harness.addr.port()
+            ),
+        )
+        .status,
+        405
+    );
+    let devices = harness.service.list_devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].name, "pro2026");
+    let persisted =
+        std::fs::read_to_string(harness._directory.path().join("devices.json")).unwrap();
+    assert!(!persisted.contains(token));
+
+    assert!(harness.service.revoke_device(device_id).unwrap());
+    assert_eq!(get(harness.addr, "/v1/status", Some(token), "").status, 401);
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_route_enforces_json_shape_name_limit_body_limit_and_host() {
+    let harness = Harness::start_unpaired().await;
+    let forbidden = exchange(
+        harness.addr,
+        &format!(
+            "POST /v1/pair HTTP/1.1\r\nHost: evil.example:{}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}",
+            harness.addr.port()
+        ),
+    );
+    assert_eq!(forbidden.status, 403);
+    harness.shutdown().await;
+
+    for (body, content_type, expected) in [
+        ("not-json".to_owned(), "application/json", 400),
+        ("{}".to_owned(), "application/json", 400),
+        (
+            serde_json::json!({"pair_code":"222-222","device_name":"x".repeat(65)}).to_string(),
+            "application/json",
+            400,
+        ),
+        (
+            serde_json::json!({"pair_code":"222-222","device_name":"device"}).to_string(),
+            "text/plain",
+            400,
+        ),
+        (
+            format!(
+                "{{\"pair_code\":\"222-222\",\"device_name\":\"{}\"}}",
+                "x".repeat(4096)
+            ),
+            "application/json",
+            413,
+        ),
+    ] {
+        let harness = Harness::start_unpaired().await;
+        let response = post_pair(harness.addr, &body, content_type);
+        assert_eq!(response.status, expected, "{}", response.body);
+        harness.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_rate_limit_is_per_ip_and_sets_retry_after() {
+    let harness = Harness::start_unpaired().await;
+    let code = harness.service.create_pair_code().unwrap();
+    let mut wrong_code = code.code.clone().into_bytes();
+    wrong_code[0] = if wrong_code[0] == b'2' { b'3' } else { b'2' };
+    let wrong_code = String::from_utf8(wrong_code).unwrap();
+    let wrong = serde_json::json!({"pair_code":wrong_code,"device_name":"device"}).to_string();
+    assert_eq!(
+        post_pair(harness.addr, &wrong, "application/json").status,
+        401
+    );
+    let valid = serde_json::json!({"pair_code":code.code,"device_name":"device"}).to_string();
+    let limited = post_pair(harness.addr, &valid, "application/json");
+    assert_eq!(limited.status, 429);
+    assert_eq!(limited.header("retry-after"), Some("1"));
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn corrupt_device_store_prevents_http_startup_and_names_the_file() {
+    let engine = DaemonEngine::new(
+        ullage_daemon::DaemonConfig::default(),
+        Arc::new(ProviderRegistry::default()),
+        Arc::new(SystemClock),
+        Arc::new(MemorySnapshotStore::default()),
+    )
+    .await
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let path = directory.path().join("devices.json");
+    std::fs::write(&path, b"not-json").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let error = match HttpServer::bind(
+        HttpBindConfig {
+            binds: vec!["127.0.0.1:0".parse().unwrap()],
+            allowed_origins: Vec::new(),
+            probe_min_interval: Duration::from_secs(60),
+            device_store_path: path.clone(),
+        },
+        ControlService::new(engine),
+    )
+    .await
+    {
+        Ok(_) => panic!("corrupt device store should fail"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("devices.json"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

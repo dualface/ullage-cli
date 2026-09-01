@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -15,18 +15,20 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode, header};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use percent_encoding::percent_decode_str;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use ullage_daemon::ControlService;
+use ullage_daemon::{ControlService, PairDeviceError};
 use ullage_protocol::{
     ControlCommand, ControlError, ControlRequest, ControlResponse, ControlResult, ProviderError,
 };
 
 use crate::bind::INVALID_BIND_MESSAGE;
-use crate::token::{constant_time_eq, load_or_create_token, load_token};
 use crate::{BindAddressClass, classify_bind_address};
 
 const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
+const MAXIMUM_PAIR_REQUEST_BYTES: usize = 4 * 1024;
+const PAIR_MIN_INTERVAL: Duration = Duration::from_secs(1);
+const PAIR_RATE_LIMIT_CAPACITY: usize = 4096;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const UNAUTHORIZED_BODY: &str = "{\"error\":\"unauthorized\"}";
 
@@ -35,7 +37,7 @@ pub struct HttpBindConfig {
     pub binds: Vec<SocketAddr>,
     pub allowed_origins: Vec<String>,
     pub probe_min_interval: Duration,
-    pub token_path: PathBuf,
+    pub device_store_path: PathBuf,
 }
 
 pub struct HttpServer {
@@ -88,12 +90,13 @@ struct HttpState {
     binds: Vec<SocketAddr>,
     allowed_origins: Vec<String>,
     probe_min_interval: Duration,
-    token_path: PathBuf,
     last_probe: Mutex<HashMap<String, Instant>>,
+    last_pair_attempt: Mutex<HashMap<IpAddr, Instant>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Route {
+    Pair,
     Status,
     Providers,
     Accounts,
@@ -135,7 +138,9 @@ impl HttpServer {
                     .ok_or_else(|| HttpBindError::message(INVALID_BIND_MESSAGE))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        load_or_create_token(&config.token_path).map_err(HttpBindError::message)?;
+        service
+            .configure_device_store(&config.device_store_path)
+            .map_err(HttpBindError::message)?;
 
         let mut listeners = Vec::new();
         let mut binds = Vec::new();
@@ -180,8 +185,8 @@ impl HttpServer {
                 binds,
                 allowed_origins: config.allowed_origins,
                 probe_min_interval: config.probe_min_interval,
-                token_path: config.token_path,
                 last_probe: Mutex::new(HashMap::new()),
+                last_pair_attempt: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -211,7 +216,7 @@ async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<()
     let result = loop {
         tokio::select! {
             accepted = listener.accept() => {
-                let (stream, _) = match accepted {
+                let (stream, remote_address) = match accepted {
                     Ok(accepted) => accepted,
                     Err(error) => break Err(error.to_string()),
                 };
@@ -220,7 +225,7 @@ async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<()
                     let io = TokioIo::new(stream);
                     let service = service_fn(move |request| {
                         let state = state.clone();
-                        async move { handle_connection(state, request).await }
+                        async move { handle_connection(state, remote_address.ip(), request).await }
                     });
                     let _ = http1::Builder::new()
                         .timer(TokioTimer::new())
@@ -240,13 +245,15 @@ async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<()
 
 async fn handle_connection(
     state: Arc<HttpState>,
+    remote_ip: IpAddr,
     request: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    Ok(handle_request(state, request).await)
+    Ok(handle_request(state, remote_ip, request).await)
 }
 
 async fn handle_request(
     state: Arc<HttpState>,
+    remote_ip: IpAddr,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     let method = request.method().clone();
@@ -284,8 +291,27 @@ async fn handle_request(
         };
     }
 
-    let expected = match load_token(&state.token_path) {
-        Ok(token) => token,
+    if matches!(parse_route(&Method::POST, &path), Ok(Route::Pair)) {
+        let response = if method == Method::POST {
+            handle_pair_request(&state, remote_ip, &headers, request).await
+        } else {
+            json_status(
+                StatusCode::METHOD_NOT_ALLOWED,
+                serde_json::json!({"error":"method_not_allowed"}),
+            )
+        };
+        return finish(response, origin.as_deref(), &state.allowed_origins);
+    }
+
+    let presented = bearer_token(header_str(&headers, &header::AUTHORIZATION));
+    match state
+        .service
+        .authenticate_device(presented.unwrap_or_default())
+    {
+        Ok(true) if presented.is_some() => {}
+        Ok(_) => {
+            return finish(unauthorized(), origin.as_deref(), &state.allowed_origins);
+        }
         Err(_) => {
             return finish(
                 json_status(
@@ -296,21 +322,13 @@ async fn handle_request(
                 &state.allowed_origins,
             );
         }
-    };
-    if !bearer_matches(header_str(&headers, &header::AUTHORIZATION), &expected) {
-        return finish(unauthorized(), origin.as_deref(), &state.allowed_origins);
     }
 
-    match collect_body(request).await {
-        Ok(()) => {}
+    match collect_body(request, MAXIMUM_REQUEST_BYTES).await {
+        Ok(_) => {}
         Err(status) => {
-            let error = if status == StatusCode::PAYLOAD_TOO_LARGE {
-                "payload_too_large"
-            } else {
-                "request_timeout"
-            };
             return finish(
-                json_status(status, serde_json::json!({"error": error})),
+                request_body_error(status),
                 origin.as_deref(),
                 &state.allowed_origins,
             );
@@ -392,21 +410,101 @@ async fn handle_request(
     )
 }
 
-async fn collect_body(request: Request<Incoming>) -> Result<(), StatusCode> {
+async fn collect_body(
+    request: Request<Incoming>,
+    maximum_bytes: usize,
+) -> Result<Bytes, StatusCode> {
     match tokio::time::timeout(
         READ_TIMEOUT,
-        Limited::new(request.into_body(), MAXIMUM_REQUEST_BYTES).collect(),
+        Limited::new(request.into_body(), maximum_bytes).collect(),
     )
     .await
     {
-        Ok(Ok(_)) => Ok(()),
+        Ok(Ok(body)) => Ok(body.to_bytes()),
         Ok(Err(_)) => Err(StatusCode::PAYLOAD_TOO_LARGE),
         Err(_) => Err(StatusCode::REQUEST_TIMEOUT),
     }
 }
 
+#[derive(Deserialize)]
+struct PairRequest {
+    pair_code: String,
+    device_name: String,
+}
+
+async fn handle_pair_request(
+    state: &HttpState,
+    remote_ip: IpAddr,
+    headers: &hyper::HeaderMap,
+    request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
+    if let Some(retry_after) = pair_retry_after(state, remote_ip, Instant::now()) {
+        return rate_limited(retry_after);
+    }
+    if !content_type_is_json(header_str(headers, &header::CONTENT_TYPE)) {
+        return json_status(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error":"bad_request"}),
+        );
+    }
+    let body = match collect_body(request, MAXIMUM_PAIR_REQUEST_BYTES).await {
+        Ok(body) => body,
+        Err(status) => return request_body_error(status),
+    };
+    let request = match serde_json::from_slice::<PairRequest>(&body) {
+        Ok(request) => request,
+        Err(_) => {
+            return json_status(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error":"bad_request"}),
+            );
+        }
+    };
+    match state
+        .service
+        .pair_device(&request.pair_code, &request.device_name)
+    {
+        Ok(credential) => json_status(
+            StatusCode::OK,
+            serde_json::json!({
+                "device_id": credential.device_id,
+                "device_token": credential.device_token,
+                "device_name": credential.device_name,
+            }),
+        ),
+        Err(PairDeviceError::InvalidCode) => json_status(
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({"error":"pair_code_invalid"}),
+        ),
+        Err(PairDeviceError::InvalidName) => json_status(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error":"bad_request"}),
+        ),
+        Err(PairDeviceError::Storage(_)) => json_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({"error":"storage"}),
+        ),
+    }
+}
+
+fn request_body_error(status: StatusCode) -> Response<Full<Bytes>> {
+    let error = if status == StatusCode::PAYLOAD_TOO_LARGE {
+        "payload_too_large"
+    } else {
+        "request_timeout"
+    };
+    json_status(status, serde_json::json!({"error": error}))
+}
+
+fn content_type_is_json(content_type: Option<&str>) -> bool {
+    content_type
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+}
+
 fn route_command(route: Route, params: &QueryParams) -> ControlCommand {
     match route {
+        Route::Pair => unreachable!("pairing is handled before control routing"),
         Route::Status => ControlCommand::DaemonStatus,
         Route::Providers => ControlCommand::ListProviders,
         Route::Accounts => ControlCommand::ListAccounts,
@@ -492,6 +590,7 @@ impl QueryParams {
         let allowed = match route {
             Route::Usage => ["account", "diagnose"].as_slice(),
             Route::Probe { .. } => ["wait", "diagnose"].as_slice(),
+            Route::Pair => [].as_slice(),
             _ => ["diagnose"].as_slice(),
         };
         if self.keys.iter().all(|key| allowed.contains(&key.as_str())) {
@@ -522,6 +621,7 @@ fn parse_route(method: &Method, path: &str) -> Result<Route, RouteError> {
         .collect::<Vec<_>>()
         .as_slice()
     {
+        ["v1", "pair"] => Some(Route::Pair),
         ["v1", "status"] => Some(Route::Status),
         ["v1", "providers"] => Some(Route::Providers),
         ["v1", "accounts"] => Some(Route::Accounts),
@@ -537,11 +637,10 @@ fn parse_route(method: &Method, path: &str) -> Result<Route, RouteError> {
     match (method, matched) {
         (_, None) => Err(RouteError::NotFound),
         (&Method::OPTIONS, Some(_)) => Ok(Route::Status),
-        (&Method::GET, Some(Route::Probe { .. })) | (&Method::POST, Some(Route::Status)) => {
-            Err(RouteError::MethodNotAllowed)
-        }
+        (&Method::GET, Some(Route::Probe { .. } | Route::Pair))
+        | (&Method::POST, Some(Route::Status)) => Err(RouteError::MethodNotAllowed),
         (&Method::GET, Some(route)) if !matches!(route, Route::Probe { .. }) => Ok(route),
-        (&Method::POST, Some(route @ Route::Probe { .. })) => Ok(route),
+        (&Method::POST, Some(route @ (Route::Probe { .. } | Route::Pair))) => Ok(route),
         (_, Some(_)) => Err(RouteError::MethodNotAllowed),
     }
 }
@@ -574,14 +673,32 @@ fn host_is_allowed(host: Option<&str>, binds: &[SocketAddr]) -> bool {
     allowed.iter().any(|candidate| candidate == &normalized)
 }
 
-fn bearer_matches(authorization: Option<&str>, expected: &str) -> bool {
-    let Some(authorization) = authorization else {
-        return constant_time_eq(expected.as_bytes(), b"");
-    };
-    let Some(presented) = authorization.strip_prefix("Bearer ") else {
-        return constant_time_eq(expected.as_bytes(), b"");
-    };
-    constant_time_eq(presented.as_bytes(), expected.as_bytes())
+fn bearer_token(authorization: Option<&str>) -> Option<&str> {
+    authorization?
+        .strip_prefix("Bearer ")
+        .filter(|token| !token.is_empty())
+}
+
+fn pair_retry_after(state: &HttpState, remote_ip: IpAddr, now: Instant) -> Option<u64> {
+    let mut attempts = state
+        .last_pair_attempt
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    attempts.retain(|_, attempted| now.saturating_duration_since(*attempted) < PAIR_MIN_INTERVAL);
+    if let Some(previous) = attempts.get(&remote_ip) {
+        let remaining = PAIR_MIN_INTERVAL - now.saturating_duration_since(*previous);
+        return Some(remaining.as_secs().max(1));
+    }
+    if attempts.len() >= PAIR_RATE_LIMIT_CAPACITY
+        && let Some(oldest) = attempts
+            .iter()
+            .min_by_key(|(_, attempted)| **attempted)
+            .map(|(address, _)| *address)
+    {
+        attempts.remove(&oldest);
+    }
+    attempts.insert(remote_ip, now);
+    None
 }
 
 fn probe_retry_after(state: &HttpState, account_id: &str) -> Option<u64> {
@@ -794,7 +911,7 @@ fn apply_cors(
         set_header(
             response,
             header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("Authorization"),
+            HeaderValue::from_static("Authorization, Content-Type"),
         );
     }
 }
@@ -860,12 +977,46 @@ mod tests {
     }
 
     #[test]
-    fn bearer_comparison_does_not_treat_missing_and_wrong_tokens_differently() {
-        let expected = "secret-token-value";
-        assert!(bearer_matches(Some("Bearer secret-token-value"), expected));
-        assert!(!bearer_matches(None, expected));
-        assert!(!bearer_matches(Some("Bearer other"), expected));
-        assert!(!bearer_matches(Some("Basic secret-token-value"), expected));
+    fn bearer_parser_requires_the_exact_scheme_and_a_value() {
+        assert_eq!(
+            bearer_token(Some("Bearer secret-token-value")),
+            Some("secret-token-value")
+        );
+        assert_eq!(bearer_token(None), None);
+        assert_eq!(bearer_token(Some("Basic secret-token-value")), None);
+        assert_eq!(bearer_token(Some("bearer secret-token-value")), None);
+        assert_eq!(bearer_token(Some("Bearer ")), None);
+    }
+
+    #[test]
+    fn pair_rate_limiter_stays_bounded() {
+        let engine = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            ullage_daemon::DaemonEngine::new(
+                ullage_daemon::DaemonConfig::default(),
+                Arc::new(ullage_core::ProviderRegistry::default()),
+                Arc::new(ullage_daemon::SystemClock),
+                Arc::new(ullage_daemon::MemorySnapshotStore::default()),
+            )
+            .await
+            .unwrap()
+        });
+        let state = HttpState {
+            service: ControlService::new(engine),
+            binds: vec!["127.0.0.1:7878".parse().unwrap()],
+            allowed_origins: Vec::new(),
+            probe_min_interval: Duration::ZERO,
+            last_probe: Mutex::new(HashMap::new()),
+            last_pair_attempt: Mutex::new(HashMap::new()),
+        };
+        let now = Instant::now();
+        for suffix in 0..=PAIR_RATE_LIMIT_CAPACITY {
+            let address = IpAddr::V6(std::net::Ipv6Addr::from(suffix as u128));
+            assert_eq!(pair_retry_after(&state, address, now), None);
+        }
+        assert_eq!(
+            state.last_pair_attempt.lock().unwrap().len(),
+            PAIR_RATE_LIMIT_CAPACITY
+        );
     }
 
     #[test]

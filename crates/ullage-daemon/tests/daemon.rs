@@ -1710,8 +1710,69 @@ async fn control_service_supports_status_auth_probe_show_and_version_checks() {
             if user_code.as_deref() == Some("secret-code")
     ));
 
+    assert!(!ControlCommand::CreatePairCode.accepts_diagnostics());
+    assert!(!ControlCommand::ListDevices.accepts_diagnostics());
+    assert!(
+        !ControlCommand::RevokeDevice {
+            device_id: "missing".into()
+        }
+        .accepts_diagnostics()
+    );
+    let pair_code = service
+        .handle(
+            ControlRequest::new("pair-code", ControlCommand::CreatePairCode).with_diagnostics(true),
+        )
+        .await;
+    assert_eq!(pair_code.diagnostic, None);
+    let ControlResult::PairCode(pair_code) = pair_code.result else {
+        panic!("create pair code should return a code");
+    };
+    let credential = service
+        .pair_device(&pair_code.code, "control-device")
+        .unwrap();
+    let devices = service
+        .handle(ControlRequest::new("devices", ControlCommand::ListDevices))
+        .await;
+    let encoded_devices = serde_json::to_string(&devices).unwrap();
+    assert!(!encoded_devices.contains(&credential.device_token));
+    assert!(!encoded_devices.contains("token_hash"));
+    assert!(matches!(
+        devices.result,
+        ControlResult::Devices(ref devices)
+            if devices.len() == 1 && devices[0].id == credential.device_id
+    ));
+    let missing_device = service
+        .handle(ControlRequest::new(
+            "revoke-missing",
+            ControlCommand::RevokeDevice {
+                device_id: "missing".into(),
+            },
+        ))
+        .await;
+    assert!(matches!(
+        missing_device.result,
+        ControlResult::Error(ullage_protocol::ControlError::DeviceNotFound { ref device_id })
+            if device_id == "missing"
+    ));
+    for request_id in ["revoke", "revoke-again"] {
+        let revoked = service
+            .handle(ControlRequest::new(
+                request_id,
+                ControlCommand::RevokeDevice {
+                    device_id: credential.device_id.clone(),
+                },
+            ))
+            .await;
+        assert_eq!(revoked.result, ControlResult::Ack);
+    }
+    assert!(
+        !service
+            .authenticate_device(&credential.device_token)
+            .unwrap()
+    );
+
     let mut incompatible = ControlRequest::new("old", ControlCommand::ListProviders);
-    incompatible.version = 0;
+    incompatible.version = 8;
     assert!(matches!(
         service.handle(incompatible).await.result,
         ControlResult::ProtocolMismatch {

@@ -1938,6 +1938,7 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
         ControlError::AccountSelectorNotFound { .. } => {
             matches!(command, Command::Probe(_))
         }
+        ControlError::DeviceNotFound { .. } => false,
         ControlError::Timeout => matches!(command, Command::Probe(ProbeArgs { wait: true, .. })),
         ControlError::Cancelled => matches!(
             command,
@@ -2119,6 +2120,7 @@ fn control_error_kind(error: &ControlError) -> &'static str {
         ControlError::Registry(_) => "provider_registry_error",
         ControlError::AccountNotFound { .. } => "account_not_found",
         ControlError::AccountSelectorNotFound { .. } => "account_selector_not_found",
+        ControlError::DeviceNotFound { .. } => "device_not_found",
         ControlError::Timeout => "timeout",
         ControlError::Cancelled => "cancelled",
         ControlError::Storage => "storage",
@@ -2290,7 +2292,9 @@ fn human_result(
             render_workspaces(std::slice::from_ref(workspace), reveal, palette)
         }
         ControlResult::Ack => "ok\n".into(),
-        ControlResult::Usage(_)
+        ControlResult::PairCode(_)
+        | ControlResult::Devices(_)
+        | ControlResult::Usage(_)
         | ControlResult::Error(_)
         | ControlResult::ProtocolMismatch { .. } => String::new(),
     }
@@ -3036,6 +3040,8 @@ fn redact_revealable_values(result: &mut ControlResult) {
             }
         }
         ControlResult::DaemonStatus(_)
+        | ControlResult::PairCode(_)
+        | ControlResult::Devices(_)
         | ControlResult::Providers(_)
         | ControlResult::Usage(_)
         | ControlResult::Ack

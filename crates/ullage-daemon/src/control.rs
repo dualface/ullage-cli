@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -16,6 +16,7 @@ use crate::{
     AccountConfig, AccountId, BackoffConfig, DaemonEngine, DaemonError, DaemonStatus, ProbeError,
     ProbeTrigger, SanitizedError, SnapshotRecord,
 };
+use crate::{DeviceCredential, DeviceStore, PairDeviceError};
 
 const CONTROL_ACCOUNT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const CONTROL_ACCOUNT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -25,6 +26,7 @@ const CONTROL_ACCOUNT_JITTER: Duration = Duration::from_secs(5);
 pub struct ControlService {
     engine: DaemonEngine,
     credential_backend: CredentialBackendId,
+    device_store: Arc<RwLock<DeviceStore>>,
 }
 
 impl ControlService {
@@ -32,7 +34,58 @@ impl ControlService {
         Self {
             engine,
             credential_backend: CredentialBackendId::native(),
+            device_store: Arc::new(RwLock::new(DeviceStore::memory())),
         }
+    }
+
+    pub fn configure_device_store(&self, path: impl Into<PathBuf>) -> Result<(), String> {
+        let path = path.into();
+        let mut store = self
+            .device_store
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if store.path().as_deref() == Some(path.as_path()) {
+            return Ok(());
+        }
+        if let Some(existing) = store.path() {
+            return Err(format!(
+                "device store is already configured at {}",
+                existing.display()
+            ));
+        }
+        *store = DeviceStore::open(path)?;
+        Ok(())
+    }
+
+    pub fn create_pair_code(&self) -> Result<ullage_protocol::PairCodePayload, String> {
+        self.device_store().create_pair_code()
+    }
+
+    pub fn list_devices(&self) -> Vec<ullage_protocol::DevicePayload> {
+        self.device_store().list_devices()
+    }
+
+    pub fn revoke_device(&self, device_id: &str) -> Result<bool, String> {
+        self.device_store().revoke_device(device_id)
+    }
+
+    pub fn pair_device(
+        &self,
+        pair_code: &str,
+        device_name: &str,
+    ) -> Result<DeviceCredential, PairDeviceError> {
+        self.device_store().pair(pair_code, device_name)
+    }
+
+    pub fn authenticate_device(&self, token: &str) -> Result<bool, String> {
+        self.device_store().authenticate(token)
+    }
+
+    fn device_store(&self) -> DeviceStore {
+        self.device_store
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     #[must_use]
@@ -101,6 +154,16 @@ impl ControlService {
                 self.engine.status().await,
                 self.credential_backend,
             )),
+            ControlCommand::CreatePairCode => match self.create_pair_code() {
+                Ok(code) => ControlResult::PairCode(code),
+                Err(_) => ControlResult::Error(ControlError::Storage),
+            },
+            ControlCommand::ListDevices => ControlResult::Devices(self.list_devices()),
+            ControlCommand::RevokeDevice { device_id } => match self.revoke_device(&device_id) {
+                Ok(true) => ControlResult::Ack,
+                Ok(false) => ControlResult::Error(ControlError::DeviceNotFound { device_id }),
+                Err(_) => ControlResult::Error(ControlError::Storage),
+            },
             ControlCommand::ListProviders => {
                 ControlResult::Providers(self.engine.registry().descriptors())
             }

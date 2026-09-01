@@ -13,7 +13,7 @@ pub use ullage_core::{
     UsageQuery, UsageWindow, UsageWindowKind,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u16 = 8;
+pub const CONTROL_PROTOCOL_VERSION: u16 = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -79,6 +79,11 @@ impl ControlRequest {
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum ControlCommand {
     DaemonStatus,
+    CreatePairCode,
+    ListDevices,
+    RevokeDevice {
+        device_id: String,
+    },
     ListProviders,
     AddAccount {
         provider: ProviderId,
@@ -191,6 +196,8 @@ impl ControlResponse {
 #[serde(tag = "result", content = "payload", rename_all = "snake_case")]
 pub enum ControlResult {
     DaemonStatus(DaemonStatusPayload),
+    PairCode(PairCodePayload),
+    Devices(Vec<DevicePayload>),
     Providers(Vec<ProviderDescriptor>),
     Accounts(Vec<Account>),
     Account(Account),
@@ -213,6 +220,20 @@ pub struct ProbePayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairCodePayload {
+    pub code: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevicePayload {
+    pub id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum ControlError {
     Account(AccountError),
@@ -224,6 +245,9 @@ pub enum ControlError {
     AccountSelectorNotFound {
         provider: ProviderId,
         account_label: Option<String>,
+    },
+    DeviceNotFound {
+        device_id: String,
     },
     Timeout,
     Cancelled,

@@ -43,9 +43,9 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-provider-*`: vendor-specific DTOs, API behavior, and conversion into `ullage-core`
   DTOs. Vendor DTOs must not be moved into a shared crate.
 - `ullage-daemon`: local transport and scheduling.
-- `ullage-http`: loopback, Tailscale, or private LAN HTTP query transport with explicit or automatic
-  multi-address binding, bearer token file, Host/Origin checks, and per-account probe cooldown.
-  Assembled only by `ullage-app`.
+- `ullage-http`: loopback, Tailscale, or private-LAN HTTP query and pairing transport with explicit
+  or automatic multi-address binding, Host/Origin checks, per-IP pairing limits, and per-account
+  probe cooldown. Assembled only by `ullage-app`; device state remains owned by `ullage-daemon`.
 - `ullage-cli`: command-line client of the local control protocol.
 - `ullage-app`: single executable composition root for the CLI client and daemon process.
 
@@ -73,8 +73,10 @@ The current client accesses daemon data only through the loopback HTTP API; it d
 credentials, snapshots, or the private control socket directly. Its bearer token is stored as a
 generic password in the macOS Keychain with device-local, unlocked-only accessibility. The
 executable-owned `UsageDataSource` boundary selects either the real `DaemonClient` or bundled mock
-fixtures. HTTP responses require the version 8 result envelope, probes distinguish acknowledged
-and completed responses. The headless `--dump` path reuses the same summary projection as the menu
+fixtures. Daemon HTTP responses now use the version 9 result envelope, while the current Mac client
+still expects version 8 and remains intentionally incompatible until its companion pairing update.
+Probes distinguish acknowledged and completed responses. The headless `--dump` path reuses the same
+summary projection as the menu
 bar UI, while `--render-iconset` reuses the executable's canonical mark geometry without entering
 the AppKit application loop.
 
@@ -148,6 +150,9 @@ values and provider refresh errors are redacted from `Debug` and `Display` outpu
   failures only.
 - The local protocol wraps provider and registry failures in `ControlError`, preserving unknown
   provider IDs as a stable, serializable response instead of a transport failure.
+- Protocol version 9 adds `CreatePairCode`, `ListDevices`, and `RevokeDevice`. Pair-code responses
+  contain only the short-lived code and expiry; device-list payloads contain display metadata but
+  never a device token or token hash. `DeviceNotFound` is the stable unknown-device error.
 
 ## Runtime configuration
 
@@ -184,20 +189,22 @@ stay out of process arguments. Provider error text stays sanitized on the contro
 the client opts in with `--diagnose` / `ULLAGE_DIAGNOSE=1`. That flag shows
 sanitized partial-failure scope and category on `show` and `probe`, and
 attaches the provider's own error text only on authentication and probe
-failures. Control
-protocol version 8 adds `credential_backend` on daemon status. Version 7 added the diagnostics
-opt-in (`diagnostics` / `diagnostic`) and `SetAccountLabel`.
+failures. Control protocol version 9 adds device pairing and revocation. Version 8 added
+`credential_backend` on daemon status. Version 7 added the diagnostics opt-in
+(`diagnostics` / `diagnostic`) and `SetAccountLabel`.
 
 ## HTTP query API
 
 `ullage-http` is an optional second transport beside the Unix socket / Windows named pipe. It is
-off unless `http.enabled` is true. The crate maps HTTP routes onto existing `ControlCommand`
-values and calls `ControlService::handle()`; `CONTROL_PROTOCOL_VERSION` stays 8.
+off unless `http.enabled` is true. The crate maps query routes onto existing `ControlCommand`
+values and calls `ControlService::handle()`; pairing calls the same `DeviceStore` through
+`ControlService`. `CONTROL_PROTOCOL_VERSION` is 9.
 
-Endpoints: `GET /v1/status`, `/v1/providers`, `/v1/accounts`, `/v1/accounts/{id}`, `/v1/usage`
-(optional `?account=`), and `POST /v1/accounts/{id}/probe` (optional `?wait=false`). `/v1/usage`
-is `ControlCommand::Show` and does not call providers. Authentication, account mutation, and
-workspace commands are not exposed.
+Endpoints: `POST /v1/pair`, `GET /v1/status`, `/v1/providers`, `/v1/accounts`,
+`/v1/accounts/{id}`, `/v1/usage` (optional `?account=`), and
+`POST /v1/accounts/{id}/probe` (optional `?wait=false`). `/v1/usage` is
+`ControlCommand::Show` and does not call providers. Authentication, account mutation, device
+administration, and workspace commands are not exposed over HTTP.
 
 Security model:
 
@@ -210,12 +217,27 @@ Security model:
   A loopback bind failure stops startup; other bind failures are logged and skipped. Startup logs
   each listener as `http.bind listening <addr> (<class>)`.
 - Tailscale traffic is encrypted by WireGuard. Private LAN traffic has no transport encryption, so
-  its bearer token is sent in plaintext; Ullage does not add TLS.
-- Token: 256-bit `getrandom`, base64url, stored as `http-token` next to the state file. Unix
-  files must be current-user-owned `0600`; Windows files use the same protected DACL primitive as
-  credentials and snapshots. Permission mismatches refuse to start or rotate and are not repaired
-  in place. Comparison is constant-time. `ullage http token --rotate` replaces the file so a
-  running daemon rejects the old token on the next request.
+  its device token is sent in plaintext; Ullage does not add TLS.
+- Pairing: the local control channel creates one in-memory code at a time. The code uses
+  `23456789ABCDEFGHJKMNPQRSTVWXYZ`, is displayed as `XXX-XXX`, expires after 300 seconds, succeeds
+  once, and is invalidated by replacement or five failed validations. Input is case-insensitive
+  and may omit the hyphen, but no other character or hyphen position is accepted. Generation uses
+  `getrandom` with rejection sampling; comparison is constant-time. `POST /v1/pair` is the only
+  bearer-free route other than `OPTIONS`, requires `application/json`, limits bodies to 4 KiB, and
+  is rate-limited to one attempt per source IP per second with a bounded expiry-cleaned table.
+- Devices: `ControlService` owns one shared `DeviceStore` used by the control and HTTP transports.
+  Successful pairing creates a 12-character ID and a 256-bit base64url token, returns the raw token
+  once, and persists only its SHA-256 hash. `devices.json` sits beside the state file; Unix uses a
+  private parent and `0600`, while Windows uses a protected current-user-only DACL. Updates use a
+  private temporary file and atomic replacement. Corrupt, public, symlink/reparse, or otherwise
+  unsafe storage refuses startup without repair. Records contain ID, sanitized name, token hash,
+  RFC3339 creation and last-seen times, plus an internal revocation tombstone. The legacy
+  `http-token` file is ignored and left in place.
+- Authentication: every protected request hashes the presented device token and constant-time
+  compares it with every non-revoked record without an early return. An empty store never bypasses
+  authentication. Successful requests update `last_seen_at`, with at most one file write per device
+  per 60 seconds. Revocation preserves a tombstone for idempotency and immediately rejects that
+  token; active device listings omit revoked records.
 - Host whitelist: `127.0.0.1:<port>`, `localhost:<port>`, and every actual listener address. Any
   IPv6 listener additionally enables `[::1]:<port>`. Other Host values return 403.
 - CORS: `http.allowed_origins` defaults to empty. A matching Origin is echoed with `Vary:
@@ -224,7 +246,8 @@ Security model:
   is not the authorization gate; token and Host checks are.
 - Probe cooldown is per account (`http.probe_min_interval_seconds`, default 60) because engine
   single-flight only merges concurrent probes.
-- Request bodies over 1 MiB or past the read timeout are rejected on that connection only.
+- Request bodies over 1 MiB, pairing bodies over 4 KiB, or bodies past the read timeout are rejected
+  on that connection only.
 - HTTP `/v1` is independent of `CONTROL_PROTOCOL_VERSION`. Status payloads still carry the
   control protocol version.
 

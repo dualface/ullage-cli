@@ -201,7 +201,10 @@ fn maps_the_complete_command_surface_to_control_requests() {
             }),
             ControlCommand::Probe { wait: false, .. } => ControlResult::Ack,
             ControlCommand::Show { .. } => ControlResult::Snapshots(Vec::new()),
-            ControlCommand::QueryUsage { .. } => unreachable!(),
+            ControlCommand::CreatePairCode
+            | ControlCommand::ListDevices
+            | ControlCommand::RevokeDevice { .. }
+            | ControlCommand::QueryUsage { .. } => unreachable!(),
         };
         Ok(response(request, result))
     }

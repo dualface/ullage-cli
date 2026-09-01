@@ -190,6 +190,7 @@ pub async fn run_daemon_with(
     .map_err(|_| "daemon engine initialization failed")?;
     merge_configured_accounts(&engine, &config.accounts).await?;
     let service = ControlService::new(engine.clone()).with_credential_backend(credential_backend);
+    service.configure_device_store(devices_path()?)?;
     let http = if config.http.enabled {
         let target = parse_http_bind(&config.http.bind)?;
         Some(match target {
@@ -363,8 +364,16 @@ fn http_bind_config(config: &AppConfig, binds: Vec<SocketAddr>) -> Result<HttpBi
         binds,
         allowed_origins: config.http.allowed_origins.clone(),
         probe_min_interval: Duration::from_secs(config.http.probe_min_interval_seconds),
-        token_path: http_token_path()?,
+        device_store_path: devices_path()?,
     })
+}
+
+pub fn devices_path() -> Result<PathBuf, String> {
+    let state = state_path()?;
+    let parent = state
+        .parent()
+        .ok_or_else(|| "state path has no parent directory".to_owned())?;
+    Ok(parent.join("devices.json"))
 }
 
 pub fn http_token_path() -> Result<PathBuf, String> {

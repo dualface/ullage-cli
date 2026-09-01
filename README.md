@@ -57,12 +57,14 @@ asset is required. Set the build palette with `ICON_PALETTE`, for example:
 make -C apps/ullage-mac bundle ICON_PALETTE=paper
 ```
 
-The normal client reads the server URL from its Settings panel. The current
-client accepts an HTTP loopback address and defaults to
-`http://127.0.0.1:7878`. Enable the daemon's HTTP interface as described under
-Configuration, print its bearer token with `ullage http token`, and paste that
-token into Settings. The client stores it in the macOS Keychain rather than
-`UserDefaults`.
+A pairing-capable client reads the server URL from its Settings panel and
+defaults to `http://127.0.0.1:7878`. Enable the daemon's HTTP interface as
+described under Configuration, create a one-use code with `ullage device pair`,
+and enter that code in Settings. The client exchanges it for a per-device token
+and stores the token in the macOS Keychain rather than `UserDefaults`. The
+current Mac build still uses the retired shared-token protocol and cannot
+connect to a protocol-version-9 daemon until its companion pairing update is
+installed.
 
 `Launch at Login` is available from the status-item menu when Ullage is running
 from the application bundle. Copy `Ullage.app` to `/Applications` or
@@ -119,17 +121,23 @@ Keychain or the notarytool profile.
 ### Connecting to the daemon
 
 Set `http.enabled` to `true` in the daemon configuration, restart the daemon,
-and obtain its bearer token without copying it into a script or log:
+and create a short-lived pairing code over the private control channel:
 
 ```sh
 ullage daemon stop
 ullage daemon start
-ullage http token
+ullage device pair
 ```
 
-Open Ullage Mac Settings, leave the default `http://127.0.0.1:7878` server URL
-(or use `http://localhost:7878`), paste the token, and select **Save** or
-**Test connection**. The token is stored in the current macOS user's Keychain.
+In a pairing-capable Ullage Mac build, open Settings, leave the default server
+URL as `http://127.0.0.1:7878` (or use `http://localhost:7878`), enter the
+displayed pairing code, and select
+**Save** or **Test connection**. The client sends its hostname as the device
+name, receives the device token once, and stores it in the current macOS
+user's Keychain. Pairing codes are one-use, expire after 300 seconds, and a new
+code invalidates the previous one. Use `ullage device list` to inspect active
+devices and `ullage device revoke <DEVICE_ID>` to revoke one without affecting
+the others.
 
 When both machines are in the same tailnet, the daemon HTTP API can bind its
 Tailscale IPv4 address and generic HTTP clients can connect to
@@ -158,9 +166,9 @@ Default paths:
 
 | Platform | Config | State | Control |
 |---|---|---|---|
-| Linux | `$XDG_CONFIG_HOME/ullage/config.json` or `~/.config/ullage/config.json` | `$XDG_STATE_HOME/ullage/state.json` or `~/.local/state/ullage/state.json`; HTTP token `http-token` beside that file | `$XDG_RUNTIME_DIR/ullage/control.sock` |
-| macOS | `~/Library/Application Support/Ullage/config.json` | `~/Library/Application Support/Ullage/state.json`; HTTP token `http-token` beside that file | `$TMPDIR/ullage-<uid>/control.sock` |
-| Windows | `%APPDATA%\Ullage\config.json` | `%LOCALAPPDATA%\Ullage\state.json`; HTTP token `http-token` beside that file | `\\.\pipe\ullage-<user-scope>` |
+| Linux | `$XDG_CONFIG_HOME/ullage/config.json` or `~/.config/ullage/config.json` | `$XDG_STATE_HOME/ullage/state.json` or `~/.local/state/ullage/state.json`; paired devices in `devices.json` beside that file | `$XDG_RUNTIME_DIR/ullage/control.sock` |
+| macOS | `~/Library/Application Support/Ullage/config.json` | `~/Library/Application Support/Ullage/state.json`; paired devices in `devices.json` beside that file | `$TMPDIR/ullage-<uid>/control.sock` |
+| Windows | `%APPDATA%\Ullage\config.json` | `%LOCALAPPDATA%\Ullage\state.json`; paired devices in `devices.json` beside that file | `\\.\pipe\ullage-<user-scope>` |
 
 Overrides: `ULLAGE_CONFIG_FILE`, `ULLAGE_STATE_FILE`, `ULLAGE_CONTROL_SOCKET`
 (Unix), `ULLAGE_CONTROL_PIPE` (Windows).
@@ -237,9 +245,10 @@ loopback, Tailscale, or private LAN address. For example, `auto:7878` discovers
 all eligible local addresses and listens on each of them, while
 `<tailscale-ipv4>:7878` or `<lan-ipv4>:7878` keeps the single-address behavior.
 Wildcard, link-local, multicast, and public addresses refuse to start and name
-`http.bind`. The server exposes this read-only HTTP query API:
+`http.bind`. The server exposes this HTTP API:
 
 ```text
+POST /v1/pair
 GET  /v1/status
 GET  /v1/providers
 GET  /v1/accounts
@@ -253,16 +262,28 @@ requests for the same account within `http.probe_min_interval_seconds`
 (default 60) return `429` with `Retry-After`. Authentication, account
 mutation, and workspace commands stay on the private control socket.
 
-Requests need `Authorization: Bearer <token>`. Print or rotate the token with:
+Every route except `POST /v1/pair` and `OPTIONS` requires `Authorization:
+Bearer <device_token>`. Pairing accepts JSON such as
+`{"pair_code":"ABC-DEF","device_name":"client-host"}` and returns the
+device ID, sanitized name, and a 256-bit base64url device token. That response
+is the only time the raw token is exposed. The six-character code uses the
+alphabet `23456789ABCDEFGHJKMNPQRSTVWXYZ`, is case-insensitive on input, and
+accepts the hyphen only in the displayed position or with the hyphen omitted.
+It expires after 300 seconds, succeeds once, is replaced by the next generated
+code, and is invalidated after five failed validations. Pair attempts are also
+limited to one per source IP per second; excess attempts return `429` with
+`Retry-After`.
 
-```sh
-ullage http token
-ullage http token --rotate
-```
+`devices.json` is stored beside the state file with current-user-only access
+(`0600` / protected DACL). Each active record contains a 12-character device
+ID, sanitized name, SHA-256 token hash, creation time, and last-seen time; it
+never contains the raw token. Authentication hashes the presented token and
+compares it with every active record in constant time without returning early.
+Last-seen writes are limited to once per device per 60 seconds. A corrupt or
+unsafe device file refuses daemon startup and is never repaired in place. The
+legacy `http-token` file is ignored and is not deleted automatically.
 
-The token is a 256-bit value stored as `http-token` next to the state file,
-owned by the current user (`0600` / protected DACL). A permission mismatch
-refuses to start or rotate rather than repairing the file. The HTTP server
+The HTTP server
 accepts only Host values `127.0.0.1:<port>`, `localhost:<port>`, and the actual
 listener addresses; any IPv6 listener additionally enables `[::1]:<port>`.
 `http.allowed_origins` is empty by default:
@@ -274,15 +295,16 @@ address is initially available, discovery retries for up to 60 seconds and then
 starts with loopback. A failed loopback bind stops startup; a failed non-loopback
 bind emits a warning and is skipped. Remote access may use a direct Tailscale or
 LAN address, or an SSH tunnel. Ullage does not offer TLS. Tailscale traffic is
-encrypted by WireGuard, but LAN traffic and its bearer token are plaintext.
+encrypted by WireGuard, but LAN traffic and its device token are plaintext.
 
 Error mapping is stable: missing or invalid Bearer tokens are `401`, unknown
 routes `404`, illegal parameters `400`, `AccountNotFound` `404`,
 `AuthenticationInvalid` `409`, provider or probe `RateLimited` `429` with
-`Retry-After`, `Timeout` `504`, and `Storage` `500`. Response bodies stay
-sanitized unless `?diagnose=1` is set. Request bodies larger than 1 MiB, or
-that stall past the read timeout, are rejected without affecting other
-connections.
+`Retry-After`, `Timeout` `504`, and `Storage` `500`. Pairing additionally uses
+`400 bad_request`, `401 pair_code_invalid`, `405`, `413`, and `429`. Response
+bodies stay sanitized unless `?diagnose=1` is set. Request bodies larger than
+1 MiB, pairing bodies larger than 4 KiB, or bodies that stall past the read
+timeout are rejected without affecting other connections.
 
 ## Daemon lifecycle
 

@@ -9,9 +9,8 @@ const TOKEN_BYTES: usize = 32;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn generate_token() -> Result<String, String> {
-    let mut bytes = [0_u8; TOKEN_BYTES];
-    getrandom::fill(&mut bytes).map_err(|_| "http-token could not be generated".to_owned())?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    ullage_daemon::generate_device_token()
+        .map_err(|_| "http-token could not be generated".to_owned())
 }
 
 pub fn load_or_create_token(path: &Path) -> Result<String, String> {

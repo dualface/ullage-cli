@@ -3,6 +3,7 @@
 use std::sync::Once;
 
 mod control;
+mod device;
 mod engine;
 mod model;
 mod store;
@@ -12,6 +13,9 @@ pub use control::ControlService;
 pub use control::UnixControlServer;
 #[cfg(windows)]
 pub use control::WindowsControlServer;
+pub use device::{
+    DeviceCredential, DeviceStore, PairDeviceError, constant_time_eq, generate_device_token,
+};
 pub use engine::{Clock, DaemonEngine, SystemClock};
 pub use model::{
     AccountConfig, AccountId, AccountStatus, BackoffConfig, DaemonConfig, DaemonError,
