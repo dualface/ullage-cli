@@ -25,7 +25,7 @@ direction rather than every composition-root edge; the complete direct workspace
 - each `ullage-provider-*`: `ullage-core`; providers that implement authentication also use `ullage-auth`.
 - `ullage-daemon`: `ullage-auth`, `ullage-core`, and `ullage-protocol`; it owns scheduling, persistence, and local
   control transport without choosing production providers.
-- `ullage-http`: `ullage-auth`, `ullage-daemon`, and `ullage-protocol`. It is an optional local or
+- `ullage-http`: `ullage-daemon` and `ullage-protocol`. It is an optional local or
   Tailscale HTTP transport over `ControlService::handle()` and does not change the control protocol.
 - `ullage-app`: `ullage-auth`, `ullage-cli`, `ullage-core`, `ullage-daemon`, `ullage-http`,
   `ullage-protocol`, and all four provider crates. It is the single production composition root

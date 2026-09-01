@@ -2285,7 +2285,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "ullage-auth",
  "ullage-core",
  "ullage-daemon",
  "ullage-protocol",
