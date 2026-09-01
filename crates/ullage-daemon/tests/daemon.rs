@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
+use std::future::{Future, poll_fn};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -2702,23 +2704,23 @@ async fn followers_keep_their_result_when_the_next_flight_completes() {
         }
     });
     provider.wait_for_calls(1).await;
-    let entered = Arc::new(AtomicUsize::new(0));
     let mut followers = Vec::new();
     for _ in 0..64 {
         let engine = engine.clone();
-        let entered = entered.clone();
-        followers.push(tokio::spawn(async move {
-            entered.fetch_add(1, Ordering::SeqCst);
+        followers.push(Box::pin(tokio::task::unconstrained(async move {
             engine
                 .probe(&AccountId::new("flight-generation"), ProbeTrigger::Periodic)
                 .await
-        }));
+        })));
     }
-    while entered.load(Ordering::SeqCst) != followers.len() {
-        tokio::task::yield_now().await;
-    }
-    for _ in 0..16 {
-        tokio::task::yield_now().await;
+    // Poll each follower through the immediately-ready engine locks and into
+    // the first flight's completion wait before releasing that flight.
+    for follower in &mut followers {
+        poll_fn(|context| match follower.as_mut().poll(context) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("gated follower completed unexpectedly"),
+        })
+        .await;
     }
     assert_eq!(provider.calls(), 1);
 
@@ -2742,10 +2744,7 @@ async fn followers_keep_their_result_when_the_next_flight_completes() {
         Some("second-flight")
     );
     for follower in followers {
-        assert_eq!(
-            outcome_plan(&follower.await.unwrap().unwrap()),
-            Some("first-flight")
-        );
+        assert_eq!(outcome_plan(&follower.await.unwrap()), Some("first-flight"));
     }
 }
 
