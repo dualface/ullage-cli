@@ -403,9 +403,11 @@ final class UllageMacTests: XCTestCase {
     func testPopoverSizingDefaultsAndClampsHeight() {
         var sizing = PopoverSizing()
         XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 260))
-        sizing.update(preferredHeight: 700)
-        XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 520))
-        sizing.update(preferredHeight: 120)
+        sizing.update(preferredHeight: 480, maximumHeight: 600)
+        XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 480))
+        sizing.update(preferredHeight: 700, maximumHeight: 600)
+        XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 600))
+        sizing.update(preferredHeight: 120, maximumHeight: 600)
         XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 180))
     }
 

@@ -3,6 +3,8 @@ import SwiftUI
 
 @MainActor
 final class PopoverController: NSObject, NSPopoverDelegate {
+    private static let screenMargin: CGFloat = 24
+
     private let popover = NSPopover()
     private let store: UsageStore
     private let openSettings: () -> Void
@@ -29,6 +31,10 @@ final class PopoverController: NSObject, NSPopoverDelegate {
             hostingController = controller
             popover.contentViewController = controller
         }
+        sizing.update(
+            preferredHeight: sizing.preferredHeight,
+            maximumHeight: maximumHeight(for: view.window?.screen ?? NSScreen.main)
+        )
         popover.contentSize = sizing.contentSize
         popover.show(relativeTo: rect, of: view, preferredEdge: .minY)
         store.start()
@@ -44,17 +50,27 @@ final class PopoverController: NSObject, NSPopoverDelegate {
     }
 
     private func updateContentHeight(_ preferredHeight: CGFloat) {
-        sizing.update(preferredHeight: preferredHeight)
+        sizing.update(
+            preferredHeight: preferredHeight,
+            maximumHeight: maximumHeight(for: hostingController?.view.window?.screen ?? NSScreen.main)
+        )
         popover.contentSize = sizing.contentSize
+    }
+
+    private func maximumHeight(for screen: NSScreen?) -> CGFloat {
+        guard let screen else { return 520 }
+        return max(180, screen.visibleFrame.height - Self.screenMargin)
     }
 }
 
 struct PopoverSizing {
+    private(set) var preferredHeight: CGFloat = 260
     private(set) var height: CGFloat = 260
 
     var contentSize: NSSize { NSSize(width: 360, height: height) }
 
-    mutating func update(preferredHeight: CGFloat) {
-        height = min(520, max(180, preferredHeight))
+    mutating func update(preferredHeight: CGFloat, maximumHeight: CGFloat) {
+        self.preferredHeight = preferredHeight
+        height = max(180, min(maximumHeight, preferredHeight))
     }
 }

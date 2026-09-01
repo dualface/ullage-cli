@@ -132,26 +132,61 @@ private func date(_ value: String) throws -> Date {
     #expect(summarize(usage).rows.map(\.window) == ["daily · alpha", "daily · beta"])
 }
 
-@Test func overviewUsesPoolThenRatioThenFirstRowAndFiltersOtherWindows() throws {
+@Test func overviewUsesPoolThenRatioThenFirstRowForEveryWindow() throws {
     let cursorRows = overviewRows(for: try usage("cursor"))
     #expect(cursorRows.count == 1)
     #expect(cursorRows[0].metric == "usage")
 
     let chatGPTRows = overviewRows(for: try usage("chatgpt"))
-    #expect(chatGPTRows.map(\.metric) == ["Codex", "Codex", "GPT-5.3-Codex-Spark"])
+    #expect(chatGPTRows.map(\.metric) == ["Codex", "Codex", "GPT-5.3-Codex-Spark", "credit balance"])
     #expect(chatGPTRows.map(\.window) == [
-        "5h", "weekly · Codex", "weekly · GPT-5.3-Codex-Spark",
+        "5h", "weekly · Codex", "weekly · GPT-5.3-Codex-Spark", "Credits",
     ])
 
     let grokRows = overviewRows(for: try usage("grok"))
-    #expect(grokRows.count == 2)
+    #expect(grokRows.count == 4)
     #expect(grokRows[0].window == "weekly")
     #expect(grokRows[0].metric == "GrokBuild")
     #expect(grokRows[1].window == "monthly")
-    #expect(!grokRows.contains(where: { $0.window == "Extra Usage Credits" }))
+    #expect(grokRows[2].window == "Extra Usage Credits")
+    #expect(grokRows[3].window == "On-demand usage")
 
     #expect(overviewRows(for: try usage("claude"))[0].remainingRatio == 0.97)
     #expect(grokRows[0].remainingRatio == 0.45)
     #expect(overviewRows(for: try usage("cursor"))[0].remainingRatio == 0.18)
     #expect(chatGPTRows[0].remainingRatio == 0.06)
+}
+
+@Test func overviewSortsKnownWindowsBeforeStableOtherAndUnknownWindows() throws {
+    let data = Data(#"""
+    {
+      "provider":"future","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"daily"},"resets_at":null,"measurements":[
+          {"name":"usage","used":10,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"monthly"},"resets_at":null,"measurements":[
+          {"name":"usage","used":20,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"other","id":"custom","label":"Custom quota"},"resets_at":null,"measurements":[
+          {"name":"usage","used":30,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"weekly"},"resets_at":null,"measurements":[
+          {"name":"usage","used":40,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"five_hours"},"resets_at":null,"measurements":[
+          {"name":"usage","used":50,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"other","id":"fallback","label":"   "},"resets_at":null,"measurements":[
+          {"name":"usage","used":60,"limit":100,"unit":{"kind":"percent"}}
+        ]}
+      ]
+    }
+    """#.utf8)
+    let usage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: data)
+
+    let rows = overviewRows(for: usage)
+    #expect(rows.count == usage.windows.count)
+    #expect(rows.map(\.window) == ["5h", "weekly", "monthly", "daily", "Custom quota", "fallback"])
 }

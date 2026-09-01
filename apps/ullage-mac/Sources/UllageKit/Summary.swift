@@ -103,7 +103,7 @@ public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
     let windows = projectedWindows(for: usage)
     return usage.windows.enumerated()
         .compactMap { index, window -> (Int, Int, SummaryRow)? in
-            guard let rank = overviewRank(window.window) else { return nil }
+            let rank = overviewRank(window.window)
             let rows = windows[index]
             guard let selected = rows.first(where: { poolMeasurements.contains($0.measurementName) || $0.measurementName == "usage" })
                 ?? rows.first(where: { $0.row.remainingRatio != nil })
@@ -264,12 +264,12 @@ private func windowDisplayName(_ window: UsageWindowKind) -> String {
     }
 }
 
-private func overviewRank(_ window: UsageWindowKind) -> Int? {
+private func overviewRank(_ window: UsageWindowKind) -> Int {
     return switch window {
     case .fiveHours: 0
     case .weekly: 1
     case .monthly: 2
-    case .other, .unknown: nil
+    case .other, .unknown: 3
     }
 }
 

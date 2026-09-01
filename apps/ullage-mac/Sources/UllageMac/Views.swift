@@ -302,13 +302,29 @@ private struct SummaryRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text(showWindow ? row.window : row.metric)
-                    .font(.system(size: 12, weight: .medium))
-                if showWindow { Text(row.metric).font(.caption).foregroundStyle(.secondary) }
-                Spacer()
+                HStack(spacing: 4) {
+                    Text(showWindow ? row.window : row.metric)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if showWindow {
+                        Text(row.metric)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Text(summaryValueText(row.value) + (row.disabled ? " (off)" : ""))
                     .font(.system(size: 12, design: .monospaced))
-                if showWindow { Text(resetText(row.resetsAt)).font(.caption).foregroundStyle(.secondary) }
+                    .fixedSize(horizontal: true, vertical: false)
+                if showWindow {
+                    Text(resetText(row.resetsAt))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
             if let ratio = row.remainingRatio {
                 SegmentedProgress(ratio: ratio)
