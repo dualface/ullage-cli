@@ -517,6 +517,27 @@ private func date(_ value: String) throws -> Date {
     #expect(state.targetRatio == 0.8)
 }
 
+@Test func menuBarLiquidAnimationCatchesUpAfterLongStall() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
+        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.8),
+        MenuBarAccountLevel(accountID: "c", displayName: "C", remainingRatio: 0.5),
+    ]
+    var state = MenuBarLiquidAnimationState(
+        displayedRatio: 0.2,
+        targetRatio: 0.2,
+        accountIndex: 0,
+        accountID: "a",
+        displayName: "A",
+        secondsInAccount: 50
+    )
+    state = MenuBarLiquidAnimation.advance(
+        state: state, levels: levels, gate: .animate, dt: 10
+    )
+    #expect(state.accountID == "b")
+    #expect(abs(state.secondsInAccount - 0) < 0.001)
+}
+
 @Test func menuBarLiquidAnimationDoesNotRotateASingleAccount() {
     let levels = [
         MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.4),

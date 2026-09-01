@@ -98,8 +98,8 @@ public enum MenuBarLiquidAnimation {
 
         if levels.count > 1 {
             next.secondsInAccount += clampedDT
-            if next.secondsInAccount >= accountRotateInterval {
-                next.secondsInAccount = 0
+            while next.secondsInAccount >= accountRotateInterval {
+                next.secondsInAccount -= accountRotateInterval
                 next.accountIndex = (next.accountIndex + 1) % levels.count
                 let rotated = levels[next.accountIndex]
                 next.accountID = rotated.accountID

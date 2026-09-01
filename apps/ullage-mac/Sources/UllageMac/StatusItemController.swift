@@ -16,7 +16,6 @@ final class StatusItemController: NSObject {
     private var animationState = MenuBarLiquidAnimationState()
     private var animationTimer: Timer?
     private var lastTickUptime: TimeInterval?
-    private var lastMotionGate: MenuBarLiquidMotionGate?
     private var reduceMotionObserver: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
     private var powerSourceRunLoopSource: CFRunLoopSource?
@@ -212,7 +211,7 @@ final class StatusItemController: NSObject {
         let now = ProcessInfo.processInfo.systemUptime
         let elapsed = lastTickUptime.map { now - $0 } ?? MenuBarLiquidAnimation.tickInterval()
         lastTickUptime = now
-        let dt = min(max(elapsed, 0), 0.5)
+        let dt = max(elapsed, 0)
         animationState = MenuBarLiquidAnimation.advance(
             state: animationState,
             levels: levels,
@@ -223,7 +222,6 @@ final class StatusItemController: NSObject {
     }
 
     private func applyLiquidImage(gate: MenuBarLiquidMotionGate) {
-        lastMotionGate = gate
         statusItem.button?.image = UllageMark.menuBarImage(
             fillRatio: animationState.displayedRatio,
             wavePhase: gate == .animate ? animationState.wavePhase : 0,
