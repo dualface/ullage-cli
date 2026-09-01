@@ -7,10 +7,10 @@ use ullage_cli::{
 use ullage_protocol::{
     Account, AccountError, AccountId, AccountStatusPayload, AuthChallenge, AuthMethod,
     CONTROL_PROTOCOL_VERSION, ControlCommand, ControlError, ControlRequest, ControlResponse,
-    ControlResult, CredentialBackendId, DaemonStatusPayload, MeasurementUnit, PartialFailure,
-    ProbePayload, ProviderDescriptor, ProviderError, ProviderId, ProviderWorkspace, QueryOutcome,
-    SanitizedErrorPayload, SnapshotPayload, SubscriptionUsage, UsageMeasurement, UsageWindow,
-    UsageWindowKind,
+    ControlResult, CredentialBackendId, DaemonStatusPayload, DevicePayload, MeasurementUnit,
+    PairCodePayload, PartialFailure, ProbePayload, ProviderDescriptor, ProviderError, ProviderId,
+    ProviderWorkspace, QueryOutcome, SanitizedErrorPayload, SnapshotPayload, SubscriptionUsage,
+    UsageMeasurement, UsageWindow, UsageWindowKind,
 };
 
 type Responder = fn(&ControlRequest) -> Result<ControlResponse, ClientError>;
@@ -52,16 +52,7 @@ impl ControlClient for MockClient {
                 ClientError::DaemonProcess => ClientError::DaemonProcess,
                 ClientError::DaemonUnavailable => ClientError::DaemonUnavailable,
                 ClientError::InvalidResponse => ClientError::InvalidResponse,
-                ClientError::HttpToken(message) => ClientError::HttpToken(message.clone()),
             }),
-        }
-    }
-
-    fn http_token(&self, rotate: bool) -> Result<String, ClientError> {
-        if rotate {
-            Ok("rotated-token".into())
-        } else {
-            Ok("current-token".into())
         }
     }
 
@@ -201,10 +192,13 @@ fn maps_the_complete_command_surface_to_control_requests() {
             }),
             ControlCommand::Probe { wait: false, .. } => ControlResult::Ack,
             ControlCommand::Show { .. } => ControlResult::Snapshots(Vec::new()),
-            ControlCommand::CreatePairCode
-            | ControlCommand::ListDevices
-            | ControlCommand::RevokeDevice { .. }
-            | ControlCommand::QueryUsage { .. } => unreachable!(),
+            ControlCommand::CreatePairCode => ControlResult::PairCode(PairCodePayload {
+                code: "ABC-DEF".into(),
+                expires_at: Utc.with_ymd_and_hms(2026, 9, 1, 12, 5, 0).unwrap(),
+            }),
+            ControlCommand::ListDevices => ControlResult::Devices(Vec::new()),
+            ControlCommand::RevokeDevice { .. } => ControlResult::Ack,
+            ControlCommand::QueryUsage { .. } => unreachable!(),
         };
         Ok(response(request, result))
     }
@@ -221,6 +215,9 @@ fn maps_the_complete_command_surface_to_control_requests() {
         &["ullage", "account", "label", "account-1", "work"],
         &["ullage", "account", "label", "account-1"],
         &["ullage", "account", "remove", "account-1"],
+        &["ullage", "device", "pair"],
+        &["ullage", "device", "list"],
+        &["ullage", "device", "revoke", "DEVICE123456"],
         &[
             "ullage",
             "auth",
@@ -1526,19 +1523,171 @@ fn daemon_run_honors_json_output() {
 }
 
 #[test]
-fn http_token_prints_and_rotates_without_talking_to_the_daemon() {
-    let client = MockClient::new(|_| unreachable!());
-    let printed = run_from(["ullage", "http", "token"], &client);
-    assert_eq!(printed.code, ExitCode::Success);
-    assert_eq!(printed.stdout, "current-token\n");
+fn device_pair_supports_every_output_format() {
+    fn responder(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        assert_eq!(request.command, ControlCommand::CreatePairCode);
+        Ok(response(
+            request,
+            ControlResult::PairCode(PairCodePayload {
+                code: "ABC-DEF".into(),
+                expires_at: Utc.with_ymd_and_hms(2026, 9, 1, 12, 5, 0).unwrap(),
+            }),
+        ))
+    }
 
-    let rotated = run_from(["ullage", "http", "token", "--rotate"], &client);
-    assert_eq!(rotated.code, ExitCode::Success);
-    assert_eq!(rotated.stdout, "rotated-token\n");
+    let client = MockClient::new(responder);
+    let table = run_from(["ullage", "--color", "never", "device", "pair"], &client);
+    assert_eq!(table.code, ExitCode::Success);
+    assert!(table.stdout.contains("CODE        ABC-DEF\n"));
+    assert!(
+        table
+            .stdout
+            .contains("EXPIRES_AT  2026-09-01T12:05:00+00:00\n")
+    );
+    assert!(table.stdout.contains("HTTP API address"));
+    assert!(table.stdout.contains("one-time"));
+    assert!(table.stdout.contains("300 seconds"));
+    assert!(table.stdout.contains("new code invalidates it"));
 
-    let json = run_from(["ullage", "--output", "json", "http", "token"], &client);
-    assert_eq!(json.code, ExitCode::Success);
-    assert_eq!(json.stdout, "{\"token\":\"current-token\"}\n");
+    for format in ["json", "pretty-json"] {
+        let output = run_from(["ullage", "--output", format, "device", "pair"], &client);
+        assert_eq!(output.code, ExitCode::Success, "{format}");
+        let value: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(value["result"], "pair_code");
+        assert_eq!(value["payload"]["code"], "ABC-DEF");
+        assert_eq!(value["payload"]["expires_at"], "2026-09-01T12:05:00Z");
+    }
+}
+
+#[test]
+fn device_list_supports_every_output_format_without_tokens() {
+    fn responder(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        assert_eq!(request.command, ControlCommand::ListDevices);
+        let now = Utc::now();
+        Ok(response(
+            request,
+            ControlResult::Devices(vec![DevicePayload {
+                id: "DEVICE123456".into(),
+                name: "client-host".into(),
+                created_at: now - chrono::Duration::hours(2),
+                last_seen_at: now - chrono::Duration::minutes(3),
+            }]),
+        ))
+    }
+
+    let client = MockClient::new(responder);
+    for format in ["table", "json", "pretty-json"] {
+        let output = run_from(
+            [
+                "ullage", "--output", format, "--color", "never", "device", "list",
+            ],
+            &client,
+        );
+        assert_eq!(output.code, ExitCode::Success, "{format}");
+        assert!(output.stdout.contains("DEVICE123456"), "{format}");
+        assert!(output.stdout.contains("client-host"), "{format}");
+        let lower = output.stdout.to_ascii_lowercase();
+        assert!(!lower.contains("token"), "{format}: {}", output.stdout);
+        assert!(!lower.contains("hash"), "{format}: {}", output.stdout);
+    }
+
+    let table = run_from(["ullage", "--color", "never", "device", "list"], &client);
+    assert!(
+        table
+            .stdout
+            .contains("| DEVICE ID    | NAME        | CREATED   | LAST SEEN |"),
+        "{}",
+        table.stdout
+    );
+    assert!(table.stdout.contains("2h00m ago"));
+    assert!(table.stdout.contains("3m ago"));
+}
+
+#[test]
+fn device_list_empty_state_matches_other_list_tables() {
+    fn responder(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        Ok(response(request, ControlResult::Devices(Vec::new())))
+    }
+
+    let output = run_from(
+        ["ullage", "--color", "never", "device", "list"],
+        &MockClient::new(responder),
+    );
+    assert_eq!(output.code, ExitCode::Success);
+    assert_eq!(
+        output.stdout,
+        concat!(
+            "+-----------+------+---------+-----------+\n",
+            "| DEVICE ID | NAME | CREATED | LAST SEEN |\n",
+            "+-----------+------+---------+-----------+\n",
+            "+-----------+------+---------+-----------+\n",
+        )
+    );
+}
+
+#[test]
+fn device_revoke_supports_every_output_format_and_not_found() {
+    fn revoked(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        assert_eq!(
+            request.command,
+            ControlCommand::RevokeDevice {
+                device_id: "DEVICE123456".into(),
+            }
+        );
+        Ok(response(request, ControlResult::Ack))
+    }
+    fn missing(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        Ok(response(
+            request,
+            ControlResult::Error(ControlError::DeviceNotFound {
+                device_id: "MISSING12345".into(),
+            }),
+        ))
+    }
+
+    for format in ["table", "json", "pretty-json"] {
+        let output = run_from(
+            [
+                "ullage",
+                "--output",
+                format,
+                "device",
+                "revoke",
+                "DEVICE123456",
+            ],
+            &MockClient::new(revoked),
+        );
+        assert_eq!(output.code, ExitCode::Success, "{format}");
+        assert!(
+            output
+                .stdout
+                .contains(if format == "table" { "ok" } else { "ack" })
+        );
+
+        let output = run_from(
+            [
+                "ullage",
+                "--output",
+                format,
+                "device",
+                "revoke",
+                "MISSING12345",
+            ],
+            &MockClient::new(missing),
+        );
+        assert_eq!(output.code, ExitCode::Failure, "{format}");
+        assert!(output.stderr.contains("device_not_found"), "{format}");
+    }
+}
+
+#[test]
+fn retired_http_command_is_unknown() {
+    let output = run_from(
+        ["ullage", "http", "token"],
+        &MockClient::new(|_| unreachable!()),
+    );
+    assert_eq!(output.code, ExitCode::Usage);
+    assert!(output.stderr.contains("unrecognized subcommand 'http'"));
 }
 
 #[test]

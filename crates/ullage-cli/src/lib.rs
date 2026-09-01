@@ -17,9 +17,9 @@ use thiserror::Error;
 use ullage_protocol::{
     Account, AccountError, AccountId, AuthCompleteRequest, AuthMethod, AuthStartRequest, AuthState,
     CONTROL_PROTOCOL_VERSION, Capability, ControlCommand, ControlError, ControlRequest,
-    ControlResponse, ControlResult, DaemonStatusPayload, LogoutRequest, MeasurementUnit,
-    ProbePayload, ProviderError, ProviderId, QueryOutcome, RegistryError, SnapshotPayload,
-    SubscriptionUsage, UsageWindowKind,
+    ControlResponse, ControlResult, DaemonStatusPayload, DevicePayload, LogoutRequest,
+    MeasurementUnit, PairCodePayload, ProbePayload, ProviderError, ProviderId, QueryOutcome,
+    RegistryError, SnapshotPayload, SubscriptionUsage, UsageWindowKind,
 };
 
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
@@ -65,8 +65,6 @@ pub enum ClientError {
     InvalidResponse,
     #[error("daemon process failed")]
     DaemonProcess,
-    #[error("{0}")]
-    HttpToken(String),
 }
 
 pub trait ControlClient {
@@ -82,11 +80,6 @@ pub trait ControlClient {
 
     fn daemon_service_installed(&self) -> Result<bool, ClientError> {
         Err(ClientError::DaemonProcess)
-    }
-
-    fn http_token(&self, rotate: bool) -> Result<String, ClientError> {
-        let _ = rotate;
-        Err(ClientError::HttpToken("http token is unavailable".into()))
     }
 }
 
@@ -120,16 +113,11 @@ const CLI_AFTER_HELP: &str = "Examples:
   ullage daemon start
   ullage auth login
   ullage show --all
-  ullage http token";
-const HTTP_AFTER_HELP: &str = "Examples:
-  ullage http token
-  ullage http token --rotate";
-const HTTP_ABOUT: &str = "Print or rotate the local HTTP API token";
-const HTTP_LONG_ABOUT: &str = "Print or rotate the local HTTP API token.
-
-The token authenticates local HTTP query requests. `ullage http token` prints \
-the current token, creating a private token file if needed. `--rotate` writes \
-a new token and makes the previous value fail immediately.";
+  ullage device pair";
+const DEVICE_AFTER_HELP: &str = "Examples:
+  ullage device pair
+  ullage device list
+  ullage device revoke <DEVICE_ID>";
 const DAEMON_INSTALL_AFTER_HELP: &str = "Examples:
   ullage daemon install
   ullage daemon start
@@ -265,25 +253,25 @@ pub enum Command {
     ///
     /// Pass an account id, or `--all` to print every stored snapshot.
     Show(ShowArgs),
-    /// Print or rotate the local HTTP API token.
-    #[command(
-        arg_required_else_help = true,
-        after_help = HTTP_AFTER_HELP
-    )]
-    Http {
+    /// Pair, inspect, and revoke HTTP API devices.
+    #[command(arg_required_else_help = true, after_help = DEVICE_AFTER_HELP)]
+    Device {
         #[command(subcommand)]
-        command: HttpCommand,
+        command: DeviceCommand,
     },
 }
 
 #[derive(Debug, Subcommand)]
-pub enum HttpCommand {
-    /// Print the current HTTP API token, creating it if needed.
-    #[command(about = HTTP_ABOUT, long_about = HTTP_LONG_ABOUT, after_help = HTTP_AFTER_HELP)]
-    Token {
-        /// Generate a new token and make the previous token fail immediately.
-        #[arg(long)]
-        rotate: bool,
+pub enum DeviceCommand {
+    /// Create a one-time code for pairing an HTTP API client.
+    Pair,
+    /// List devices currently allowed to use the HTTP API.
+    List,
+    /// Revoke one device without prompting for confirmation.
+    Revoke {
+        /// Stable device identifier shown by `ullage device list`.
+        #[arg(value_name = "DEVICE_ID")]
+        device_id: String,
     },
 }
 
@@ -1229,9 +1217,6 @@ pub fn execute_with(
     {
         return login::interactive_login(client, prompt, provider.as_deref(), *method, &cli);
     }
-    if let Command::Http { command } = &cli.command {
-        return execute_http(command, client, cli.output);
-    }
     if matches!(
         cli.command,
         Command::Daemon {
@@ -1395,10 +1380,21 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
     match command {
         Command::Daemon { .. }
         | Command::Provider { .. }
-        | Command::Http { .. }
+        | Command::Device {
+            command: DeviceCommand::Pair | DeviceCommand::List,
+        }
         | Command::Account {
             command: AccountCommand::List,
         } => None,
+        Command::Device {
+            command: DeviceCommand::Revoke { device_id },
+        } => {
+            if contains(device_id) {
+                Some("DEVICE_ID")
+            } else {
+                None
+            }
+        }
         Command::Account {
             command: AccountCommand::Add { provider, label },
         } => {
@@ -1532,35 +1528,6 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
     }
 }
 
-fn execute_http(
-    command: &HttpCommand,
-    client: &dyn ControlClient,
-    format: OutputFormat,
-) -> RunOutput {
-    let HttpCommand::Token { rotate } = command;
-    match client.http_token(*rotate) {
-        Ok(token) => match format {
-            OutputFormat::Table => success_text(&format!("{token}\n")),
-            OutputFormat::Json | OutputFormat::PrettyJson => RunOutput {
-                stdout: json_line(
-                    &serde_json::json!({ "token": token }),
-                    format == OutputFormat::PrettyJson,
-                ),
-                stderr: String::new(),
-                code: ExitCode::Success,
-            },
-        },
-        Err(ClientError::HttpToken(message)) => error_output_with_options(
-            ExitCode::Failure,
-            "http_token_failed",
-            format,
-            Some(message),
-            None,
-        ),
-        Err(_) => error_output(ExitCode::Failure, "http_token_failed", format),
-    }
-}
-
 fn to_control_command(command: &Command) -> ControlCommand {
     match command {
         Command::Daemon {
@@ -1573,8 +1540,14 @@ fn to_control_command(command: &Command) -> ControlCommand {
                 | DaemonCommand::Stop
                 | DaemonCommand::Run
                 | DaemonCommand::Uninstall,
-        }
-        | Command::Http { .. } => unreachable!(),
+        } => unreachable!(),
+        Command::Device { command } => match command {
+            DeviceCommand::Pair => ControlCommand::CreatePairCode,
+            DeviceCommand::List => ControlCommand::ListDevices,
+            DeviceCommand::Revoke { device_id } => ControlCommand::RevokeDevice {
+                device_id: device_id.clone(),
+            },
+        },
         Command::Provider {
             command: ProviderCommand::List,
         } => ControlCommand::ListProviders,
@@ -1703,6 +1676,31 @@ fn response_matches_command(command: &Command, result: &ControlResult) -> bool {
                 .all(|other| other.id != provider.id)
         }),
         (
+            Command::Device {
+                command: DeviceCommand::Pair,
+            },
+            ControlResult::PairCode(pair_code),
+        ) => pair_code_is_valid(pair_code),
+        (
+            Command::Device {
+                command: DeviceCommand::List,
+            },
+            ControlResult::Devices(devices),
+        ) => devices.iter().enumerate().all(|(index, device)| {
+            !device.id.is_empty()
+                && !device.name.is_empty()
+                && device.last_seen_at >= device.created_at
+                && devices[index + 1..]
+                    .iter()
+                    .all(|other| other.id != device.id)
+        }),
+        (
+            Command::Device {
+                command: DeviceCommand::Revoke { .. },
+            },
+            ControlResult::Ack,
+        ) => true,
+        (
             Command::Account {
                 command: AccountCommand::List,
             },
@@ -1816,6 +1814,16 @@ fn result_contains_unsafe_control(result: &ControlResult) -> bool {
     serde_json::to_value(result)
         .map(|value| value_contains_unsafe_control(&value))
         .unwrap_or(true)
+}
+
+fn pair_code_is_valid(pair_code: &PairCodePayload) -> bool {
+    let bytes = pair_code.code.as_bytes();
+    bytes.len() == 7
+        && bytes[3] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 3 || b"23456789ABCDEFGHJKMNPQRSTVWXYZ".contains(byte))
 }
 
 fn value_contains_unsafe_control(value: &serde_json::Value) -> bool {
@@ -1938,7 +1946,14 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
         ControlError::AccountSelectorNotFound { .. } => {
             matches!(command, Command::Probe(_))
         }
-        ControlError::DeviceNotFound { .. } => false,
+        ControlError::DeviceNotFound { device_id } => matches!(
+            command,
+            Command::Device {
+                command: DeviceCommand::Revoke {
+                    device_id: requested,
+                },
+            } if requested == device_id
+        ),
         ControlError::Timeout => matches!(command, Command::Probe(ProbeArgs { wait: true, .. })),
         ControlError::Cancelled => matches!(
             command,
@@ -1949,7 +1964,8 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
         ),
         ControlError::Storage => matches!(
             command,
-            Command::Probe(ProbeArgs { wait: true, .. })
+            Command::Device { .. }
+                | Command::Probe(ProbeArgs { wait: true, .. })
                 | Command::Account {
                     command: AccountCommand::Add { .. }
                         | AccountCommand::Enable { .. }
@@ -2291,13 +2307,53 @@ fn human_result(
         ControlResult::Workspace(workspace) => {
             render_workspaces(std::slice::from_ref(workspace), reveal, palette)
         }
+        ControlResult::PairCode(pair_code) => render_pair_code(pair_code, palette),
+        ControlResult::Devices(devices) => render_devices(devices, palette),
         ControlResult::Ack => "ok\n".into(),
-        ControlResult::PairCode(_)
-        | ControlResult::Devices(_)
-        | ControlResult::Usage(_)
+        ControlResult::Usage(_)
         | ControlResult::Error(_)
         | ControlResult::ProtocolMismatch { .. } => String::new(),
     }
+}
+
+fn render_pair_code(pair_code: &PairCodePayload, palette: &Palette) -> String {
+    render_pairs(
+        &[
+            ("CODE", Cell::new(&pair_code.code)),
+            ("EXPIRES_AT", Cell::new(pair_code.expires_at.to_rfc3339())),
+            (
+                "NEXT",
+                Cell::new("Enter the HTTP API address and this code in the client."),
+            ),
+            (
+                "NOTE",
+                Cell::new(
+                    "This code is one-time, expires after 300 seconds, and a new code invalidates it.",
+                ),
+            ),
+        ],
+        palette,
+    )
+}
+
+fn render_devices(devices: &[DevicePayload], palette: &Palette) -> String {
+    let now = Utc::now();
+    let rows = devices
+        .iter()
+        .map(|device| {
+            vec![
+                Cell::new(&device.id),
+                Cell::new(&device.name),
+                Cell::new(relative_past(device.created_at, now)),
+                Cell::new(relative_past(device.last_seen_at, now)),
+            ]
+        })
+        .collect::<Vec<_>>();
+    render_table(
+        &["DEVICE ID", "NAME", "CREATED", "LAST SEEN"],
+        &rows,
+        palette,
+    )
 }
 
 fn render_workspaces(

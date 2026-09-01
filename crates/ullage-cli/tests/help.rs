@@ -37,6 +37,7 @@ fn help_covers_exit_codes_examples_and_value_names() {
     }
 
     assert_after_help(&command, &[], "ullage daemon install");
+    assert_after_help(&command, &[], "ullage device pair");
     assert_after_help(
         &command,
         &["auth", "login"],
@@ -44,7 +45,7 @@ fn help_covers_exit_codes_examples_and_value_names() {
     );
     assert_after_help(&command, &["probe"], "ullage probe claude-work");
     assert_after_help(&command, &["show"], "ullage show --all");
-    assert_after_help(&command, &["http"], "ullage http token --rotate");
+    assert_after_help(&command, &["device"], "ullage device revoke <DEVICE_ID>");
     assert_after_help(&command, &["daemon", "install"], "ullage daemon start");
 
     let login = find_command(&command, &["auth", "login"]);
@@ -97,6 +98,9 @@ fn help_covers_exit_codes_examples_and_value_names() {
     );
     assert_value_name(&command, &["probe"], "account", "ACCOUNT_ID");
     assert_value_name(&command, &["show"], "account", "ACCOUNT_ID");
+    assert_value_name(&command, &["device", "revoke"], "device_id", "DEVICE_ID");
+
+    assert!(command.find_subcommand("http").is_none());
 }
 
 fn collect_missing_about(command: &Command, path: &str, missing: &mut Vec<String>) {

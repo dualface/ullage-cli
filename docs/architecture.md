@@ -49,6 +49,12 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-cli`: command-line client of the local control protocol.
 - `ullage-app`: single executable composition root for the CLI client and daemon process.
 
+The CLI exposes daemon lifecycle, provider, account, authentication, workspace,
+probe, snapshot, and device-administration commands. `ullage device pair`,
+`list`, and `revoke` map directly to the version 9 device control commands. The
+retired `ullage http token` command is not part of the command surface; HTTP
+clients obtain a per-device token only by exchanging a one-use pairing code.
+
 ## Ullage Mac
 
 `apps/ullage-mac` is a standalone Swift package and is not a member of the Cargo workspace.

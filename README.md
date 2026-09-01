@@ -337,6 +337,23 @@ Linux uses a systemd user unit, macOS a LaunchAgent, and Windows a current-user
 Task Scheduler task. See `docs/architecture.md` for platform path and permission
 details.
 
+## Devices
+
+Use the private local control channel to pair and administer HTTP API clients:
+
+```sh
+ullage device pair
+ullage device list
+ullage device revoke <device-id>
+```
+
+`device pair` prints a one-use code and its expiry, then tells you to enter the
+HTTP API address and code in the client. The code expires after 300 seconds;
+creating another code immediately invalidates the previous one. `device list`
+shows only the device ID, name, creation time, and last-seen time. It never
+prints device tokens or token hashes. `device revoke` takes effect immediately
+and does not prompt for confirmation.
+
 ## Accounts
 
 ```sh
@@ -531,6 +548,12 @@ means partial success.
 JSON and pretty-json always carry this raw `ControlResult`. `--raw` does not
 change their structure or their bytes, so parsers built on this schema keep
 working whether or not the flag is passed.
+
+Device commands follow the same tagged shape. `device pair` returns
+`{"result":"pair_code","payload":{"code":"ABC-DEF","expires_at":"..."}}`,
+`device list` returns `{"result":"devices","payload":[...]}`, and a successful
+revoke returns `{"result":"ack"}`. Device list payloads contain no token or
+token-hash field.
 
 ## Live credentials
 

@@ -376,14 +376,6 @@ pub fn devices_path() -> Result<PathBuf, String> {
     Ok(parent.join("devices.json"))
 }
 
-pub fn http_token_path() -> Result<PathBuf, String> {
-    let state = state_path()?;
-    let parent = state
-        .parent()
-        .ok_or_else(|| "state path has no parent directory".to_owned())?;
-    Ok(parent.join("http-token"))
-}
-
 pub struct ProductionClient {
     inner: SystemClient,
 }
@@ -411,16 +403,6 @@ impl ControlClient for ProductionClient {
 
     fn daemon_service_installed(&self) -> Result<bool, ClientError> {
         self.inner.daemon_service_installed()
-    }
-
-    fn http_token(&self, rotate: bool) -> Result<String, ClientError> {
-        let path = http_token_path().map_err(ClientError::HttpToken)?;
-        let result = if rotate {
-            ullage_http::rotate_token(&path)
-        } else {
-            ullage_http::load_or_create_token(&path)
-        };
-        result.map_err(ClientError::HttpToken)
     }
 }
 
