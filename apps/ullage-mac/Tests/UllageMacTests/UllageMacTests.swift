@@ -80,6 +80,18 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuBarZeroFillLeavesTheVisibleCavityEmpty() throws {
+        let representation = try rasterizedMenuBarImage(fillRatio: 0)
+        let pixelSize = CGFloat(representation.pixelsWide)
+        for y in [20.0, 40.0, 60.0, 80.0, 88.0] {
+            let xPixel = Int((0.5 * pixelSize).rounded(.down))
+            let yPixel = Int((y / 100 * pixelSize).rounded(.down))
+            let alpha = try XCTUnwrap(representation.colorAt(x: xPixel, y: yPixel)).alphaComponent
+            XCTAssertLessThanOrEqual(alpha, 0.05, "Unexpected liquid at y=\(y)")
+        }
+    }
+
+    @MainActor
     func testMenuBarNoDataMarkDiffersFromEveryLiquidLevel() throws {
         let noData = try pngData(rasterizedMenuBarImage(fillRatio: nil))
         for ratio in [0.0, 0.25, 0.5, 0.75, 1.0] {

@@ -443,7 +443,7 @@ enum UllageMark {
         if let fillRatio {
             let surfaceY = 91.5 - 81.5 * CGFloat(min(max(fillRatio, 0), 1))
             context.saveGState()
-            context.addPath(closedU(radius: 33.5, top: 10))
+            context.addPath(closedU(radius: 33.5, top: 10, centerY: 58))
             context.clip()
             context.clip(to: CGRect(x: 0, y: surfaceY, width: 100, height: 100 - surfaceY))
             context.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
@@ -467,12 +467,16 @@ enum UllageMark {
         context.strokePath()
     }
 
-    private static func closedU(radius: CGFloat, top: CGFloat) -> CGPath {
+    private static func closedU(
+        radius: CGFloat,
+        top: CGFloat,
+        centerY: CGFloat = 60
+    ) -> CGPath {
         let path = CGMutablePath()
         path.move(to: CGPoint(x: 50 - radius, y: top))
-        path.addLine(to: CGPoint(x: 50 - radius, y: 60))
+        path.addLine(to: CGPoint(x: 50 - radius, y: centerY))
         path.addArc(
-            center: CGPoint(x: 50, y: 60),
+            center: CGPoint(x: 50, y: centerY),
             radius: radius,
             startAngle: .pi,
             endAngle: 0,
