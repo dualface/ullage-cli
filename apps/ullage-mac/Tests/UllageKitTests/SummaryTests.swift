@@ -187,6 +187,10 @@ private func date(_ value: String) throws -> Date {
         ]},
         {"window":{"kind":"future_status"},"resets_at":null,"measurements":[
           {"name":"limit_reached","used":0,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]},
+        {"window":{"kind":"other","id":"conflicting_status","label":"Conflicting status"},"resets_at":null,"measurements":[
+          {"name":"allowed","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}},
+          {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
         ]}
       ]
     }
@@ -197,8 +201,8 @@ private func date(_ value: String) throws -> Date {
     #expect(rows.count == usage.windows.count)
     #expect(rows.map(\.window) == [
         "5h", "weekly", "monthly", "daily", "Custom quota", "fallback",
-        "Rate limit status", "future_status",
+        "Rate limit status", "future_status", "Conflicting status",
     ])
-    #expect(rows.suffix(2).map(\.metric) == ["availability", "availability"])
-    #expect(rows.suffix(2).map(\.remainingRatio) == [0, 1])
+    #expect(rows.suffix(3).map(\.metric) == ["availability", "availability", "availability"])
+    #expect(rows.suffix(3).map(\.remainingRatio) == [0, 1, 0])
 }

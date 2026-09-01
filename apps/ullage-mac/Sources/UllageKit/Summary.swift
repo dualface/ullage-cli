@@ -120,10 +120,10 @@ public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
 
 private func overviewFallbackRow(for window: UsageWindow) -> SummaryRow? {
     let availability: Double?
-    if let allowed = booleanMeasurement(window, named: "allowed") {
-        availability = allowed ? 100 : 0
-    } else if let limitReached = booleanMeasurement(window, named: "limit_reached") {
-        availability = limitReached ? 0 : 100
+    let allowed = booleanMeasurement(window, named: "allowed")
+    let limitReached = booleanMeasurement(window, named: "limit_reached")
+    if allowed != nil || limitReached != nil {
+        availability = allowed == false || limitReached == true ? 0 : 100
     } else {
         availability = nil
     }
