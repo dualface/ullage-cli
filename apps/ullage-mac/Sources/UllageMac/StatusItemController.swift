@@ -54,7 +54,6 @@ final class StatusItemController: NSObject {
     private func makePopoverController() -> PopoverController {
         let controller = PopoverController(
             store: store,
-            settings: settings,
             openSettings: { [weak self] in self?.showSettings() }
         )
         popoverController = controller

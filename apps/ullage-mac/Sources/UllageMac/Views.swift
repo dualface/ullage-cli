@@ -9,7 +9,6 @@ enum SelectedTab: Hashable {
 
 struct RootView: View {
     @Bindable var store: UsageStore
-    @Bindable var settings: AppSettings
     let openSettings: () -> Void
     let onPreferredHeightChanged: (CGFloat) -> Void
     @State private var selectedTab: SelectedTab = .overview

@@ -75,8 +75,6 @@ enum UllageMark {
         }
 
         var isLightGround: Bool { ((groundOuter >> 16) & 0xFF) > 0xA0 }
-        @MainActor
-        var liquidTopColor: NSColor { NSColor(cgColor: UllageMark.color(liquidTop))! }
     }
 
     private enum Style {
