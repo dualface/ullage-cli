@@ -96,10 +96,11 @@ public enum MenuBarLiquidAnimation {
             return next
         }
 
-        let accountBeforeRotation = next.accountID
+        var didRotate = false
         if levels.count > 1 {
             next.secondsInAccount += clampedDT
             while next.secondsInAccount >= accountRotateInterval {
+                didRotate = true
                 next.secondsInAccount -= accountRotateInterval
                 next.accountIndex = (next.accountIndex + 1) % levels.count
                 let rotated = levels[next.accountIndex]
@@ -113,8 +114,8 @@ public enum MenuBarLiquidAnimation {
 
         // Keep height easing on a separate cadence from account bookkeeping so a
         // delayed tick that crosses a rotation boundary does not snap to the new
-        // target in the same frame.
-        let heightDT = next.accountID == accountBeforeRotation ? clampedDT : 0
+        // target in the same frame, even when the cycle returns to the same account.
+        let heightDT = didRotate ? 0 : clampedDT
         next.displayedRatio = approachRatio(
             current: next.displayedRatio,
             target: next.targetRatio,

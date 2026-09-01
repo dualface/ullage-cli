@@ -546,6 +546,27 @@ private func date(_ value: String) throws -> Date {
     #expect(state.displayedRatio < 0.5)
 }
 
+@Test func menuBarLiquidAnimationDoesNotSnapWhenCycleReturnsToSameAccount() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
+        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.8),
+    ]
+    var state = MenuBarLiquidAnimationState(
+        displayedRatio: 0.2,
+        targetRatio: 0.8,
+        accountIndex: 0,
+        accountID: "a",
+        displayName: "A",
+        secondsInAccount: 0
+    )
+    state = MenuBarLiquidAnimation.advance(
+        state: state, levels: levels, gate: .animate, dt: 120
+    )
+    #expect(state.accountID == "a")
+    #expect(state.targetRatio == 0.2)
+    #expect(state.displayedRatio == 0.2)
+}
+
 @Test func menuBarLiquidAnimationDoesNotRotateASingleAccount() {
     let levels = [
         MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.4),
