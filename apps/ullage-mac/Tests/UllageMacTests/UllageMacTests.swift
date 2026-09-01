@@ -247,6 +247,37 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(restored.pairedAt, pairedAt)
     }
 
+    @MainActor
+    func testPairingServerTargetKeepsRequestURLSnapshot() throws {
+        var enteredURL = "http://192.168.50.10:7878"
+        let target = try XCTUnwrap(PairingServerTarget(enteredURL))
+        enteredURL = "http://10.0.0.5:7878"
+
+        XCTAssertEqual(target.rawValue, "http://192.168.50.10:7878")
+        XCTAssertEqual(target.url.absoluteString, "http://192.168.50.10:7878")
+        XCTAssertNotEqual(target.rawValue, enteredURL)
+    }
+
+    @MainActor
+    func testConnectionPairingGuardAppliesOnlyToDaemonMode() throws {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults) { _ in }
+        let serverURL = "http://192.168.50.10:7878"
+
+        XCTAssertTrue(connectionTestRequiresPairing(
+            mode: .daemon,
+            settings: settings,
+            serverURL: serverURL
+        ))
+        XCTAssertFalse(connectionTestRequiresPairing(
+            mode: .mock,
+            settings: settings,
+            serverURL: serverURL
+        ))
+    }
+
     func testKeychainRoundTripAndLegacyTokenCleanup() throws {
         let suffix = UUID().uuidString
         let deviceStore = KeychainStore(service: "dev.ullage.mac.tests.\(suffix)", account: "device")

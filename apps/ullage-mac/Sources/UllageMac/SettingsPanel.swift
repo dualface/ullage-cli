@@ -71,6 +71,26 @@ func localDeviceName() -> String {
     ProcessInfo.processInfo.hostName
 }
 
+struct PairingServerTarget {
+    let rawValue: String
+    let url: URL
+
+    init?(_ rawValue: String) {
+        guard let url = AppSettings.validatedServerURL(rawValue) else { return nil }
+        self.rawValue = rawValue
+        self.url = url
+    }
+}
+
+@MainActor
+func connectionTestRequiresPairing(
+    mode: AppMode,
+    settings: AppSettings,
+    serverURL: String
+) -> Bool {
+    mode == .daemon && settings.pairedServerURL(matching: serverURL) == nil
+}
+
 private struct SettingsView: View {
     @Bindable var settings: AppSettings
     let mode: AppMode
@@ -99,6 +119,7 @@ private struct SettingsView: View {
         Form {
             TextField("Server URL", text: $serverURL)
                 .textFieldStyle(.roundedBorder)
+                .disabled(isPairing)
             Text("Use HTTP with localhost or a literal loopback, tailnet, or private LAN address.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -149,7 +170,7 @@ private struct SettingsView: View {
     }
 
     private func pair() {
-        guard let url = AppSettings.validatedServerURL(serverURL) else {
+        guard let target = PairingServerTarget(serverURL) else {
             message = ConnectionTestResult.hostRejected.rawValue
             return
         }
@@ -162,11 +183,11 @@ private struct SettingsView: View {
             defer { isPairing = false }
             do {
                 let credential = try await DaemonClient.pair(
-                    baseURL: url,
+                    baseURL: target.url,
                     pairCode: pairCode,
                     deviceName: localDeviceName()
                 )
-                try settings.completePairing(serverURL: serverURL, credential: credential)
+                try settings.completePairing(serverURL: target.rawValue, credential: credential)
                 pairCode = ""
                 message = "paired"
                 onSaved()
@@ -185,7 +206,11 @@ private struct SettingsView: View {
             message = ConnectionTestResult.hostRejected.rawValue
             return
         }
-        guard settings.pairedServerURL(matching: serverURL) != nil else {
+        guard !connectionTestRequiresPairing(
+            mode: mode,
+            settings: settings,
+            serverURL: serverURL
+        ) else {
             message = ConnectionTestResult.notPaired.rawValue
             return
         }
