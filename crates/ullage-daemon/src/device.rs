@@ -97,10 +97,7 @@ impl DeviceStore {
                     .map_err(|error| format!("{} is invalid: {error}", path.display()))?;
                 devices
             }
-            None => {
-                write_device_file(&path, &[])?;
-                Vec::new()
-            }
+            None => Vec::new(),
         };
         let last_persisted_seen = devices
             .iter()
@@ -150,9 +147,27 @@ impl DeviceStore {
     }
 
     fn create_pair_code_at(&self, now: DateTime<Utc>) -> Result<PairCodePayload, String> {
-        let normalized = random_alphabet_string(PAIR_CODE_LENGTH)?;
+        self.create_pair_code_at_with(now, || random_alphabet_string(PAIR_CODE_LENGTH))
+    }
+
+    fn create_pair_code_at_with(
+        &self,
+        now: DateTime<Utc>,
+        mut generate: impl FnMut() -> Result<String, String>,
+    ) -> Result<PairCodePayload, String> {
+        let mut state = self.lock();
+        let normalized = loop {
+            let candidate = generate()?;
+            if state
+                .pair_code
+                .as_ref()
+                .is_none_or(|pending| pending.normalized != candidate)
+            {
+                break candidate;
+            }
+        };
         let expires_at = now + TimeDelta::seconds(PAIR_CODE_TTL_SECONDS);
-        self.lock().pair_code = Some(PendingPairCode {
+        state.pair_code = Some(PendingPairCode {
             normalized: normalized.clone(),
             expires_at,
             failures: 0,
@@ -263,25 +278,25 @@ impl DeviceStore {
             return Ok(false);
         }
 
-        let should_persist = matches.iter().any(|index| {
-            let device = &state.devices[*index];
-            state
-                .last_persisted_seen
-                .get(&device.id)
-                .is_none_or(|last| {
-                    now.signed_duration_since(*last).num_seconds()
-                        >= LAST_SEEN_WRITE_INTERVAL_SECONDS
-                })
-        });
+        let persisted = matches
+            .iter()
+            .filter_map(|index| {
+                let device = &state.devices[*index];
+                let is_due = state
+                    .last_persisted_seen
+                    .get(&device.id)
+                    .is_none_or(|last| {
+                        now.signed_duration_since(*last).num_seconds()
+                            >= LAST_SEEN_WRITE_INTERVAL_SECONDS
+                    });
+                is_due.then(|| device.id.clone())
+            })
+            .collect::<Vec<_>>();
         for index in &matches {
             state.devices[*index].last_seen_at = now;
         }
-        if should_persist {
-            persist_state(&state)?;
-            let persisted = matches
-                .iter()
-                .map(|index| state.devices[*index].id.clone())
-                .collect::<Vec<_>>();
+        if !persisted.is_empty() {
+            persist_state_with_current_seen(&state, &persisted)?;
             for id in persisted {
                 state.last_persisted_seen.insert(id, now);
             }
@@ -421,10 +436,30 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 fn persist_state(state: &DeviceState) -> Result<(), String> {
+    persist_state_with_current_seen(state, &[])
+}
+
+fn persist_state_with_current_seen(
+    state: &DeviceState,
+    current_seen_ids: &[String],
+) -> Result<(), String> {
     let Some(path) = state.path.as_deref() else {
         return Ok(());
     };
-    write_device_file(path, &state.devices)
+    let devices = state
+        .devices
+        .iter()
+        .map(|device| {
+            let mut persisted = device.clone();
+            if !current_seen_ids.contains(&device.id)
+                && let Some(last_seen_at) = state.last_persisted_seen.get(&device.id)
+            {
+                persisted.last_seen_at = *last_seen_at;
+            }
+            persisted
+        })
+        .collect::<Vec<_>>();
+    write_device_file(path, &devices)
 }
 
 fn write_device_file(path: &Path, devices: &[DeviceRecord]) -> Result<(), String> {
@@ -861,6 +896,38 @@ mod tests {
     }
 
     #[test]
+    fn replacement_pair_code_retries_when_generation_repeats() {
+        let store = DeviceStore::memory();
+        let first = store
+            .create_pair_code_at_with(fixed_time(0), || Ok("222222".to_owned()))
+            .unwrap();
+        let mut candidates = ["222222", "333333"].into_iter();
+        let replacement = store
+            .create_pair_code_at_with(fixed_time(1), || Ok(candidates.next().unwrap().to_owned()))
+            .unwrap();
+
+        assert_eq!(first.code, "222-222");
+        assert_eq!(replacement.code, "333-333");
+        assert_eq!(
+            store.pair_at(&first.code, "old", fixed_time(2)),
+            Err(PairDeviceError::InvalidCode)
+        );
+        assert!(
+            store
+                .pair_at(&replacement.code, "new", fixed_time(2))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn constant_time_comparison_rejects_length_and_value_differences() {
+        assert!(constant_time_eq(b"abcdef", b"abcdef"));
+        assert!(!constant_time_eq(b"abcdef", b"abcde"));
+        assert!(!constant_time_eq(b"abcdef", b"abcdeg"));
+        assert!(!constant_time_eq(b"abc", b"abcdef"));
+    }
+
+    #[test]
     fn five_failures_invalidate_the_current_pair_code() {
         let store = DeviceStore::memory();
         let code = store.create_pair_code_at(fixed_time(0)).unwrap();
@@ -911,6 +978,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn opening_a_missing_store_does_not_replace_a_winner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.path().join("devices.json");
+        let losing_startup = DeviceStore::open(&path).unwrap();
+        assert!(!path.exists());
+
+        let winner = DeviceStore::open(&path).unwrap();
+        let code = winner.create_pair_code_at(fixed_time(0)).unwrap();
+        let credential = winner.pair_at(&code.code, "winner", fixed_time(0)).unwrap();
+        let persisted = std::fs::read(&path).unwrap();
+
+        drop(losing_startup);
+        assert_eq!(std::fs::read(&path).unwrap(), persisted);
+        assert!(
+            DeviceStore::open(&path)
+                .unwrap()
+                .authenticate_at(&credential.device_token, fixed_time(1))
+                .unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn last_seen_writes_are_throttled_for_each_device() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -933,5 +1026,62 @@ mod tests {
                 .unwrap()
         );
         assert_ne!(std::fs::read(&path).unwrap(), initial);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_file_writes_preserve_non_due_last_seen_values() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.path().join("devices.json");
+        let store = DeviceStore::open(&path).unwrap();
+
+        let first_code = store.create_pair_code_at(fixed_time(0)).unwrap();
+        let first = store
+            .pair_at(&first_code.code, "first", fixed_time(0))
+            .unwrap();
+        let second_code = store.create_pair_code_at(fixed_time(0)).unwrap();
+        let second = store
+            .pair_at(&second_code.code, "second", fixed_time(0))
+            .unwrap();
+
+        assert!(
+            store
+                .authenticate_at(&second.device_token, fixed_time(30))
+                .unwrap()
+        );
+        assert!(
+            store
+                .authenticate_at(&first.device_token, fixed_time(60))
+                .unwrap()
+        );
+        let persisted: DeviceFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let first_record = persisted
+            .devices
+            .iter()
+            .find(|device| device.id == first.device_id)
+            .unwrap();
+        let second_record = persisted
+            .devices
+            .iter()
+            .find(|device| device.id == second.device_id)
+            .unwrap();
+        assert_eq!(first_record.last_seen_at, fixed_time(60));
+        assert_eq!(second_record.last_seen_at, fixed_time(0));
+
+        assert!(
+            store
+                .authenticate_at(&second.device_token, fixed_time(60))
+                .unwrap()
+        );
+        let after_second_write = std::fs::read(&path).unwrap();
+        assert!(
+            store
+                .authenticate_at(&second.device_token, fixed_time(119))
+                .unwrap()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), after_second_write);
     }
 }

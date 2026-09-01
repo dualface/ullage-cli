@@ -293,7 +293,13 @@ async fn handle_request(
 
     if matches!(parse_route(&Method::POST, &path), Ok(Route::Pair)) {
         let response = if method == Method::POST {
-            handle_pair_request(&state, remote_ip, &headers, request).await
+            match QueryParams::parse(&query).and_then(|params| params.validate_for(&Route::Pair)) {
+                Ok(()) => handle_pair_request(&state, remote_ip, &headers, request).await,
+                Err(()) => json_status(
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({"error":"bad_request"}),
+                ),
+            }
         } else {
             json_status(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -689,13 +695,8 @@ fn pair_retry_after(state: &HttpState, remote_ip: IpAddr, now: Instant) -> Optio
         let remaining = PAIR_MIN_INTERVAL - now.saturating_duration_since(*previous);
         return Some(remaining.as_secs().max(1));
     }
-    if attempts.len() >= PAIR_RATE_LIMIT_CAPACITY
-        && let Some(oldest) = attempts
-            .iter()
-            .min_by_key(|(_, attempted)| **attempted)
-            .map(|(address, _)| *address)
-    {
-        attempts.remove(&oldest);
+    if attempts.len() >= PAIR_RATE_LIMIT_CAPACITY {
+        return Some(PAIR_MIN_INTERVAL.as_secs().max(1));
     }
     attempts.insert(remote_ip, now);
     None
@@ -989,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn pair_rate_limiter_stays_bounded() {
+    fn pair_rate_limiter_rejects_overflow_without_evicting_active_ips() {
         let engine = tokio::runtime::Runtime::new().unwrap().block_on(async {
             ullage_daemon::DaemonEngine::new(
                 ullage_daemon::DaemonConfig::default(),
@@ -1009,10 +1010,14 @@ mod tests {
             last_pair_attempt: Mutex::new(HashMap::new()),
         };
         let now = Instant::now();
-        for suffix in 0..=PAIR_RATE_LIMIT_CAPACITY {
+        let oldest = IpAddr::V6(std::net::Ipv6Addr::from(0_u128));
+        for suffix in 0..PAIR_RATE_LIMIT_CAPACITY {
             let address = IpAddr::V6(std::net::Ipv6Addr::from(suffix as u128));
             assert_eq!(pair_retry_after(&state, address, now), None);
         }
+        let overflow = IpAddr::V6(std::net::Ipv6Addr::from(PAIR_RATE_LIMIT_CAPACITY as u128));
+        assert_eq!(pair_retry_after(&state, overflow, now), Some(1));
+        assert_eq!(pair_retry_after(&state, oldest, now), Some(1));
         assert_eq!(
             state.last_pair_attempt.lock().unwrap().len(),
             PAIR_RATE_LIMIT_CAPACITY

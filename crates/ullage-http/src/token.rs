@@ -44,19 +44,6 @@ pub fn load_token(path: &Path) -> Result<String, String> {
     parse_token_bytes(&bytes)
 }
 
-pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut diff = left.len() ^ right.len();
-    let longest = left.len().max(right.len());
-    let mut index = 0;
-    while index < longest {
-        let left_byte = left.get(index).copied().unwrap_or(0);
-        let right_byte = right.get(index).copied().unwrap_or(0);
-        diff |= usize::from(left_byte ^ right_byte);
-        index += 1;
-    }
-    diff == 0
-}
-
 fn parse_token_bytes(bytes: &[u8]) -> Result<String, String> {
     let token = std::str::from_utf8(bytes)
         .map_err(|_| "http-token is not a valid token".to_owned())?
@@ -363,14 +350,6 @@ mod tests {
         let decoded = URL_SAFE_NO_PAD.decode(token.as_bytes()).unwrap();
         assert_eq!(decoded.len(), TOKEN_BYTES);
         assert!(!token.contains('+') && !token.contains('/') && !token.contains('='));
-    }
-
-    #[test]
-    fn constant_time_eq_rejects_length_and_prefix_differences() {
-        assert!(constant_time_eq(b"abcdef", b"abcdef"));
-        assert!(!constant_time_eq(b"abcdef", b"abcde"));
-        assert!(!constant_time_eq(b"abcdef", b"abcdeg"));
-        assert!(!constant_time_eq(b"abc", b"abcdef"));
     }
 
     #[cfg(unix)]

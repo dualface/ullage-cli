@@ -339,10 +339,14 @@ fn post(addr: SocketAddr, path: &str, token: &str, extra: &str) -> RawResponse {
 }
 
 fn post_pair(addr: SocketAddr, body: &str, content_type: &str) -> RawResponse {
+    post_pair_at(addr, "/v1/pair", body, content_type)
+}
+
+fn post_pair_at(addr: SocketAddr, path: &str, body: &str, content_type: &str) -> RawResponse {
     exchange(
         addr,
         &format!(
-            "POST /v1/pair HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             addr.port(),
             body.len(),
         ),
@@ -593,6 +597,26 @@ async fn pair_route_enforces_json_shape_name_limit_body_limit_and_host() {
         assert_eq!(response.status, expected, "{}", response.body);
         harness.shutdown().await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_route_rejects_query_parameters_without_consuming_the_code() {
+    let harness = Harness::start_unpaired().await;
+    let code = harness.service.create_pair_code().unwrap();
+    let body = serde_json::json!({"pair_code":code.code,"device_name":"device"}).to_string();
+
+    let illegal = post_pair_at(
+        harness.addr,
+        "/v1/pair?unexpected=true",
+        &body,
+        "application/json",
+    );
+    assert_eq!(illegal.status, 400, "{}", illegal.body);
+    assert!(harness.service.list_devices().is_empty());
+
+    let paired = post_pair(harness.addr, &body, "application/json");
+    assert_eq!(paired.status, 200, "{}", paired.body);
+    harness.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

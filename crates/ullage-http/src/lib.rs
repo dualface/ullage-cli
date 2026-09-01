@@ -9,4 +9,5 @@ pub use bind::{
     discover_bind_addresses, parse_http_bind, select_bind_addresses,
 };
 pub use server::{HttpBindConfig, HttpBindError, HttpServer};
-pub use token::{constant_time_eq, load_or_create_token, load_token, rotate_token};
+pub use token::{load_or_create_token, load_token, rotate_token};
+pub use ullage_daemon::constant_time_eq;
