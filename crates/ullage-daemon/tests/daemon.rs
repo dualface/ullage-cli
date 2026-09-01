@@ -2736,8 +2736,8 @@ async fn followers_keep_their_result_when_the_next_flight_completes() {
         }
     });
     provider.wait_for_calls(2).await;
-    // Extra permits keep a scheduling-delayed test task from blocking forever;
-    // its result assertion below would still expose an unintended new flight.
+    // Extra permits keep a follower that unexpectedly starts a later flight
+    // from blocking forever; its result assertion still exposes that flight.
     gate.add_permits(followers.len() + 1);
     assert_eq!(
         outcome_plan(&next.await.unwrap().unwrap()),
