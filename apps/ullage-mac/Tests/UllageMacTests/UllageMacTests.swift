@@ -614,7 +614,7 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(sections.count, 2)
         XCTAssertTrue(sections[0].contains("weekly · Codex"))
         XCTAssertTrue(sections[0].contains("Rate limit reset credits"))
-        XCTAssertFalse(sections[0].contains("5h | Codex"))
+        XCTAssertTrue(sections[0].contains("5h | Codex"))
         XCTAssertTrue(sections[1].contains("weekly · Codex"))
         XCTAssertTrue(sections[0].contains("auto"))
         XCTAssertTrue(sections[0].contains("GrokBuild"))

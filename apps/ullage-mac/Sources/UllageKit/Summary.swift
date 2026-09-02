@@ -206,6 +206,7 @@ private func overviewCatalog(for provider: String) -> [OverviewSelector]? {
     switch provider {
     case "chatgpt":
         [
+            OverviewSelector(window: .fiveHours, measurement: .representative),
             OverviewSelector(window: .weekly, measurement: .representative),
             OverviewSelector(window: .otherContaining("reset credits"), measurement: .representative),
         ]

@@ -58,7 +58,7 @@ Settings holds the liquid still at the floor level with a flat surface. The
 app polls the daemon every 30 seconds from launch, whether or not the popover
 is open, so the mark shows live data without a click. The accessibility
 description reports the floor account and its percentage. Overview uses a provider-specific
-catalog: ChatGPT weekly windows and reset credits, Claude 5h and Fable, Cursor
+catalog: ChatGPT 5h and weekly windows plus reset credits, Claude 5h and Fable, Cursor
 auto and api, and Grok usage and GrokBuild. Each account tab can hide a catalog
 progress row from Overview with an eye control; rows without a remaining bar
 cannot be toggled. Hidden rows also drop out of the menu bar pin list and the

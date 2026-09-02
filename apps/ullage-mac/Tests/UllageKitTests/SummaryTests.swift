@@ -158,12 +158,13 @@ private func date(_ value: String) throws -> Date {
 @Test func overviewUsesTheProviderCatalogInListedOrder() throws {
     let chatGPTRows = overviewRows(for: try usage("chatgpt"))
     #expect(chatGPTRows.map(\.window) == [
+        "5h",
         "weekly · Codex",
         "weekly · GPT-5.3-Codex-Spark",
         "Rate limit reset credits",
     ])
-    #expect(chatGPTRows.map(\.metric) == ["Codex", "GPT-5.3-Codex-Spark", "available count"])
-    #expect(chatGPTRows.map(\.remainingRatio) == [0.69, 0.58, nil])
+    #expect(chatGPTRows.map(\.metric) == ["Codex", "Codex", "GPT-5.3-Codex-Spark", "available count"])
+    #expect(chatGPTRows.map(\.remainingRatio) == [0.06, 0.69, 0.58, nil])
 
     let claudeRows = overviewRows(for: try usage("claude"))
     #expect(claudeRows.map(\.window) == ["5h", "Fable (weekly_scoped)"])
@@ -431,8 +432,27 @@ private func date(_ value: String) throws -> Date {
 }
 
 @Test func menuBarFillIgnoresLimitsOutsideTheCatalog() throws {
-    let snapshot = try fixture("chatgpt")
-    let account = Account(id: snapshot.accountId, provider: "chatgpt", label: nil, enabled: true)
+    let data = Data(#"""
+    {
+      "provider":"chatgpt","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"weekly"},"resets_at":null,"measurements":[
+          {"name":"codex_usage","used":42,"limit":100,"unit":{"kind":"percent"}}
+        ]},
+        {"window":{"kind":"monthly"},"resets_at":null,"measurements":[
+          {"name":"codex_usage","used":10,"limit":100,"unit":{"kind":"percent"}},
+          {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]}
+      ]
+    }
+    """#.utf8)
+    let usage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: data)
+    let snapshot = SnapshotPayload(
+        accountId: "chatgpt", usage: .complete(usage), lastSuccessAt: Date(),
+        stale: false, lastError: nil, lastErrorAt: nil
+    )
+    let account = Account(id: "chatgpt", provider: "chatgpt", label: nil, enabled: true)
     #expect(menuBarFillRatio(accounts: [account], snapshots: [snapshot]) == 0.58)
 }
 

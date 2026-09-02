@@ -79,7 +79,7 @@ Reduce Motion is enabled, or when the "Animate liquid" setting (`animatesMenuBar
 is off, the liquid holds still at the floor with a flat surface and the cycle is parked at its
 trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
-Overview uses a provider-specific catalog (ChatGPT weekly and reset credits, Claude 5h and Fable,
+Overview uses a provider-specific catalog (ChatGPT 5h, weekly, and reset credits, Claude 5h and Fable,
 Cursor auto and api, Grok usage and GrokBuild). Each account tab can hide a catalog progress row from
 Overview (`AppSettings.hiddenOverviewItemIDs`); rows without a remaining bar
 cannot be toggled. Hidden rows are omitted from Overview, daemon dump,
