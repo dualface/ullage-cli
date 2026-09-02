@@ -218,14 +218,13 @@ final class StatusItemController: NSObject {
         }
     }
 
+    /// A running timer means the gate resolved to `.animate` the last time an
+    /// input changed; every input (power source, Reduce Motion, the Settings
+    /// toggle, store data) reaches `reconcileAnimationTimer()` through its own
+    /// notification, so the tick does not re-query the gate.
     private func tickAnimation() {
         guard case .liquid(let levels) = menuBarMode else {
             stopAnimationTimer()
-            return
-        }
-        let gate = motionGate()
-        guard gate == .animate else {
-            reconcileAnimationTimer()
             return
         }
         let now = ProcessInfo.processInfo.systemUptime
@@ -235,10 +234,10 @@ final class StatusItemController: NSObject {
         animationState = MenuBarLiquidAnimation.advance(
             state: animationState,
             levels: levels,
-            gate: gate,
+            gate: .animate,
             dt: dt
         )
-        applyLiquidImage(gate: gate)
+        applyLiquidImage(gate: .animate)
     }
 
     private func applyLiquidImage(gate: MenuBarLiquidMotionGate) {
