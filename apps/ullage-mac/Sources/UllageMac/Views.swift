@@ -56,7 +56,7 @@ struct RootView: View {
             .measuredHeight(ChromeHeightPreferenceKey.self)
         }
         .frame(width: 360)
-        .background { AtmosphereBackground() }
+        .modifier(PopoverSurface())
         .onPreferenceChange(ChromeHeightPreferenceKey.self) { height in
             chromeHeight = height
             reportHeight()

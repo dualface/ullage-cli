@@ -3,70 +3,26 @@ import UllageKit
 
 // MARK: - Surfaces
 
-/// Backdrop behind the popover. Liquid Glass is refraction: a panel only
-/// reads as glass when the content behind it has edges and tones to bend, so
-/// on macOS 26 the backdrop is a solid base carrying a few large, high-contrast
-/// shapes that the header, the tab row and the cards all sit over. A flat wash
-/// (the macOS 14/15 backdrop, and every earlier attempt at a translucent
-/// scrim) left each glass panel indistinguishable from a plain rectangle.
+/// Backdrop behind the `NSPopover` on macOS 14 and 15, where there is no
+/// Liquid Glass: a solid base carrying two blurred discs and a diagonal
+/// streak, which the frosted panels pick up as tone and shape. macOS 26 draws
+/// no backdrop at all; the popover surface there is glass over whatever the
+/// panel covers (see `PopoverSurface`).
 struct AtmosphereBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Group {
-            if #available(macOS 26.0, *) {
-                StructuredBackdrop(isDark: colorScheme == .dark)
-            } else {
-                legacyWash
-            }
-        }
-        .ignoresSafeArea()
-    }
-
-    /// Oxblood wash from the top leading corner, a cool wash from the bottom
-    /// trailing corner, over a flat base: the layered material of the legacy
-    /// panels supplies the depth on macOS 14 and 15.
-    private var legacyWash: some View {
-        ZStack {
-            base
-            RadialGradient(
-                colors: [warmTint, warmTint.opacity(0)],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 320
-            )
-            RadialGradient(
-                colors: [coolTint, coolTint.opacity(0)],
-                center: .bottomTrailing,
-                startRadius: 0,
-                endRadius: 300
-            )
-        }
-    }
-
-    private var base: Color {
-        colorScheme == .dark ? Color(red: 0.055, green: 0.051, blue: 0.067) : Color(white: 0.96)
-    }
-
-    private var warmTint: Color {
-        colorScheme == .dark
-            ? Color(red: 0.29, green: 0.06, blue: 0.13).opacity(0.85)
-            : Color(red: 0.85, green: 0.45, blue: 0.52).opacity(0.20)
-    }
-
-    private var coolTint: Color {
-        colorScheme == .dark
-            ? Color(red: 0.12, green: 0.16, blue: 0.29).opacity(0.85)
-            : Color(red: 0.45, green: 0.55, blue: 0.80).opacity(0.16)
+        StructuredBackdrop(isDark: colorScheme == .dark)
+            .ignoresSafeArea()
     }
 }
 
-/// The macOS 26 backdrop: two discs and a streak on a solid base. The shapes
-/// are anchored to the top and bottom edges rather than scaled with the
-/// height, so the header always has the warm disc and the streak behind it
-/// and the last card always has the cool disc, whatever the popover's height.
-/// The blur keeps the edges from reading as flat cut-outs while leaving
-/// enough contrast for the glass to lens.
+/// Two discs and a streak on a solid base. The shapes are anchored to the top
+/// and bottom edges rather than scaled with the height, so the header always
+/// has the warm disc and the streak behind it and the last card always has the
+/// cool disc, whatever the popover's height. The blur keeps the edges from
+/// reading as flat cut-outs while leaving enough contrast to show through the
+/// frosted panels.
 private struct StructuredBackdrop: View {
     let isDark: Bool
 
@@ -125,28 +81,36 @@ private struct StructuredBackdrop: View {
     }
 }
 
-/// Panel surface: Liquid Glass on macOS 26 for every panel, so the header,
-/// the tab row and the cards all refract the structured backdrop; a layered
-/// material with an inset highlight on macOS 14 and 15.
+/// The popover's outer surface. On macOS 26 the whole popover is one Liquid
+/// Glass slab in a transparent panel, so the desktop and windows underneath
+/// show through it and bend at its edges; below macOS 26 it is the tinted
+/// backdrop inside the `NSPopover` frame.
+struct PopoverSurface: ViewModifier {
+    static let cornerRadius: CGFloat = 22
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            content
+                .clipShape(shape)
+                .glassEffect(.regular, in: shape)
+        } else {
+            content.background { AtmosphereBackground() }
+        }
+    }
+}
+
+/// Panel surface inside the popover: a layered material with an inset
+/// highlight. The panels sit on the glass slab on macOS 26 and on the tinted
+/// backdrop below it; they are not glass themselves, since glass nested in
+/// glass only re-samples the already blurred slab and adds cost without
+/// adding refraction.
 struct GlassPanel: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     var cornerRadius: CGFloat = 18
     var prominent = false
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content
-                .glassEffect(
-                    .regular,
-                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                )
-        } else {
-            legacyPanel(content)
-        }
-    }
-
-    private func legacyPanel(_ content: Content) -> some View {
         content
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
