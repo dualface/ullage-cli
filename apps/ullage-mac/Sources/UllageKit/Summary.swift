@@ -68,6 +68,12 @@ public struct OverviewItem: Equatable, Identifiable, Sendable {
 
     public let id: ID
     public let row: SummaryRow
+    fileprivate let windowIndex: Int
+
+    /// Stable across refreshes: `accountID|windowKey|measurement|occurrence`.
+    public func persistenceID(accountID: String) -> String {
+        "\(accountID)|\(id.windowKey)|\(id.measurementName)|\(id.occurrence)"
+    }
 }
 
 public func badgeNames(
@@ -138,9 +144,18 @@ public func overviewItems(for usage: SubscriptionUsage) -> [OverviewItem] {
                     measurementName: identity.measurementName,
                     occurrence: occurrence
                 ),
-                row: row
+                row: row,
+                windowIndex: selection.windowIndex
             )
         }
+}
+
+public func visibleOverviewItems(
+    for usage: SubscriptionUsage,
+    accountID: String,
+    hiddenIDs: Set<String>
+) -> [OverviewItem] {
+    overviewItems(for: usage).filter { !hiddenIDs.contains($0.persistenceID(accountID: accountID)) }
 }
 
 private struct OverviewIdentityBase: Hashable {
@@ -355,14 +370,19 @@ public struct MenuBarAccountLevel: Equatable, Sendable {
 /// `limitReached` (or an empty remaining) yields `0` and still participates.
 public func menuBarAccountLevels(
     accounts: [Account],
-    snapshots: [SnapshotPayload]
+    snapshots: [SnapshotPayload],
+    hiddenOverviewItemIDs: Set<String> = []
 ) -> [MenuBarAccountLevel] {
     let titles = tabTitles(for: accounts)
     let snapshotsByID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.accountId, $0) })
     return sortedAccounts(accounts.filter(\.enabled)).compactMap { account in
         guard let snapshot = snapshotsByID[account.id],
               let usage = snapshot.usage.data,
-              let ratio = menuBarFillRatio(for: usage) else { return nil }
+              let ratio = menuBarFillRatio(
+                for: usage,
+                accountID: account.id,
+                hiddenIDs: hiddenOverviewItemIDs
+              ) else { return nil }
         return MenuBarAccountLevel(
             accountID: account.id,
             displayName: titles[account.id] ?? providerDisplayName(account.provider),
@@ -392,7 +412,8 @@ public struct MenuBarMetricOption: Equatable, Identifiable, Sendable {
 /// stable account order. Disabled rows and money rows are not offered.
 public func menuBarMetricOptions(
     accounts: [Account],
-    snapshots: [SnapshotPayload]
+    snapshots: [SnapshotPayload],
+    hiddenOverviewItemIDs: Set<String> = []
 ) -> [MenuBarMetricOption] {
     let titles = tabTitles(for: accounts)
     let snapshotsByID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.accountId, $0) })
@@ -400,11 +421,15 @@ public func menuBarMetricOptions(
         guard let snapshot = snapshotsByID[account.id],
               let usage = snapshot.usage.data else { return [] }
         let accountTitle = titles[account.id] ?? providerDisplayName(account.provider)
-        return overviewItems(for: usage).compactMap { item in
+        return visibleOverviewItems(
+            for: usage,
+            accountID: account.id,
+            hiddenIDs: hiddenOverviewItemIDs
+        ).compactMap { item in
             guard !item.row.disabled, let ratio = item.row.remainingRatio else { return nil }
             let metric = item.row.metric == "usage" ? "" : " " + item.row.metric
             return MenuBarMetricOption(
-                id: "\(account.id)|\(item.id.windowKey)|\(item.id.measurementName)|\(item.id.occurrence)",
+                id: item.persistenceID(accountID: account.id),
                 accountID: account.id,
                 title: "\(accountTitle) · \(item.row.window)\(metric)",
                 remainingRatio: ratio
@@ -420,25 +445,38 @@ public func menuBarMetricOptions(
 public func menuBarLiquidLevels(
     accounts: [Account],
     snapshots: [SnapshotPayload],
-    pinnedMetricID: String?
+    pinnedMetricID: String?,
+    hiddenOverviewItemIDs: Set<String> = []
 ) -> [MenuBarAccountLevel] {
     if let pinnedMetricID,
-       let option = menuBarMetricOptions(accounts: accounts, snapshots: snapshots)
-           .first(where: { $0.id == pinnedMetricID }) {
+       let option = menuBarMetricOptions(
+            accounts: accounts,
+            snapshots: snapshots,
+            hiddenOverviewItemIDs: hiddenOverviewItemIDs
+       ).first(where: { $0.id == pinnedMetricID }) {
         return [MenuBarAccountLevel(
             accountID: option.accountID,
             displayName: option.title,
             remainingRatio: option.remainingRatio
         )]
     }
-    return menuBarAccountLevels(accounts: accounts, snapshots: snapshots)
+    return menuBarAccountLevels(
+        accounts: accounts,
+        snapshots: snapshots,
+        hiddenOverviewItemIDs: hiddenOverviewItemIDs
+    )
 }
 
 public func menuBarFillRatio(
     accounts: [Account],
-    snapshots: [SnapshotPayload]
+    snapshots: [SnapshotPayload],
+    hiddenOverviewItemIDs: Set<String> = []
 ) -> Double? {
-    let levels = menuBarAccountLevels(accounts: accounts, snapshots: snapshots)
+    let levels = menuBarAccountLevels(
+        accounts: accounts,
+        snapshots: snapshots,
+        hiddenOverviewItemIDs: hiddenOverviewItemIDs
+    )
     guard !levels.isEmpty else { return nil }
     return levels.map(\.remainingRatio).min()
 }
@@ -448,20 +486,20 @@ public func quantizedMenuBarFillRatio(_ ratio: Double) -> Double {
     return (clampedRatio * 20).rounded() / 20
 }
 
-private func menuBarFillRatio(for usage: SubscriptionUsage) -> Double? {
-    let projected = projectedWindows(for: usage)
-    let selections = overviewSelections(windows: projected, usage: usage)
-    guard !selections.isEmpty else { return nil }
-    if selections.contains(where: { windowHitItsLimit(usage.windows[$0.windowIndex]) }) {
+private func menuBarFillRatio(
+    for usage: SubscriptionUsage,
+    accountID: String,
+    hiddenIDs: Set<String>
+) -> Double? {
+    let items = visibleOverviewItems(for: usage, accountID: accountID, hiddenIDs: hiddenIDs)
+    guard !items.isEmpty else { return nil }
+    if items.contains(where: { windowHitItsLimit(usage.windows[$0.windowIndex]) }) {
         return 0
     }
 
     var minimumRatio: Double?
-    for selection in selections {
-        let window = usage.windows[selection.windowIndex]
-        let row = selection.projected?.row
-            ?? (selection.usesRepresentative ? overviewFallbackRow(for: window) : nil)
-        guard let row, !row.disabled, let ratio = row.remainingRatio else { continue }
+    for item in items {
+        guard !item.row.disabled, let ratio = item.row.remainingRatio else { continue }
         minimumRatio = min(minimumRatio ?? ratio, ratio)
     }
     return minimumRatio

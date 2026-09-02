@@ -270,6 +270,23 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testHiddenOverviewItemIDsDefaultEmptyAndRoundTrip() {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(AppSettings(defaults: defaults).hiddenOverviewItemIDs, [])
+        let settings = AppSettings(defaults: defaults)
+        settings.setOverviewItemVisible("acct|weekly|usage|0", visible: false)
+        XCTAssertEqual(
+            AppSettings(defaults: defaults).hiddenOverviewItemIDs,
+            ["acct|weekly|usage|0"]
+        )
+        settings.setOverviewItemVisible("acct|weekly|usage|0", visible: true)
+        XCTAssertEqual(AppSettings(defaults: defaults).hiddenOverviewItemIDs, [])
+    }
+
+    @MainActor
     func testAnimateLiquidSettingDefaultsOnAndRoundTrips() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

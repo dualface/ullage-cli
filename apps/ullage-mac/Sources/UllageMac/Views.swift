@@ -9,6 +9,7 @@ enum SelectedTab: Hashable {
 
 struct RootView: View {
     @Bindable var store: UsageStore
+    @Bindable var settings: AppSettings
     let openSettings: () -> Void
     let onPreferredHeightChanged: (CGFloat) -> Void
     @State private var selectedTab: SelectedTab = .overview
@@ -24,9 +25,9 @@ struct RootView: View {
                     } else {
                         switch selectedTab {
                         case .overview:
-                            OverviewView(store: store)
+                            OverviewView(store: store, settings: settings)
                         case .account(let id):
-                            AccountView(store: store, accountID: id)
+                            AccountView(store: store, settings: settings, accountID: id)
                         }
                     }
                 }
@@ -157,22 +158,30 @@ private struct TabBar: View {
 
 private struct OverviewView: View {
     let store: UsageStore
+    let settings: AppSettings
 
     var body: some View {
         VStack(spacing: 14) {
             ForEach(store.accounts, id: \.id) { account in
                 if let snapshot = store.snapshot(for: account.id), let usage = snapshot.usage.data {
-                    UsageCardHeader(
-                        account: account,
-                        usage: usage,
-                        snapshot: snapshot,
-                        timestampLabel: "updated",
-                        timestamp: snapshot.lastSuccessAt
+                    let items = visibleOverviewItems(
+                        for: usage,
+                        accountID: account.id,
+                        hiddenIDs: settings.hiddenOverviewItemIDs
                     )
-                    ForEach(overviewItems(for: usage)) { item in
-                        SummaryRowView(row: item.row)
+                    if !items.isEmpty {
+                        UsageCardHeader(
+                            account: account,
+                            usage: usage,
+                            snapshot: snapshot,
+                            timestampLabel: "updated",
+                            timestamp: snapshot.lastSuccessAt
+                        )
+                        ForEach(items) { item in
+                            SummaryRowView(row: item.row)
+                        }
+                        Divider()
                     }
-                    Divider()
                 }
             }
         }
@@ -181,6 +190,7 @@ private struct OverviewView: View {
 
 private struct AccountView: View {
     let store: UsageStore
+    let settings: AppSettings
     let accountID: String
 
     private var account: Account? { store.accounts.first(where: { $0.id == accountID }) }
@@ -197,15 +207,26 @@ private struct AccountView: View {
                     timestamp: usage.observedAt
                 )
                 let rows = summarize(usage).rows
-                ForEach(groupedRows(rows), id: \.0) { window, windowRows in
+                let grouped = groupedRows(rows)
+                let overviewItemsByRow = assignedOverviewItems(
+                    grouped: grouped,
+                    catalog: overviewItems(for: usage)
+                )
+                ForEach(Array(grouped.enumerated()), id: \.element.0) { groupIndex, group in
+                    let window = group.0
+                    let windowRows = group.1
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
                             Text(window).font(.headline)
                             Spacer()
                             Text(resetText(windowRows.first?.resetsAt)).font(.caption).foregroundStyle(.secondary)
                         }
-                        ForEach(Array(windowRows.enumerated()), id: \.offset) { _, row in
-                            SummaryRowView(row: row, showWindow: false)
+                        ForEach(Array(windowRows.enumerated()), id: \.offset) { rowIndex, row in
+                            SummaryRowView(
+                                row: row,
+                                showWindow: false,
+                                overviewToggle: overviewToggle(for: overviewItemsByRow[groupIndex][rowIndex])
+                            )
                         }
                     }
                 }
@@ -241,6 +262,33 @@ private struct AccountView: View {
         }
         return order.map { ($0, groups[$0] ?? []) }
     }
+
+    private func assignedOverviewItems(
+        grouped: [(String, [SummaryRow])],
+        catalog: [OverviewItem]
+    ) -> [[OverviewItem?]] {
+        var remaining = catalog
+        return grouped.map { _, windowRows in
+            windowRows.map { row in
+                guard let index = remaining.firstIndex(where: { $0.row == row }) else { return nil }
+                return remaining.remove(at: index)
+            }
+        }
+    }
+
+    private func overviewToggle(for item: OverviewItem?) -> OverviewRowToggle? {
+        guard let item else { return nil }
+        let id = item.persistenceID(accountID: accountID)
+        return OverviewRowToggle(
+            visible: !settings.hiddenOverviewItemIDs.contains(id),
+            setVisible: { settings.setOverviewItemVisible(id, visible: $0) }
+        )
+    }
+}
+
+private struct OverviewRowToggle {
+    let visible: Bool
+    let setVisible: (Bool) -> Void
 }
 
 private struct UsageCardHeader: View {
@@ -301,6 +349,7 @@ private struct Badge: View {
 private struct SummaryRowView: View {
     let row: SummaryRow
     var showWindow = true
+    var overviewToggle: OverviewRowToggle?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -319,6 +368,19 @@ private struct SummaryRowView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                if let overviewToggle {
+                    Button {
+                        overviewToggle.setVisible(!overviewToggle.visible)
+                    } label: {
+                        Image(systemName: overviewToggle.visible ? "eye" : "eye.slash")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(overviewToggle.visible ? .secondary : .tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(overviewToggle.visible ? "Hide from Overview" : "Show in Overview")
+                    .accessibilityLabel(overviewToggle.visible ? "Hide from Overview" : "Show in Overview")
+                    .focusEffectDisabled()
+                }
                 Text(summaryValueText(row.value) + (row.disabled ? " (off)" : ""))
                     .font(.system(size: 12, design: .monospaced))
                     .fixedSize(horizontal: true, vertical: false)

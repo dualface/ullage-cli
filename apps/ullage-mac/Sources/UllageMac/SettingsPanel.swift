@@ -297,7 +297,11 @@ private struct SettingsView: View {
     /// Current Overview rows, plus a placeholder for a pinned row that is not
     /// available right now so the picker never shows an empty selection.
     private var liquidMetricOptions: [MenuBarMetricOption] {
-        var options = menuBarMetricOptions(accounts: store.accounts, snapshots: store.snapshots)
+        var options = menuBarMetricOptions(
+            accounts: store.accounts,
+            snapshots: store.snapshots,
+            hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs
+        )
         if let pinned = settings.menuBarMetricID, !options.contains(where: { $0.id == pinned }) {
             options.append(MenuBarMetricOption(
                 id: pinned,
@@ -311,7 +315,11 @@ private struct SettingsView: View {
 
     private var liquidMetricCaption: String {
         if let pinned = settings.menuBarMetricID,
-           !menuBarMetricOptions(accounts: store.accounts, snapshots: store.snapshots)
+           !menuBarMetricOptions(
+                accounts: store.accounts,
+                snapshots: store.snapshots,
+                hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs
+           )
                .contains(where: { $0.id == pinned }) {
             return "The pinned row is missing from the latest refresh; the liquid falls back to the lowest remaining until it returns."
         }

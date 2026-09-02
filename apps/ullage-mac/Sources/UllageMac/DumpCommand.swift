@@ -19,7 +19,11 @@ enum DumpCommand {
 
             async let accounts = source.accounts()
             async let snapshots = source.usage()
-            let output = dumpOutput(accounts: try await accounts, snapshots: try await snapshots)
+            let output = dumpOutput(
+                accounts: try await accounts,
+                snapshots: try await snapshots,
+                hiddenOverviewItemIDs: AppSettings().hiddenOverviewItemIDs
+            )
             print(output)
             return 0
         } catch let error as DaemonError {
@@ -37,7 +41,11 @@ enum DumpCommand {
     }
 }
 
-func dumpOutput(accounts: [Account], snapshots: [SnapshotPayload]) -> String {
+func dumpOutput(
+    accounts: [Account],
+    snapshots: [SnapshotPayload],
+    hiddenOverviewItemIDs: Set<String> = []
+) -> String {
     let accounts = sortedAccounts(accounts)
     let snapshotsByID = snapshots.reduce(into: [String: SnapshotPayload]()) { result, snapshot in
         result[snapshot.accountId] = snapshot
@@ -46,8 +54,14 @@ func dumpOutput(accounts: [Account], snapshots: [SnapshotPayload]) -> String {
 
     for account in accounts {
         guard let snapshot = snapshotsByID[account.id], let usage = snapshot.usage.data else { continue }
+        let items = visibleOverviewItems(
+            for: usage,
+            accountID: account.id,
+            hiddenIDs: hiddenOverviewItemIDs
+        )
+        guard !items.isEmpty else { continue }
         lines.append("[\(providerDisplayName(account.provider))] \(dumpBadges(account, snapshot, usage))")
-        lines.append(contentsOf: overviewRows(for: usage).map { "  " + dumpRow($0) })
+        lines.append(contentsOf: items.map { "  " + dumpRow($0.row) })
     }
 
     lines.append("ACCOUNTS")

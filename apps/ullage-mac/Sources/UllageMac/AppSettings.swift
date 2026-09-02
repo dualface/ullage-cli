@@ -13,6 +13,7 @@ final class AppSettings {
     private static let pairedAtKey = "pairedAt"
     private static let animatesMenuBarLiquidKey = "animatesMenuBarLiquid"
     private static let menuBarMetricIDKey = "menuBarMetricID"
+    private static let hiddenOverviewItemIDsKey = "hiddenOverviewItemIDs"
     private let defaults: UserDefaults
     private let saveDeviceToken: (String) throws -> Void
 
@@ -41,6 +42,13 @@ final class AppSettings {
         }
     }
 
+    /// Overview catalog item persistence IDs the user hid from Overview.
+    var hiddenOverviewItemIDs: Set<String> {
+        didSet {
+            defaults.set(Array(hiddenOverviewItemIDs).sorted(), forKey: Self.hiddenOverviewItemIDsKey)
+        }
+    }
+
     init(
         defaults: UserDefaults = .standard,
         saveDeviceToken: @escaping (String) throws -> Void = { try Keychain.replaceDeviceToken($0) }
@@ -53,6 +61,15 @@ final class AppSettings {
             .flatMap(UllageMark.Palette.init(rawValue:)) ?? .default
         animatesMenuBarLiquid = defaults.object(forKey: Self.animatesMenuBarLiquidKey) as? Bool ?? true
         menuBarMetricID = defaults.string(forKey: Self.menuBarMetricIDKey).flatMap { $0.isEmpty ? nil : $0 }
+        hiddenOverviewItemIDs = Set(defaults.stringArray(forKey: Self.hiddenOverviewItemIDsKey) ?? [])
+    }
+
+    func setOverviewItemVisible(_ id: String, visible: Bool) {
+        if visible {
+            hiddenOverviewItemIDs.remove(id)
+        } else {
+            hiddenOverviewItemIDs.insert(id)
+        }
     }
 
     var serverURL: URL {

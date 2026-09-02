@@ -59,7 +59,9 @@ app polls the daemon every 30 seconds from launch, whether or not the popover
 is open, so the mark shows live data without a click. The accessibility
 description reports the floor account and its percentage. Overview uses a provider-specific
 catalog: ChatGPT weekly windows and reset credits, Claude 5h and Fable, Cursor
-auto and api, and Grok usage and GrokBuild. Unknown providers keep every window
+auto and api, and Grok usage and GrokBuild. Each account tab can hide a catalog
+row from Overview with an eye control; hidden rows also drop out of the menu bar
+pin list and the default lowest-remaining floor. Unknown providers keep every window
 in the shortest available time tier. A reached limit in those retained windows
 takes precedence as 0% for that account, so the liquid empties completely at
 the bottom of each breath. After the first refresh, an exclamation mark

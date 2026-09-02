@@ -181,6 +181,15 @@ private func date(_ value: String) throws -> Date {
     #expect(Set(overviewItems(for: try usage("grok")).map(\.id)).count == 2)
 }
 
+@Test func visibleOverviewItemsOmitHiddenPersistenceIDs() throws {
+    let grok = try usage("grok")
+    let items = overviewItems(for: grok)
+    #expect(items.count == 2)
+    let hidden = items[1].persistenceID(accountID: "grok")
+    #expect(visibleOverviewItems(for: grok, accountID: "grok", hiddenIDs: [hidden]).map(\.row.metric) == ["usage"])
+    #expect(visibleOverviewItems(for: grok, accountID: "other", hiddenIDs: [hidden]).count == 2)
+}
+
 @Test func overviewSkipsMissingCatalogItems() throws {
     let data = Data(#"""
     {
@@ -195,6 +204,39 @@ private func date(_ value: String) throws -> Date {
     """#.utf8)
     let usage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: data)
     #expect(overviewRows(for: usage).isEmpty)
+}
+
+@Test func menuBarOptionsAndFillIgnoreHiddenOverviewItems() throws {
+    let grok = try fixture("grok")
+    let usage = try #require(grok.usage.data)
+    let accounts = [Account(id: grok.accountId, provider: "grok", label: nil, enabled: true)]
+    let snapshots = [grok]
+    let items = overviewItems(for: usage)
+    let grokBuild = items.first(where: { $0.row.metric == "GrokBuild" })!
+    let hidden = [grokBuild.persistenceID(accountID: grok.accountId)]
+    let options = menuBarMetricOptions(
+        accounts: accounts,
+        snapshots: snapshots,
+        hiddenOverviewItemIDs: Set(hidden)
+    )
+    #expect(options.map(\.title).allSatisfy { !$0.contains("GrokBuild") })
+    #expect(menuBarFillRatio(accounts: accounts, snapshots: snapshots) == 0.4)
+    #expect(menuBarFillRatio(
+        accounts: accounts,
+        snapshots: snapshots,
+        hiddenOverviewItemIDs: Set(hidden)
+    ) == 0.4)
+    let usageHidden = items.first(where: { $0.row.metric == "usage" })!
+    #expect(menuBarFillRatio(
+        accounts: accounts,
+        snapshots: snapshots,
+        hiddenOverviewItemIDs: [usageHidden.persistenceID(accountID: grok.accountId)]
+    ) == 0.45)
+    #expect(menuBarFillRatio(
+        accounts: accounts,
+        snapshots: snapshots,
+        hiddenOverviewItemIDs: Set(items.map { $0.persistenceID(accountID: grok.accountId) })
+    ) == nil)
 }
 
 @Test func unknownProvidersKeepTheShortestKnownWindowTier() throws {

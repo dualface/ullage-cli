@@ -7,14 +7,16 @@ final class PopoverController: NSObject {
 
     private let popover = NSPopover()
     private let store: UsageStore
+    private let settings: AppSettings
     private let openSettings: () -> Void
     private var hostingController: NSHostingController<RootView>?
     private var sizing = PopoverSizing()
 
     var isShown: Bool { popover.isShown }
 
-    init(store: UsageStore, openSettings: @escaping () -> Void) {
+    init(store: UsageStore, settings: AppSettings, openSettings: @escaping () -> Void) {
         self.store = store
+        self.settings = settings
         self.openSettings = openSettings
         super.init()
         popover.behavior = .transient
@@ -24,6 +26,7 @@ final class PopoverController: NSObject {
         if hostingController == nil {
             let controller = NSHostingController(rootView: RootView(
                 store: store,
+                settings: settings,
                 openSettings: openSettings,
                 onPreferredHeightChanged: { [weak self] height in self?.updateContentHeight(height) }
             ))

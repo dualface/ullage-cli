@@ -57,6 +57,7 @@ final class StatusItemController: NSObject {
         withObservationTracking {
             _ = settings.animatesMenuBarLiquid
             _ = settings.menuBarMetricID
+            _ = settings.hiddenOverviewItemIDs
         } onChange: { [weak self] in
             Task { @MainActor in
                 // Re-derive the levels: a new pin changes what the liquid
@@ -121,7 +122,8 @@ final class StatusItemController: NSObject {
             let levels = menuBarLiquidLevels(
                 accounts: accounts,
                 snapshots: snapshots,
-                pinnedMetricID: settings.menuBarMetricID
+                pinnedMetricID: settings.menuBarMetricID,
+                hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs
             )
             presentation = levels.isEmpty ? .noData : .liquid(levels)
         } else if connectionState == .loading {
@@ -280,6 +282,7 @@ final class StatusItemController: NSObject {
     private func makePopoverController() -> PopoverController {
         let controller = PopoverController(
             store: store,
+            settings: settings,
             openSettings: { [weak self] in self?.showSettings() }
         )
         popoverController = controller
