@@ -100,7 +100,9 @@ enum UllageMark {
         accountLabel: String? = nil,
         accessibilityRatio: Double? = nil
     ) -> NSImage {
-        let quantizedRatio = fillRatio.map(quantizedMenuBarFillRatio)
+        // The drawn height stays continuous so the breathing cycle does not
+        // step; only the spoken value is quantized to the 5% grid.
+        let drawnRatio = fillRatio.map { min(max($0.isFinite ? $0 : 0, 0), 1) }
         let accessibilityValue = (accessibilityRatio ?? fillRatio).map(quantizedMenuBarFillRatio)
         let description: String
         if let accessibilityValue {
@@ -114,7 +116,7 @@ enum UllageMark {
             description = "Ullage — no data"
         }
         return menuBarImage(
-            fillRatio: quantizedRatio,
+            fillRatio: drawnRatio,
             wavePhase: wavePhase,
             accountLabel: accountLabel,
             accessibilityDescription: description
@@ -482,7 +484,7 @@ enum UllageMark {
         if let fillRatio {
             let clamped = min(max(fillRatio, 0), 1)
             if clamped > 0 {
-                drawTemplateLiquidStroke(
+                drawTemplateLiquidFill(
                     in: context,
                     fillRatio: clamped,
                     wavePhase: wavePhase
@@ -506,55 +508,40 @@ enum UllageMark {
         context.strokePath()
     }
 
-    /// Stroke-only liquid surface: a short wavy line at the remaining height.
-    private static func drawTemplateLiquidStroke(
+    /// Solid liquid filling the cavity up to a wavy surface at the remaining height.
+    private static func drawTemplateLiquidFill(
         in context: CGContext,
         fillRatio: Double,
         wavePhase: Double
     ) {
         let surfaceY = 91.5 - 81.5 * CGFloat(fillRatio)
-        guard let (minX, maxX) = cavityXRange(at: surfaceY) else { return }
-
         let amplitude: CGFloat = 1.8
-        let wave = CGMutablePath()
-        let steps = 16
+        let minX: CGFloat = 0
+        let maxX: CGFloat = 100
+        let liquid = CGMutablePath()
+        let steps = 20
         for step in 0...steps {
             let t = CGFloat(step) / CGFloat(steps)
             let x = minX + (maxX - minX) * t
             let phase = wavePhase + Double(t) * .pi * 2
             let y = surfaceY + amplitude * CGFloat(sin(phase))
             if step == 0 {
-                wave.move(to: CGPoint(x: x, y: y))
+                liquid.move(to: CGPoint(x: x, y: y))
             } else {
-                wave.addLine(to: CGPoint(x: x, y: y))
+                liquid.addLine(to: CGPoint(x: x, y: y))
             }
         }
+        liquid.addLine(to: CGPoint(x: maxX, y: 100))
+        liquid.addLine(to: CGPoint(x: minX, y: 100))
+        liquid.closeSubpath()
 
         context.saveGState()
         context.addPath(closedU(radius: 33.5, top: 10, centerY: 58))
         context.clip()
-        context.setStrokeColor(NSColor.black.withAlphaComponent(0.9).cgColor)
-        context.setLineWidth(2.8)
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
-        context.addPath(wave)
-        context.strokePath()
+        context.setFillColor(NSColor.black.withAlphaComponent(0.5).cgColor)
+        context.addPath(liquid)
+        context.fillPath()
         context.restoreGState()
-    }
-
-    private static func cavityXRange(
-        at y: CGFloat,
-        radius: CGFloat = 33.5,
-        centerY: CGFloat = 58
-    ) -> (CGFloat, CGFloat)? {
-        if y < 10 { return nil }
-        if y <= centerY {
-            return (50 - radius, 50 + radius)
-        }
-        let dy = y - centerY
-        guard dy <= radius else { return nil }
-        let half = sqrt(radius * radius - dy * dy)
-        return (50 - half, 50 + half)
     }
 
     private static func closedU(

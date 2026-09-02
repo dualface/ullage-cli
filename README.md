@@ -43,20 +43,22 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 
 The menu bar mark and application icon share one Swift/CoreGraphics drawing
 implementation in the `UllageMac` executable. The menu bar variant uses
-dedicated geometry for legibility at 18 points. Its liquid is a stroked wave
-(not a solid fill) at the remaining height of the currently shown enabled
-account. When more than one enabled account has countable Overview remaining,
-the mark cycles those accounts every 60 seconds and eases the wave height to
-the next target. A light wobble runs at about 10 fps while the Mac is on AC
-power and Reduce Motion is off; battery power or Reduce Motion freezes the
-wave. Overview uses a provider-specific catalog: ChatGPT weekly windows and
-reset credits, Claude 5h and Fable, Cursor auto and api, and Grok usage and
-GrokBuild. Unknown providers keep every window in the shortest available time
-tier. A reached limit in those retained windows takes precedence as 0% for
-that account and still participates in the cycle. After the first refresh, an
-exclamation mark replaces the liquid when no usable quota is available or the
-connection enters an error state, and animation stops. The glass application
-icon keeps a static filled liquid level and has six built-in palettes: Amber,
+dedicated geometry for legibility at 18 points. Its liquid is a solid fill
+with a wavy surface. The floor of the liquid is the lowest remaining ratio
+across enabled accounts with countable Overview remaining; the liquid breathes
+in an eight-second loop from a full vessel down to that floor and back up,
+eased so the turnarounds are smooth. A light wobble runs at about 10 fps while
+the Mac is on AC power and Reduce Motion is off; battery power or Reduce Motion
+holds the liquid still at the floor level. The accessibility description
+reports the floor account and its percentage. Overview uses a provider-specific
+catalog: ChatGPT weekly windows and reset credits, Claude 5h and Fable, Cursor
+auto and api, and Grok usage and GrokBuild. Unknown providers keep every window
+in the shortest available time tier. A reached limit in those retained windows
+takes precedence as 0% for that account, so the liquid empties completely at
+the bottom of each breath. After the first refresh, an exclamation mark
+replaces the liquid when no usable quota is available or the connection enters
+an error state, and animation stops. The glass application icon keeps a static
+filled liquid level and has six built-in palettes: Amber,
 Oxblood, Propellant, Copper, Paper, and Plum; Oxblood is the default. At launch
 the app applies the stored `iconPalette` preference (or Oxblood when unset) to
 the icon used by the About panel and system dialogs. Finder and Launchpad use

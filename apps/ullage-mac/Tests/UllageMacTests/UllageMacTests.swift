@@ -63,10 +63,26 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
-    func testMenuBarStrokeLevelsProduceDistinctImages() throws {
+    func testMenuBarFillLevelsProduceDistinctImages() throws {
         let ratios = [0.0, 0.25, 0.5, 0.75, 1.0]
         let pngs = try ratios.map { try pngData(rasterizedMenuBarImage(fillRatio: $0)) }
         XCTAssertEqual(Set(pngs).count, ratios.count)
+    }
+
+    @MainActor
+    func testMenuBarLiquidIsSolidBelowTheSurfaceAndClearAbove() throws {
+        let representation = try rasterizedMenuBarImage(fillRatio: 0.8)
+        let pixelSize = CGFloat(representation.pixelsWide)
+        func alpha(atMarkY y: Double) throws -> CGFloat {
+            let xPixel = Int((0.5 * pixelSize).rounded(.down))
+            let yPixel = Int((y / 100 * pixelSize).rounded(.down))
+            return try XCTUnwrap(representation.colorAt(x: xPixel, y: yPixel)).alphaComponent
+        }
+        // Surface sits at y ≈ 26 for 80%; the cavity above it stays clear.
+        XCTAssertLessThanOrEqual(try alpha(atMarkY: 15), 0.05)
+        for y in [40.0, 60.0, 80.0] {
+            XCTAssertGreaterThanOrEqual(try alpha(atMarkY: y), 0.3, "Expected liquid fill at y=\(y)")
+        }
     }
 
     @MainActor
@@ -81,7 +97,7 @@ final class UllageMacTests: XCTestCase {
         }
         let phaseA = try pngData(rasterizedMenuBarImage(fillRatio: 0, wavePhase: 0))
         let phaseB = try pngData(rasterizedMenuBarImage(fillRatio: 0, wavePhase: .pi / 2))
-        XCTAssertEqual(phaseA, phaseB, "Zero fill must not draw a wobbling stroke")
+        XCTAssertEqual(phaseA, phaseB, "Zero fill must not draw a wobbling surface")
     }
 
     @MainActor

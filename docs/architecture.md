@@ -66,16 +66,18 @@ into `Contents/Resources` so both tests and mock mode use the same canonical fix
 The executable also owns the shared Swift/CoreGraphics U-vessel drawing implementation used for the
 template menu bar mark and full-color application icon. `UllageMark.Palette` owns the six canonical
 application-icon palettes and their glass-rendering colors. The template variant uses dedicated
-geometry to remain legible at 18 points. Menu bar liquid is a stroked wave at a 20-step height for
-the currently displayed enabled account; `UllageKit` exposes per-account Overview remaining levels
-and pure animation helpers that rotate accounts every 60 seconds with eased height changes and an
-approximately 10 fps wobble. Animation freezes on battery power or when Reduce Motion is enabled.
+geometry to remain legible at 18 points. Menu bar liquid is a solid fill with a wavy surface;
+`UllageKit` exposes per-account Overview remaining levels and pure animation helpers that pick the
+lowest level as the floor (quantized to 20 steps for the accessibility value) and breathe the drawn
+height continuously from full to that floor and back over an eight-second cosine-eased cycle, with
+an approximately 10 fps wobble. On battery power or when Reduce Motion is enabled the liquid holds
+still at the floor and the cycle is parked at its trough so resuming rises out of the frozen level.
 Overview uses a provider-specific catalog (ChatGPT weekly and reset credits, Claude 5h and Fable,
 Cursor auto and api, Grok usage and GrokBuild). Unknown providers keep every window in the shortest
 available time tier, and a reached limit in those retained windows takes precedence as 0% for that
-account while still participating in rotation.
+account, which makes the floor empty.
 The headless dump retains the per-account Overview projection used by account tabs,
-while the menu bar cycles those same per-account levels. The mark shows an exclamation
+while the menu bar breathes down to the lowest of those levels. The mark shows an exclamation
 point after the first refresh when no usable ratio remains or the connection is in an
 error state, and stops animation. The application icon retains its full-color geometry
 and static filled liquid level.

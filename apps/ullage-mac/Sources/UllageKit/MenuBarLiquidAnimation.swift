@@ -2,127 +2,105 @@ import Foundation
 
 /// Whether the menu bar liquid may animate.
 public enum MenuBarLiquidMotionGate: Equatable, Sendable {
-    /// AC power and reduce-motion off: wobble and height easing may run.
+    /// AC power and reduce-motion off: wobble and the breathing cycle may run.
     case animate
-    /// Battery or reduce-motion: snap to and hold the current target height.
+    /// Battery or reduce-motion: hold the liquid still at the floor level.
     case freeze
     /// Error / no data: stop motion; caller draws the exclamation mark.
     case stop
 }
 
 /// Pure animation state for the menu bar liquid surface.
+///
+/// The liquid breathes between a full vessel and `floorRatio`, the lowest
+/// remaining ratio across the accounts currently shown. `displayedRatio` is
+/// the continuous height for the current frame; `floorRatio` is the quantized
+/// data value the accessibility description and the frozen image report.
 public struct MenuBarLiquidAnimationState: Equatable, Sendable {
     public var displayedRatio: Double
-    public var targetRatio: Double
-    public var accountIndex: Int
-    public var accountID: String?
-    public var displayName: String?
+    public var floorRatio: Double
+    public var floorAccountID: String?
+    public var floorDisplayName: String?
     public var wavePhase: Double
-    public var secondsInAccount: Double
+    /// Position inside the breathing cycle, in `0..<cycleDuration`.
+    public var secondsInCycle: Double
 
     public init(
-        displayedRatio: Double = 0.4,
-        targetRatio: Double = 0.4,
-        accountIndex: Int = 0,
-        accountID: String? = nil,
-        displayName: String? = nil,
+        displayedRatio: Double = 1,
+        floorRatio: Double = 1,
+        floorAccountID: String? = nil,
+        floorDisplayName: String? = nil,
         wavePhase: Double = 0,
-        secondsInAccount: Double = 0
+        secondsInCycle: Double = 0
     ) {
         self.displayedRatio = displayedRatio
-        self.targetRatio = targetRatio
-        self.accountIndex = accountIndex
-        self.accountID = accountID
-        self.displayName = displayName
+        self.floorRatio = floorRatio
+        self.floorAccountID = floorAccountID
+        self.floorDisplayName = floorDisplayName
         self.wavePhase = wavePhase
-        self.secondsInAccount = secondsInAccount
+        self.secondsInCycle = secondsInCycle
     }
 }
 
 public enum MenuBarLiquidAnimation {
     /// Target frame rate for the wobble timer (8–12 fps band).
     public static let framesPerSecond: Double = 10
-    public static let accountRotateInterval: TimeInterval = 60
-    /// Approximate seconds for a height transition to settle.
-    public static let heightTransitionDuration: TimeInterval = 1.25
+    /// One full breath: full -> floor -> full.
+    public static let cycleDuration: TimeInterval = 8
     public static let waveRadiansPerSecond: Double = 2.4
 
     public static func tickInterval() -> TimeInterval {
         1 / framesPerSecond
     }
 
-    /// Move `current` toward `target` with an exponential ease (monotonic).
-    public static func approachRatio(
-        current: Double,
-        target: Double,
-        dt: TimeInterval,
-        duration: TimeInterval = heightTransitionDuration
-    ) -> Double {
-        let safeDuration = max(duration, 0.001)
-        let safeDT = max(dt, 0)
-        let alpha = 1 - exp(-safeDT * 4.5 / safeDuration)
-        let next = current + (target - current) * alpha
-        if abs(target - next) < 0.0005 { return target }
-        return next
+    /// The account with the lowest remaining ratio; ties keep the earlier
+    /// account in the stable order.
+    public static func floorLevel(in levels: [MenuBarAccountLevel]) -> MenuBarAccountLevel? {
+        levels.min { $0.remainingRatio < $1.remainingRatio }
     }
 
-    /// Advance wobble / height / account rotation. No-ops when `gate != .animate`
-    /// except still syncing the target account when levels change under `.freeze`.
+    /// Height of the breathing cycle at `secondsInCycle`: `1` at the start and
+    /// end of the cycle, `floor` halfway through, eased with a cosine so the
+    /// turnarounds are smooth.
+    public static func cycleRatio(floor: Double, secondsInCycle: Double) -> Double {
+        let clampedFloor = min(max(floor, 0), 1)
+        let progress = (1 - cos(secondsInCycle / cycleDuration * 2 * .pi)) / 2
+        return 1 - (1 - clampedFloor) * progress
+    }
+
+    /// Advance wobble and the breathing cycle. No-ops when `gate == .stop`;
+    /// under `.freeze` only the floor account is refreshed and the liquid is
+    /// parked at the floor.
     public static func advance(
         state: MenuBarLiquidAnimationState,
         levels: [MenuBarAccountLevel],
         gate: MenuBarLiquidMotionGate,
         dt: TimeInterval
     ) -> MenuBarLiquidAnimationState {
-        guard gate != .stop, !levels.isEmpty else { return state }
+        guard gate != .stop, let floor = floorLevel(in: levels) else { return state }
 
         var next = state
-        let clampedDT = max(dt, 0)
-
-        if let currentID = next.accountID,
-           let index = levels.firstIndex(where: { $0.accountID == currentID }) {
-            next.accountIndex = index
-        } else {
-            next.accountIndex = min(max(next.accountIndex, 0), levels.count - 1)
-        }
-
-        let level = levels[next.accountIndex]
-        next.accountID = level.accountID
-        next.displayName = level.displayName
-        next.targetRatio = quantizedMenuBarFillRatio(level.remainingRatio)
+        next.floorRatio = quantizedMenuBarFillRatio(floor.remainingRatio)
+        next.floorAccountID = floor.accountID
+        next.floorDisplayName = floor.displayName
 
         if gate == .freeze {
-            next.displayedRatio = next.targetRatio
+            // Park at the trough so a later resume rises out of the frozen
+            // level instead of jumping to wherever the cycle had been.
+            next.displayedRatio = next.floorRatio
+            next.secondsInCycle = cycleDuration / 2
             return next
         }
 
-        var didRotate = false
-        if levels.count > 1 {
-            next.secondsInAccount += clampedDT
-            while next.secondsInAccount >= accountRotateInterval {
-                didRotate = true
-                next.secondsInAccount -= accountRotateInterval
-                next.accountIndex = (next.accountIndex + 1) % levels.count
-                let rotated = levels[next.accountIndex]
-                next.accountID = rotated.accountID
-                next.displayName = rotated.displayName
-                next.targetRatio = quantizedMenuBarFillRatio(rotated.remainingRatio)
-            }
-        } else {
-            next.secondsInAccount = 0
-        }
-
-        // Keep height easing on a separate cadence from account bookkeeping so a
-        // delayed tick that crosses a rotation boundary does not snap to the new
-        // target in the same frame, even when the cycle returns to the same account.
-        let heightDT = didRotate ? 0 : clampedDT
-        next.displayedRatio = approachRatio(
-            current: next.displayedRatio,
-            target: next.targetRatio,
-            dt: heightDT
+        let clampedDT = max(dt, 0)
+        next.secondsInCycle = (next.secondsInCycle + clampedDT)
+            .truncatingRemainder(dividingBy: cycleDuration)
+        next.displayedRatio = cycleRatio(
+            floor: next.floorRatio,
+            secondsInCycle: next.secondsInCycle
         )
-        if heightDT > 0 {
-            next.wavePhase = next.wavePhase + waveRadiansPerSecond * heightDT
+        if clampedDT > 0 {
+            next.wavePhase = next.wavePhase + waveRadiansPerSecond * clampedDT
             if next.wavePhase > .pi * 2 {
                 next.wavePhase -= .pi * 2
             }

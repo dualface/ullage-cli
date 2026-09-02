@@ -481,131 +481,128 @@ private func date(_ value: String) throws -> Date {
     #expect(levels.first?.remainingRatio == 0)
 }
 
-@Test func menuBarLiquidApproachIsMonotonicTowardTarget() {
-    var current = 0.2
-    let target = 0.8
-    var previousDistance = abs(target - current)
-    for _ in 0..<40 {
-        current = MenuBarLiquidAnimation.approachRatio(current: current, target: target, dt: 0.1)
-        let distance = abs(target - current)
-        #expect(distance <= previousDistance + 1e-9)
-        previousDistance = distance
+@Test func menuBarLiquidFloorIsTheLowestAccountInStableOrder() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.6),
+        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.2),
+        MenuBarAccountLevel(accountID: "c", displayName: "C", remainingRatio: 0.2),
+    ]
+    #expect(MenuBarLiquidAnimation.floorLevel(in: levels)?.accountID == "b")
+    #expect(MenuBarLiquidAnimation.floorLevel(in: []) == nil)
+}
+
+@Test func menuBarLiquidCycleRatioIsFullAtTheEndsAndFloorHalfway() {
+    let cycle = MenuBarLiquidAnimation.cycleDuration
+    #expect(MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: 0) == 1)
+    #expect(abs(MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: cycle / 2) - 0.2) < 1e-9)
+    #expect(abs(MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: cycle) - 1) < 1e-9)
+    let quarter = MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: cycle / 4)
+    let threeQuarters = MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: cycle * 3 / 4)
+    #expect(abs(quarter - 0.6) < 1e-9)
+    #expect(abs(quarter - threeQuarters) < 1e-9)
+    #expect(MenuBarLiquidAnimation.cycleRatio(floor: 1, secondsInCycle: cycle / 2) == 1)
+    #expect(MenuBarLiquidAnimation.cycleRatio(floor: -3, secondsInCycle: cycle / 2) == 0)
+}
+
+@Test func menuBarLiquidBreathesFromFullToFloorAndBack() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.8),
+        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.2),
+    ]
+    var state = MenuBarLiquidAnimation.advance(
+        state: MenuBarLiquidAnimationState(), levels: levels, gate: .animate, dt: 0
+    )
+    #expect(state.displayedRatio == 1)
+    #expect(state.floorRatio == 0.2)
+    #expect(state.floorAccountID == "b")
+    #expect(state.floorDisplayName == "B")
+
+    let half = MenuBarLiquidAnimation.cycleDuration / 2
+    let frames = 40
+    var previous = state.displayedRatio
+    for _ in 0..<frames {
+        state = MenuBarLiquidAnimation.advance(
+            state: state, levels: levels, gate: .animate, dt: half / Double(frames)
+        )
+        #expect(state.displayedRatio <= previous + 1e-9)
+        previous = state.displayedRatio
     }
-    #expect(abs(current - target) < 0.01)
+    #expect(abs(state.displayedRatio - 0.2) < 1e-6)
+
+    for _ in 0..<frames {
+        state = MenuBarLiquidAnimation.advance(
+            state: state, levels: levels, gate: .animate, dt: half / Double(frames)
+        )
+        #expect(state.displayedRatio >= previous - 1e-9)
+        previous = state.displayedRatio
+    }
+    #expect(abs(state.displayedRatio - 1) < 1e-6)
+    let cycle = MenuBarLiquidAnimation.cycleDuration
+    #expect(min(state.secondsInCycle, cycle - state.secondsInCycle) < 1e-6)
 }
 
-@Test func menuBarLiquidAnimationRotatesAccountsEveryMinute() {
-    let levels = [
-        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
-        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.8),
-    ]
-    var state = MenuBarLiquidAnimationState(
-        displayedRatio: 0.2,
-        targetRatio: 0.2,
-        accountIndex: 0,
-        accountID: "a",
-        displayName: "A"
-    )
-    state = MenuBarLiquidAnimation.advance(
-        state: state, levels: levels, gate: .animate, dt: 59.9
-    )
-    #expect(state.accountID == "a")
-    state = MenuBarLiquidAnimation.advance(
-        state: state, levels: levels, gate: .animate, dt: 0.2
-    )
-    #expect(state.accountID == "b")
-    #expect(state.targetRatio == 0.8)
-}
-
-@Test func menuBarLiquidAnimationCatchesUpAfterLongStall() {
-    let levels = [
-        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
-        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.8),
-        MenuBarAccountLevel(accountID: "c", displayName: "C", remainingRatio: 0.5),
-    ]
-    var state = MenuBarLiquidAnimationState(
-        displayedRatio: 0.2,
-        targetRatio: 0.2,
-        accountIndex: 0,
-        accountID: "a",
-        displayName: "A",
-        secondsInAccount: 50
-    )
-    state = MenuBarLiquidAnimation.advance(
-        state: state, levels: levels, gate: .animate, dt: 75
-    )
-    #expect(state.accountID == "c")
-    #expect(abs(state.secondsInAccount - 5) < 0.001)
-    #expect(state.targetRatio == 0.5)
-    #expect(state.displayedRatio == 0.2)
-
-    state = MenuBarLiquidAnimation.advance(
-        state: state, levels: levels, gate: .animate, dt: 0.1
-    )
-    #expect(state.displayedRatio > 0.2)
-    #expect(state.displayedRatio < 0.5)
-}
-
-@Test func menuBarLiquidAnimationDoesNotSnapWhenCycleReturnsToSameAccount() {
-    let levels = [
-        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
-        MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.8),
-    ]
-    var state = MenuBarLiquidAnimationState(
-        displayedRatio: 0.5,
-        targetRatio: 0.2,
-        accountIndex: 0,
-        accountID: "a",
-        displayName: "A",
-        secondsInAccount: 0
-    )
-    state = MenuBarLiquidAnimation.advance(
-        state: state, levels: levels, gate: .animate, dt: 120
-    )
-    #expect(state.accountID == "a")
-    #expect(state.targetRatio == 0.2)
-    #expect(state.displayedRatio == 0.5)
-}
-
-@Test func menuBarLiquidAnimationDoesNotRotateASingleAccount() {
-    let levels = [
+@Test func menuBarLiquidFollowsANewFloorMidCycle() {
+    var levels = [
         MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.4),
     ]
-    var state = MenuBarLiquidAnimationState(
-        displayedRatio: 0.4,
-        targetRatio: 0.4,
-        accountIndex: 0,
-        accountID: "a",
-        displayName: "A"
+    var state = MenuBarLiquidAnimation.advance(
+        state: MenuBarLiquidAnimationState(),
+        levels: levels,
+        gate: .animate,
+        dt: MenuBarLiquidAnimation.cycleDuration / 2
     )
-    state = MenuBarLiquidAnimation.advance(
-        state: state, levels: levels, gate: .animate, dt: 120
-    )
-    #expect(state.accountID == "a")
-    #expect(state.secondsInAccount == 0)
+    #expect(abs(state.displayedRatio - 0.4) < 1e-9)
+
+    levels.append(MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.1))
+    state = MenuBarLiquidAnimation.advance(state: state, levels: levels, gate: .animate, dt: 0)
+    #expect(state.floorAccountID == "b")
+    #expect(abs(state.displayedRatio - 0.1) < 1e-9)
 }
 
-@Test func menuBarLiquidFreezeSkipsWaveAndRotation() {
+@Test func menuBarLiquidCatchesUpAfterLongStall() {
+    let levels = [
+        MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
+    ]
+    let cycle = MenuBarLiquidAnimation.cycleDuration
+    let state = MenuBarLiquidAnimation.advance(
+        state: MenuBarLiquidAnimationState(secondsInCycle: 1),
+        levels: levels,
+        gate: .animate,
+        dt: cycle * 9 + 2
+    )
+    #expect(abs(state.secondsInCycle - 3) < 1e-6)
+    #expect(abs(state.displayedRatio - MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: 3)) < 1e-9)
+    #expect(state.displayedRatio >= 0.2)
+    #expect(state.displayedRatio <= 1)
+}
+
+@Test func menuBarLiquidFreezeParksAtTheFloorAndResumesUpward() {
     let levels = [
         MenuBarAccountLevel(accountID: "a", displayName: "A", remainingRatio: 0.2),
         MenuBarAccountLevel(accountID: "b", displayName: "B", remainingRatio: 0.9),
     ]
     let start = MenuBarLiquidAnimationState(
-        displayedRatio: 0.2,
-        targetRatio: 0.2,
-        accountIndex: 0,
-        accountID: "a",
-        displayName: "A",
+        displayedRatio: 0.7,
+        floorRatio: 0.2,
+        floorAccountID: "a",
+        floorDisplayName: "A",
         wavePhase: 1.5,
-        secondsInAccount: 50
+        secondsInCycle: 1
     )
     let frozen = MenuBarLiquidAnimation.advance(
         state: start, levels: levels, gate: .freeze, dt: 10
     )
-    #expect(frozen.accountID == "a")
+    #expect(frozen.floorAccountID == "a")
     #expect(frozen.wavePhase == 1.5)
-    #expect(frozen.secondsInAccount == 50)
     #expect(frozen.displayedRatio == 0.2)
+    #expect(frozen.secondsInCycle == MenuBarLiquidAnimation.cycleDuration / 2)
+
+    let resumed = MenuBarLiquidAnimation.advance(
+        state: frozen, levels: levels, gate: .animate, dt: 0.1
+    )
+    #expect(resumed.displayedRatio > 0.2)
+    #expect(resumed.displayedRatio < 0.25)
+    #expect(resumed.wavePhase > 1.5)
 }
 
 @Test func menuBarLiquidStopLeavesStateUntouched() {
@@ -614,15 +611,18 @@ private func date(_ value: String) throws -> Date {
     ]
     let start = MenuBarLiquidAnimationState(
         displayedRatio: 0.5,
-        targetRatio: 0.5,
-        accountIndex: 0,
-        accountID: "a",
-        displayName: "A",
+        floorRatio: 0.5,
+        floorAccountID: "a",
+        floorDisplayName: "A",
         wavePhase: 3,
-        secondsInAccount: 12
+        secondsInCycle: 1.2
     )
     let stopped = MenuBarLiquidAnimation.advance(
         state: start, levels: levels, gate: .stop, dt: 5
     )
     #expect(stopped == start)
+    let empty = MenuBarLiquidAnimation.advance(
+        state: start, levels: [], gate: .animate, dt: 5
+    )
+    #expect(empty == start)
 }

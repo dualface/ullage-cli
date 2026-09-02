@@ -127,24 +127,17 @@ final class StatusItemController: NSObject {
         }
     }
 
+    /// Restart the breathing cycle from a full vessel; `reconcileAnimationTimer`
+    /// fills in the floor account from `levels` on its zero-length advance.
     private func seedAnimation(with levels: [MenuBarAccountLevel]) {
-        let index: Int
-        if let accountID = animationState.accountID,
-           let existing = levels.firstIndex(where: { $0.accountID == accountID }) {
-            index = existing
-        } else {
-            index = 0
-        }
-        let level = levels[index]
-        let ratio = quantizedMenuBarFillRatio(level.remainingRatio)
+        guard let floor = MenuBarLiquidAnimation.floorLevel(in: levels) else { return }
         animationState = MenuBarLiquidAnimationState(
-            displayedRatio: ratio,
-            targetRatio: ratio,
-            accountIndex: index,
-            accountID: level.accountID,
-            displayName: level.displayName,
+            displayedRatio: 1,
+            floorRatio: quantizedMenuBarFillRatio(floor.remainingRatio),
+            floorAccountID: floor.accountID,
+            floorDisplayName: floor.displayName,
             wavePhase: animationState.wavePhase,
-            secondsInAccount: 0
+            secondsInCycle: 0
         )
     }
 
@@ -225,8 +218,8 @@ final class StatusItemController: NSObject {
         statusItem.button?.image = UllageMark.menuBarImage(
             fillRatio: animationState.displayedRatio,
             wavePhase: gate == .animate ? animationState.wavePhase : 0,
-            accountLabel: animationState.displayName,
-            accessibilityRatio: animationState.targetRatio
+            accountLabel: animationState.floorDisplayName,
+            accessibilityRatio: animationState.floorRatio
         )
     }
 
