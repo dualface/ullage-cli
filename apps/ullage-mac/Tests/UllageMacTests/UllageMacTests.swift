@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Security
+import SwiftUI
 import XCTest
 @testable import UllageMac
 import UllageKit
@@ -812,6 +813,29 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(phase, (10 * MenuBarLiquidAnimation.waveRadiansPerSecond).truncatingRemainder(dividingBy: 2 * .pi), accuracy: 1e-9)
         XCTAssertGreaterThanOrEqual(phase, 0)
         XCTAssertLessThan(phase, 2 * .pi)
+    }
+
+    func testPopoverBubbleAimsItsPointerAndKeepsItOffTheCorners() {
+        let rect = CGRect(x: 0, y: 0, width: 360, height: 400)
+        // Just under the shoulder, where the pointer is still several points
+        // wide but the slab below it has not started yet.
+        let probeY = rect.minY + 7
+
+        let centred = PopoverBubble(pointerOffset: 0).path(in: rect)
+        XCTAssertTrue(centred.contains(CGPoint(x: rect.midX, y: probeY)))
+        XCTAssertFalse(centred.contains(CGPoint(x: rect.midX + 30, y: probeY)))
+
+        // The offset follows the status item until the corner curve, then stops.
+        let limit = rect.width / 2 - PopoverBubble.defaultCornerRadius - PopoverBubble.pointerWidth / 2
+        let pushed = PopoverBubble(pointerOffset: 1_000).path(in: rect)
+        XCTAssertTrue(pushed.contains(CGPoint(x: rect.midX + limit, y: probeY)))
+        XCTAssertFalse(pushed.contains(CGPoint(x: rect.midX, y: probeY)))
+        XCTAssertFalse(pushed.contains(CGPoint(x: rect.maxX - 2, y: probeY)))
+
+        // The slab still fills the full width below the pointer.
+        let belowPointer = rect.minY + PopoverBubble.pointerHeight + 40
+        XCTAssertTrue(centred.contains(CGPoint(x: rect.minX + 2, y: belowPointer)))
+        XCTAssertTrue(centred.contains(CGPoint(x: rect.maxX - 2, y: belowPointer)))
     }
 
     func testPopoverSizingDefaultsAndClampsHeight() {

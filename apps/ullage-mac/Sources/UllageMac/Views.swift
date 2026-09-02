@@ -59,7 +59,7 @@ struct RootView: View {
             .measuredHeight(ChromeHeightPreferenceKey.self)
         }
         .frame(width: 360)
-        .modifier(PopoverSurface())
+        .modifier(PopoverSurface(pointerOffset: presentation.pointerOffset))
         .onPreferenceChange(ChromeHeightPreferenceKey.self) { height in
             chromeHeight = height
             reportHeight()
@@ -76,7 +76,15 @@ struct RootView: View {
     private func reportHeight() {
         // Whole points only: fractional measurements made the popover resize by
         // a pixel on changes that did not really alter the layout.
-        onPreferredHeightChanged((chromeHeight + contentHeight).rounded(.up))
+        onPreferredHeightChanged((chromeHeight + contentHeight + Self.pointerInset).rounded(.up))
+    }
+
+    /// The pointer is part of the panel on macOS 26, so the panel has to be
+    /// that much taller than its content. `NSPopover` draws its arrow outside
+    /// the content size, so nothing is added below macOS 26.
+    static var pointerInset: CGFloat {
+        if #available(macOS 26.0, *) { return PopoverBubble.pointerHeight }
+        return 0
     }
 
     /// The hero mirrors the menu bar mark, so it is hidden whenever the mark

@@ -13,12 +13,17 @@ import SwiftUI
 @Observable
 final class PopoverPresentation {
     var isShown = false
+    /// Where the panel's pointer aims, in points from the centre of the panel.
+    /// Non-zero once a screen edge has pushed the panel off the status item.
+    var pointerOffset: CGFloat = 0
 }
 
 @MainActor
 final class PopoverController: NSObject, NSPopoverDelegate {
     private static let screenMargin: CGFloat = 24
-    private static let panelGap: CGFloat = 6
+    /// Clearance between the status item and the pointer's tip. The pointer
+    /// itself sits inside the panel, so this is the whole visible gap.
+    private static let panelGap: CGFloat = 2
     private static let panelEdgeMargin: CGFloat = 8
 
     private let store: UsageStore
@@ -66,7 +71,9 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         } else if let window = view.window {
             anchor = window.convertToScreen(view.convert(rect, to: nil))
             let panel = self.panel ?? makePanel(with: controller)
-            panel.setFrame(panelFrame(height: sizing.height, screen: screen), display: true)
+            let frame = panelFrame(height: sizing.height, screen: screen)
+            presentation.pointerOffset = anchor.midX - frame.midX
+            panel.setFrame(frame, display: true)
             panel.orderFrontRegardless()
             panel.makeKey()
             installDismissalMonitors()

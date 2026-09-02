@@ -91,17 +91,67 @@ private struct StructuredBackdrop: View {
 /// visible and lenses it at the edges. Text sits on the frosted panels, not
 /// on the slab, so the slab needs no dimming layer for legibility.
 struct PopoverSurface: ViewModifier {
-    static let cornerRadius: CGFloat = 22
+    /// Where the pointer's tip sits along the top edge, in points from the
+    /// centre of the panel. Unused below macOS 26, where `NSPopover` draws its
+    /// own arrow outside the content.
+    var pointerOffset: CGFloat = 0
 
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            let shape = PopoverBubble(pointerOffset: pointerOffset)
             content
+                .padding(.top, PopoverBubble.pointerHeight)
                 .clipShape(shape)
                 .glassEffect(.clear, in: shape)
         } else {
             content.background { AtmosphereBackground() }
         }
+    }
+}
+
+/// The slab's outline: a rounded rectangle with a pointer rising from its top
+/// edge toward the status item. `NSPopover` drew that arrow itself; the macOS
+/// 26 panel is borderless, so the glass grows its own and refracts through it
+/// like the rest of the edge. `pointerOffset` shifts the tip along the top
+/// edge, measured from the centre, so it keeps aiming at the status item after
+/// the panel has been pushed inward by a screen edge.
+struct PopoverBubble: Shape {
+    /// How far the pointer rises above the slab, and how wide it sits on it.
+    static let pointerHeight: CGFloat = 9
+    static let pointerWidth: CGFloat = 22
+    /// Half-width of the rounded tip. A knife-sharp apex reads as an artifact
+    /// against the glass edge highlight.
+    private static let tipRadius: CGFloat = 2.5
+    static let defaultCornerRadius: CGFloat = 22
+
+    var cornerRadius: CGFloat = PopoverBubble.defaultCornerRadius
+    var pointerOffset: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let body = CGRect(
+            x: rect.minX,
+            y: rect.minY + Self.pointerHeight,
+            width: rect.width,
+            height: max(0, rect.height - Self.pointerHeight)
+        )
+        // Continuous corners, to match the panels the slab carries.
+        let slab = Path(roundedRect: body, cornerSize: CGSize(width: cornerRadius, height: cornerRadius), style: .continuous)
+        // Keep the pointer on the straight part of the top edge; past the
+        // corner curve it would grow out of the side instead of the top.
+        let limit = max(0, rect.width / 2 - cornerRadius - Self.pointerWidth / 2)
+        guard limit > 0 else { return slab }
+        let tipX = rect.midX + min(max(pointerOffset, -limit), limit)
+        let shoulder = body.minY + 1  // Overlap the slab so the union has no seam.
+        var pointer = Path()
+        pointer.move(to: CGPoint(x: tipX - Self.pointerWidth / 2, y: shoulder))
+        pointer.addLine(to: CGPoint(x: tipX - Self.tipRadius, y: rect.minY + Self.tipRadius))
+        pointer.addQuadCurve(
+            to: CGPoint(x: tipX + Self.tipRadius, y: rect.minY + Self.tipRadius),
+            control: CGPoint(x: tipX, y: rect.minY)
+        )
+        pointer.addLine(to: CGPoint(x: tipX + Self.pointerWidth / 2, y: shoulder))
+        pointer.closeSubpath()
+        return slab.union(pointer)
     }
 }
 

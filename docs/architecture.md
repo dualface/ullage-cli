@@ -81,9 +81,13 @@ trough so resuming rises out of the frozen level. `UsageStore` starts polling at
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
 `PopoverController` presents the content two ways. On macOS 26 it is a transparent, borderless,
 non-activating `NSPanel` hung below the status item, and `RootView` applies `PopoverSurface`, a
-root-level `glassEffect(.clear)` clipped to a 22-point rounded rectangle: glass in a transparent
-window samples what is behind the window, so the desktop and windows the panel covers show through
-it and refract at its edges. The clear variant is deliberate: regular glass blurs and tints a plain
+root-level `glassEffect(.clear)` clipped to `PopoverBubble`: a 22-point rounded rectangle with a
+9-point pointer rising from its top edge, since a borderless panel has no frame to draw the arrow
+`NSPopover` supplies. Glass in a transparent window samples what is behind the window, so the
+desktop and windows the panel covers show through it and refract at its edges, pointer included.
+`PopoverController` reports the tip's offset from the panel's centre through
+`PopoverPresentation`, so the pointer keeps aiming at the status item after a screen edge has
+pushed the panel inward, and `RootView` adds the pointer's height to the height it reports. The clear variant is deliberate: regular glass blurs and tints a plain
 window behind the popover (a white page) into a flat grey, while clear keeps its structure visible;
 text sits on the frosted panels rather than on the slab, so no dimming layer is needed. `NSPopover` cannot give that, because its frame draws its own material
 and blurs everything behind the window to a flat tone before the content view samples it; a scrim,
