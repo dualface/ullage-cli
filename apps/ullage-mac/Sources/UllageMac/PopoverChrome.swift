@@ -526,15 +526,7 @@ private struct CircleIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            icon
-                .rotationEffect(.degrees(spinning ? 360 : 0))
-                .animation(
-                    spinning
-                        ? .linear(duration: 0.9).repeatForever(autoreverses: false)
-                        : .default,
-                    value: spinning
-                )
-                .contentShape(Circle())
+            icon.contentShape(Circle())
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -543,12 +535,29 @@ private struct CircleIconButton: View {
         .accessibilityLabel(label)
     }
 
-    @ViewBuilder
-    private var icon: some View {
-        let glyph = Image(systemName: systemName)
+    /// The glyph, spinning while a refresh is in flight. The rotation and its
+    /// repeating animation live *under* the glass on purpose: a scoped
+    /// `.animation(_:value:)` wrapped around the glass would also catch the
+    /// interactive glass's press feedback, and `spinning` flips on the very
+    /// frame of the click. The press scale would then adopt a
+    /// `repeatForever(autoreverses: false)` curve, never settle back, and grow
+    /// again with every further click.
+    private var glyph: some View {
+        Image(systemName: systemName)
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(spinning ? 360 : 0))
+            .animation(
+                spinning
+                    ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                    : .default,
+                value: spinning
+            )
             .frame(width: 28, height: 28)
+    }
+
+    @ViewBuilder
+    private var icon: some View {
         if #available(macOS 26.0, *) {
             glyph.glassEffect(.regular.interactive(), in: .circle)
         } else {
