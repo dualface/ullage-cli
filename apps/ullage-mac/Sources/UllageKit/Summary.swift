@@ -72,7 +72,7 @@ public struct OverviewItem: Equatable, Identifiable, Sendable {
 
     /// Stable across refreshes: `accountID|windowKey|measurement|occurrence`.
     public func persistenceID(accountID: String) -> String {
-        persistenceID(accountID: accountID, id: id)
+        "\(accountID)|\(id.windowKey)|\(id.measurementName)|\(id.occurrence)"
     }
 }
 
@@ -83,12 +83,8 @@ public struct IdentifiedSummaryRow: Equatable, Identifiable, Sendable {
     fileprivate let windowIndex: Int
 
     public func persistenceID(accountID: String) -> String {
-        persistenceID(accountID: accountID, id: id)
+        "\(accountID)|\(id.windowKey)|\(id.measurementName)|\(id.occurrence)"
     }
-}
-
-private func persistenceID(accountID: String, id: OverviewItem.ID) -> String {
-    "\(accountID)|\(id.windowKey)|\(id.measurementName)|\(id.occurrence)"
 }
 
 public func badgeNames(
