@@ -3,7 +3,7 @@ import UllageKit
 
 func summaryValueText(_ value: SummaryValue) -> String {
     switch value {
-    case .remains(let value): "remains \(percentageText(value))"
+    case .remains(let value): remainsText(value)
     case .used(let value): "used \(percentageText(value))"
     case .balance(let amount, let currency): "balance \(moneyText(amount, currency.code))"
     case .spent(let amount, let limit, let currency):
@@ -15,6 +15,17 @@ func summaryValueText(_ value: SummaryValue) -> String {
         "used \(numberText(used))" + (limit.map { " of \(numberText($0))" } ?? "")
     case .disabled: "disabled"
     }
+}
+
+/// How much is left, in words when the number alone would mislead. "remains
+/// 0%" reads like a measurement that failed rather than like quota that is
+/// gone, and it also covers everything under half a percent, which is still
+/// usable; those say how small they are instead.
+func remainsText(_ value: Double) -> String {
+    guard value.isFinite else { return "remains \(percentageText(value))" }
+    if value <= 0 { return "used up" }
+    if value < 0.5 { return "remains <1%" }
+    return "remains \(percentageText(value))"
 }
 
 func numberText(_ value: Double) -> String {

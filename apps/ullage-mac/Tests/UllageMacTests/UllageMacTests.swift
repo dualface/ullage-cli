@@ -767,6 +767,17 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(moneyText(12.5, "SEK"), "SEK 12.50")
     }
 
+    func testSpentQuotaSaysSoInsteadOfShowingZeroPercent() {
+        XCTAssertEqual(summaryValueText(.remains(73)), "remains 73%")
+        // Rounds to 1%, so the number still carries it.
+        XCTAssertEqual(summaryValueText(.remains(0.6)), "remains 1%")
+        // Would round to 0% while quota is left: say how small it is instead.
+        XCTAssertEqual(summaryValueText(.remains(0.4)), "remains <1%")
+        XCTAssertEqual(summaryValueText(.remains(0)), "used up")
+        XCTAssertEqual(summaryValueText(.remains(-5)), "used up")
+        XCTAssertEqual(summaryValueText(.remains(.nan)), "remains -")
+    }
+
     func testDumpContainsBothProjectionsWithoutLabels() throws {
         let snapshots = try UllageFixtures.snapshots()
         let accounts = snapshots.compactMap { snapshot in

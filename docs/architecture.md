@@ -129,7 +129,9 @@ error state, and stops animation. The application icon retains its full-color ge
 and static filled liquid level.
 The macOS app's usage progress bars use ten cells of 10% each and fill remaining quota from the
 right, including a partial last cell (5% remaining paints half of one cell). Colors are fixed
-semantic values selected solely by each row's remaining-percentage tier. The bar is not animated:
+semantic values selected solely by each row's remaining-percentage tier. A row with nothing left
+reads `used up` rather than `remains 0%`, which looks like a failed measurement, and a row under
+half a percent reads `remains <1%` rather than rounding down to the same misleading zero. The bar is not animated:
 switching tabs rebuilds the rows, and a ratio sliding toward its value reads as ten cells shifting
 on their own rather than as one bar, so each bar states the number it has at that moment. The executable's headless `--render-iconset` command produces the ten
 standard PNG renditions during `bundle`;
