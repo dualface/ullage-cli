@@ -34,7 +34,7 @@ struct AtmosphereBackground: View {
 
     private var baseOpacity: Double {
         guard #available(macOS 26.0, *) else { return 1 }
-        return colorScheme == .dark ? 0.62 : 0.70
+        return colorScheme == .dark ? 0.35 : 0.45
     }
 
     private var base: Color {
