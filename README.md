@@ -42,7 +42,9 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 ```
 
 The popover is 360 points wide and opens on a tinted backdrop: frosted cards
-over an oxblood-to-blue wash, in both light and dark appearance. Its header
+over an oxblood-to-blue wash, in both light and dark appearance. On macOS 26
+the cards, the selected account pill, and the header buttons are real Liquid
+Glass; macOS 14 and 15 get an equivalent layered material instead. Its header
 repeats what the menu bar mark is tracking, as a filled vessel beside the
 percentage, the account it came from, that account's soonest reset, and the
 runner-up account. Account tabs are a row of pills that wraps onto

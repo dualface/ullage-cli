@@ -80,7 +80,9 @@ is off, the liquid holds still at the floor with a flat surface and the cycle is
 trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
 `PopoverChrome.swift` holds the popover's shared surfaces: the tinted `AtmosphereBackground`, the
-`glassPanel` modifier, `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
+`glassPanel` modifier (SwiftUI `glassEffect` behind `if #available(macOS 26.0, *)`, falling back to
+a layered material plus inset highlight on macOS 14 and 15; the selected tab pill, the header's
+circular buttons and the probe button branch the same way), `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
 oxblood gradient), the simplified `ProviderMark` drawings, and the header. `heroModel` derives that
 header from `menuBarLiquidLevels` and `MenuBarLiquidAnimation.floorLevel`, the same call the status
 item makes, so the popover and the mark cannot disagree; it adds the floor account's soonest reset

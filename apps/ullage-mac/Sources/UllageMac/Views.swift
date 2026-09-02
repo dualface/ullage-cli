@@ -284,6 +284,17 @@ private struct TabBar: View {
         .padding(.vertical, 10)
     }
 
+    @ViewBuilder
+    private var selectionBackground: some View {
+        if #available(macOS 26.0, *) {
+            Capsule().fill(.clear).glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            Capsule()
+                .fill(colorScheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.95))
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.25 : 0.08), radius: 3, y: 1)
+        }
+    }
+
     /// A dot on the tab when that account has a row in its last two tiers, so
     /// the account worth opening is visible without switching tabs.
     private func warningTier(for account: Account) -> RemainingTier? {
@@ -336,9 +347,7 @@ private struct TabBar: View {
             .padding(.vertical, 6)
             .background {
                 if isSelected {
-                    Capsule()
-                        .fill(colorScheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.95))
-                        .shadow(color: .black.opacity(colorScheme == .dark ? 0.25 : 0.08), radius: 3, y: 1)
+                    selectionBackground
                         .matchedGeometryEffect(id: "tab", in: highlight)
                 }
             }
@@ -554,13 +563,7 @@ private struct ProbeButton: View {
             .font(.system(size: 12, weight: .semibold))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background {
-                Capsule().fill(Self.accent.opacity(isEnabled ? 0.18 : 0.08))
-            }
-            .overlay {
-                Capsule().strokeBorder(Self.accent.opacity(isEnabled ? 0.35 : 0.15), lineWidth: 1)
-            }
-            .shadow(color: Self.accent.opacity(isEnabled ? 0.35 : 0), radius: 8)
+            .modifier(ProbeBackground(accent: Self.accent, isEnabled: isEnabled))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -568,6 +571,28 @@ private struct ProbeButton: View {
     }
 
     private static let accent = Color(red: 0.85, green: 0.27, blue: 0.37)
+}
+
+private struct ProbeBackground: ViewModifier {
+    let accent: Color
+    let isEnabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(
+                .regular.tint(accent.opacity(isEnabled ? 0.5 : 0.15)).interactive(isEnabled),
+                in: .capsule
+            )
+        } else {
+            content
+                .background { Capsule().fill(accent.opacity(isEnabled ? 0.18 : 0.08)) }
+                .overlay {
+                    Capsule().strokeBorder(accent.opacity(isEnabled ? 0.35 : 0.15), lineWidth: 1)
+                }
+                .shadow(color: accent.opacity(isEnabled ? 0.35 : 0), radius: 8)
+        }
+    }
 }
 
 private struct OverviewRowToggle {

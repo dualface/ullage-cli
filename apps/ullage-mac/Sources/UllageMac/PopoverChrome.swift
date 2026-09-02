@@ -44,13 +44,27 @@ struct AtmosphereBackground: View {
     }
 }
 
-/// Frosted panel with a top inset highlight and a soft drop shadow.
+/// Liquid Glass where the system provides it, and a hand-built frosted panel
+/// with a top inset highlight below macOS 26.
 struct GlassPanel: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     var cornerRadius: CGFloat = 18
     var prominent = false
 
+    @ViewBuilder
     func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(
+                    .regular,
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+        } else {
+            legacyPanel(content)
+        }
+    }
+
+    private func legacyPanel(_ content: Content) -> some View {
         content
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -432,23 +446,7 @@ private struct CircleIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
-                .background {
-                    Circle().fill(
-                        colorScheme == .dark
-                            ? Color.white.opacity(isHovering ? 0.16 : 0.08)
-                            : Color.white.opacity(isHovering ? 0.90 : 0.65)
-                    )
-                }
-                .overlay {
-                    Circle().strokeBorder(
-                        colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.07),
-                        lineWidth: 1
-                    )
-                }
+            icon
                 .rotationEffect(.degrees(spinning ? 360 : 0))
                 .animation(
                     spinning
@@ -463,6 +461,32 @@ private struct CircleIconButton: View {
         .onHover { isHovering = $0 }
         .help(label)
         .accessibilityLabel(label)
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        let glyph = Image(systemName: systemName)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 28, height: 28)
+        if #available(macOS 26.0, *) {
+            glyph.glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            glyph
+                .background {
+                    Circle().fill(
+                        colorScheme == .dark
+                            ? Color.white.opacity(isHovering ? 0.16 : 0.08)
+                            : Color.white.opacity(isHovering ? 0.90 : 0.65)
+                    )
+                }
+                .overlay {
+                    Circle().strokeBorder(
+                        colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.07),
+                        lineWidth: 1
+                    )
+                }
+        }
     }
 }
 
