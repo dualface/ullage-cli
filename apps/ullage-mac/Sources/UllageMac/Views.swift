@@ -275,7 +275,10 @@ private struct TabBar: View {
                 )
             }
         }
-            .padding(6)
+        .padding(6)
+        // FlowLayout sizes itself to its widest row, so without this the
+        // panel would shrink to the tabs instead of matching the header.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .glassPanel(cornerRadius: 20)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
