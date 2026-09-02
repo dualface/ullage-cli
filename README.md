@@ -155,8 +155,11 @@ Open Ullage Mac Settings, leave the default server URL as
 displayed pairing code into the six OTP fields (`XXX-XXX`), and select **Pair**.
 The client sends its hostname as the device name, receives the device token once,
 and stores it in the current macOS user's Keychain. Settings then shows the
-paired device name and local pairing time. Pairing codes are one-use, expire
-after 300 seconds, and a new code invalidates the previous one. Use
+paired device name and local pairing time, locks the server URL, and hides the
+pair-code fields; select **Unlock** to edit the URL or pair again, and **Lock**
+to discard those edits. A successful re-pair locks the panel again. Pairing
+codes are one-use, expire after 300 seconds, and a new code invalidates the
+previous one. Use
 `ullage device list` to inspect active devices and
 `ullage device revoke <DEVICE_ID>` to revoke one without affecting the others.
 

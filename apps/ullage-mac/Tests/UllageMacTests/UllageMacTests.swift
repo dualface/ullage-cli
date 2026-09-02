@@ -227,6 +227,13 @@ final class UllageMacTests: XCTestCase {
         }
     }
 
+    func testPairingEditingStateLocksOnlyWhenPairedAndNotUnlocked() {
+        XCTAssertEqual(pairingEditingState(isPaired: false, isUnlocked: false), .unpaired)
+        XCTAssertEqual(pairingEditingState(isPaired: false, isUnlocked: true), .unpaired)
+        XCTAssertEqual(pairingEditingState(isPaired: true, isUnlocked: false), .locked)
+        XCTAssertEqual(pairingEditingState(isPaired: true, isUnlocked: true), .unlockedForRepair)
+    }
+
     @MainActor
     func testAnimateLiquidSettingDefaultsOnAndRoundTrips() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"

@@ -15,6 +15,8 @@ final class SettingsPanelController: NSWindowController {
             onSaved: onSaved
         )
         let hostingController = NSHostingController(rootView: view)
+        // Let the panel follow the view as the pairing section locks/unlocks.
+        hostingController.sizingOptions = [.preferredContentSize]
         let panel = NSPanel(contentViewController: hostingController)
         panel.title = "Ullage Settings"
         panel.styleMask = [.titled, .closable]
@@ -97,6 +99,21 @@ struct PairingServerTarget {
     }
 }
 
+/// How the Connection and Pairing sections present themselves.
+enum PairingEditingState: Equatable {
+    /// Paired and locked: the server URL is read-only and the pair code is hidden.
+    case locked
+    /// Paired but unlocked: the URL is editable and a new code may be entered.
+    case unlockedForRepair
+    /// Never paired: editable, with no lock control to show.
+    case unpaired
+}
+
+func pairingEditingState(isPaired: Bool, isUnlocked: Bool) -> PairingEditingState {
+    guard isPaired else { return .unpaired }
+    return isUnlocked ? .unlockedForRepair : .locked
+}
+
 @MainActor
 func connectionTestRequiresPairing(
     mode: AppMode,
@@ -116,6 +133,8 @@ private struct SettingsView: View {
     @State private var message = ""
     @State private var isPairing = false
     @State private var isTesting = false
+    /// Unlock lasts for this panel only; it is never persisted.
+    @State private var isUnlocked = false
 
     init(
         settings: AppSettings,
@@ -134,6 +153,14 @@ private struct SettingsView: View {
 
     private var canPair: Bool {
         !isPairing && formattedPairCode(normalizedPairCode) != nil
+    }
+
+    private var isPaired: Bool {
+        settings.pairedDeviceName != nil && settings.pairedAt != nil
+    }
+
+    private var editingState: PairingEditingState {
+        pairingEditingState(isPaired: isPaired, isUnlocked: isUnlocked)
     }
 
     var body: some View {
@@ -155,9 +182,20 @@ private struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Connection")
                 .font(.headline)
-            TextField("Server URL", text: $serverURL)
-                .textFieldStyle(.roundedBorder)
-                .disabled(isPairing)
+            HStack(spacing: 8) {
+                TextField("Server URL", text: $serverURL)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(isPairing || editingState == .locked)
+                switch editingState {
+                case .locked:
+                    Button("Unlock") { unlock() }
+                case .unlockedForRepair:
+                    Button("Lock") { lock() }
+                        .disabled(isPairing)
+                case .unpaired:
+                    EmptyView()
+                }
+            }
             Text("Use HTTP with localhost or a literal loopback, tailnet, or private LAN address.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -169,31 +207,43 @@ private struct SettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Pairing")
                 .font(.headline)
-            HStack(spacing: 8) {
-                pairDigitGroup(indices: 0..<3)
-                Text("-")
-                    .font(.title2.monospacedDigit().weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                pairDigitGroup(indices: 3..<6)
-                Button("Pair") { pair() }
-                    .disabled(!canPair)
-                if isPairing {
-                    ProgressView().controlSize(.small)
+            if editingState != .locked {
+                HStack(spacing: 8) {
+                    pairDigitGroup(indices: 0..<3)
+                    Text("-")
+                        .font(.title2.monospacedDigit().weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    pairDigitGroup(indices: 3..<6)
+                    Button("Pair") { pair() }
+                        .disabled(!canPair)
+                    if isPairing {
+                        ProgressView().controlSize(.small)
+                    }
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Pair code")
             }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Pair code")
             if let name = settings.pairedDeviceName, let pairedAt = settings.pairedAt {
                 Text("Paired as \(name) on \(pairedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else {
-                Text("Run ullage device pair on the daemon host, then enter the one-use code here.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
+            Text(pairingCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var pairingCaption: String {
+        switch editingState {
+        case .locked:
+            "Unlock to change the server URL or pair again."
+        case .unlockedForRepair:
+            "Run ullage device pair on the daemon host, then enter the new one-use code to replace this pairing."
+        case .unpaired:
+            "Run ullage device pair on the daemon host, then enter the one-use code here."
         }
     }
 
@@ -298,6 +348,21 @@ private struct SettingsView: View {
         focusedDigit = 0
     }
 
+    private func unlock() {
+        isUnlocked = true
+        message = ""
+        focusedDigit = 0
+    }
+
+    /// Discard unsaved edits and return to the read-only paired view.
+    private func lock() {
+        serverURL = settings.serverURL.absoluteString
+        digits = Array(repeating: "", count: 6)
+        focusedDigit = nil
+        message = ""
+        isUnlocked = false
+    }
+
     private func pair() {
         guard let target = PairingServerTarget(serverURL) else {
             message = ConnectionTestResult.hostRejected.rawValue
@@ -322,6 +387,8 @@ private struct SettingsView: View {
                 )
                 try settings.completePairing(serverURL: target.rawValue, credential: credential)
                 clearPairCode()
+                focusedDigit = nil
+                isUnlocked = false
                 message = "paired"
                 onSaved()
             } catch SettingsError.invalidServerURL {
