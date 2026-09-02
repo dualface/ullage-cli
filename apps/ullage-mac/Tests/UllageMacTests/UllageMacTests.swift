@@ -78,8 +78,9 @@ final class UllageMacTests: XCTestCase {
             let yPixel = Int((y / 100 * pixelSize).rounded(.down))
             return try XCTUnwrap(representation.colorAt(x: xPixel, y: yPixel)).alphaComponent
         }
-        // Surface sits at y ≈ 26 for 80%; the cavity above it stays clear.
-        XCTAssertLessThanOrEqual(try alpha(atMarkY: 15), 0.05)
+        // Surface sits at y ≈ 26 for 80%; the cavity between the brim bar
+        // (y ≤ 16.5) and the surface stays clear.
+        XCTAssertLessThanOrEqual(try alpha(atMarkY: 20), 0.05)
         for y in [40.0, 60.0, 80.0] {
             XCTAssertGreaterThanOrEqual(try alpha(atMarkY: y), 0.3, "Expected liquid fill at y=\(y)")
         }
@@ -108,6 +109,25 @@ final class UllageMacTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(try alpha(waveRep, x: 75, y: 49.6), 0.3)
         XCTAssertGreaterThanOrEqual(try alpha(flatRep, x: 50, y: 52), 0.3)
+    }
+
+    @MainActor
+    func testMenuBarBrimLineShowsInLiquidStatesOnly() throws {
+        func alpha(_ rep: NSBitmapImageRep, y: Double) throws -> CGFloat {
+            let size = CGFloat(rep.pixelsWide)
+            let xPixel = Int((0.5 * size).rounded(.down))
+            let yPixel = Int((y / 100 * size).rounded(.down))
+            return try XCTUnwrap(rep.colorAt(x: xPixel, y: yPixel)).alphaComponent
+        }
+        // The brim bar spans y 12...16.5 at 0.35 alpha; sample inside it.
+        let empty = try rasterizedMenuBarImage(fillRatio: 0, scale: 10)
+        XCTAssertGreaterThanOrEqual(try alpha(empty, y: 14), 0.2)
+        XCTAssertLessThanOrEqual(try alpha(empty, y: 14), 0.6)
+        let half = try rasterizedMenuBarImage(fillRatio: 0.5, scale: 10)
+        XCTAssertGreaterThanOrEqual(try alpha(half, y: 14), 0.2)
+        XCTAssertLessThanOrEqual(try alpha(half, y: 14), 0.6)
+        let noData = try rasterizedMenuBarImage(fillRatio: nil, scale: 10)
+        XCTAssertLessThanOrEqual(try alpha(noData, y: 14), 0.05)
     }
 
     @MainActor

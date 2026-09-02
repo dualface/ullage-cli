@@ -44,7 +44,8 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 The menu bar mark and application icon share one Swift/CoreGraphics drawing
 implementation in the `UllageMac` executable. The menu bar variant uses
 dedicated geometry for legibility at 18 points. Its liquid is a solid fill
-with a wavy surface. The floor of the liquid is the lowest remaining ratio
+with a wavy surface, and a faint bar just below the cavity top marks the full
+level. The floor of the liquid is the lowest remaining ratio
 across enabled accounts with countable Overview remaining; the liquid breathes
 in a forty-second loop from a full vessel down to that floor and back up,
 eased so the turnarounds are smooth. A light wobble runs at about 10 fps while

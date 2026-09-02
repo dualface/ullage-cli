@@ -484,6 +484,7 @@ enum UllageMark {
         vessel.addLine(to: CGPoint(x: 88, y: 6))
 
         if let fillRatio {
+            drawTemplateBrimLine(in: context)
             let clamped = min(max(fillRatio, 0), 1)
             if clamped > 0 {
                 drawTemplateLiquidFill(
@@ -508,6 +509,17 @@ enum UllageMark {
         context.setLineCap(.butt)
         context.addPath(vessel)
         context.strokePath()
+    }
+
+    /// Faint bar just below the cavity top: the full mark the liquid breathes
+    /// up to. Drawn only in liquid states, never with the exclamation mark.
+    private static func drawTemplateBrimLine(in context: CGContext) {
+        context.saveGState()
+        context.addPath(closedU(radius: 33.5, top: 10, centerY: 58))
+        context.clip()
+        context.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
+        context.fill(CGRect(x: 0, y: 12, width: 100, height: 4.5))
+        context.restoreGState()
     }
 
     /// Solid liquid filling the cavity up to the surface at the remaining
