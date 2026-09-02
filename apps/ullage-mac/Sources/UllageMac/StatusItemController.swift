@@ -175,12 +175,7 @@ final class StatusItemController: NSObject {
         case .initial, .noData:
             return .stop
         case .liquid:
-            if !settings.animatesMenuBarLiquid
-                || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-                || PowerSource.isOnBattery {
-                return .freeze
-            }
-            return .animate
+            return liquidMotionIsAllowed(settings: settings) ? .animate : .freeze
         }
     }
 
@@ -361,6 +356,16 @@ private extension ConnectionState {
     var hasMenuBarData: Bool {
         self == .connected
     }
+}
+
+/// Whether the liquid surface may move right now. The Settings toggle,
+/// Reduce Motion and battery power each hold it still, for the menu bar mark
+/// and the popover's vessel alike.
+@MainActor
+func liquidMotionIsAllowed(settings: AppSettings) -> Bool {
+    settings.animatesMenuBarLiquid
+        && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        && !PowerSource.isOnBattery
 }
 
 enum PowerSource {

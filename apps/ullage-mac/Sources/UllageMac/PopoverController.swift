@@ -7,8 +7,16 @@ import SwiftUI
 /// `NSPopover` cannot do that: its frame draws its own material, which blurs
 /// whatever is behind the window to a flat tone before the content view can
 /// sample it. macOS 14 and 15 keep the `NSPopover`.
+/// Whether the popover is on screen, for content that should only run while
+/// it is visible, such as the hero's wave.
 @MainActor
-final class PopoverController: NSObject {
+@Observable
+final class PopoverPresentation {
+    var isShown = false
+}
+
+@MainActor
+final class PopoverController: NSObject, NSPopoverDelegate {
     private static let screenMargin: CGFloat = 24
     private static let panelGap: CGFloat = 6
     private static let panelEdgeMargin: CGFloat = 8
@@ -17,6 +25,7 @@ final class PopoverController: NSObject {
     private let settings: AppSettings
     private let openSettings: () -> Void
     private var hostingController: NSHostingController<RootView>?
+    private let presentation = PopoverPresentation()
     private var sizing = PopoverSizing()
     private let popover: NSPopover?
     private var panel: NSPanel?
@@ -41,6 +50,7 @@ final class PopoverController: NSObject {
             self.popover = popover
         }
         super.init()
+        popover?.delegate = self
     }
 
     func show(relativeTo rect: NSRect, of view: NSView) {
@@ -61,6 +71,7 @@ final class PopoverController: NSObject {
             panel.makeKey()
             installDismissalMonitors()
         }
+        presentation.isShown = true
         // The store polls on its own; opening still asks for fresh data so the
         // popover and the menu "Refresh" action do not wait for the next poll.
         store.refresh()
@@ -72,13 +83,20 @@ final class PopoverController: NSObject {
         } else {
             removeDismissalMonitors()
             panel?.orderOut(nil)
+            presentation.isShown = false
         }
+    }
+
+    /// The transient popover also closes on its own; the wave must stop then too.
+    func popoverDidClose(_ notification: Notification) {
+        presentation.isShown = false
     }
 
     private func makeHostingController() -> NSHostingController<RootView> {
         let controller = NSHostingController(rootView: RootView(
             store: store,
             settings: settings,
+            presentation: presentation,
             openSettings: openSettings,
             onPreferredHeightChanged: { [weak self] height in self?.updateContentHeight(height) }
         ))

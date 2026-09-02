@@ -789,6 +789,31 @@ final class UllageMacTests: XCTestCase {
         XCTAssertFalse(output.contains("private label"))
     }
 
+    @MainActor
+    func testVesselSurfaceKeepsItsHeightAndOnlyTheWaveMoves() {
+        let flat = LiquidVessel.surfacePath(surfaceY: 50, wavePhase: nil).boundingRect
+        XCTAssertEqual(flat.minY, 50, accuracy: 0.001)
+        XCTAssertEqual(flat.height, 0, accuracy: 0.001)
+
+        let phaseA = LiquidVessel.surfacePath(surfaceY: 50, wavePhase: 0).boundingRect
+        let phaseB = LiquidVessel.surfacePath(surfaceY: 50, wavePhase: .pi / 2).boundingRect
+        for bounds in [phaseA, phaseB] {
+            XCTAssertEqual(bounds.midY, 50, accuracy: 0.05)
+            XCTAssertEqual(bounds.height, LiquidVessel.amplitude * 2, accuracy: 0.05)
+            XCTAssertEqual(bounds.minX, 0)
+            XCTAssertEqual(bounds.maxX, 100)
+        }
+        XCTAssertNotEqual(
+            LiquidVessel.surfacePath(surfaceY: 50, wavePhase: 0).description,
+            LiquidVessel.surfacePath(surfaceY: 50, wavePhase: .pi / 2).description
+        )
+
+        let phase = PopoverHero.wavePhase(at: Date(timeIntervalSinceReferenceDate: 10))
+        XCTAssertEqual(phase, (10 * MenuBarLiquidAnimation.waveRadiansPerSecond).truncatingRemainder(dividingBy: 2 * .pi), accuracy: 1e-9)
+        XCTAssertGreaterThanOrEqual(phase, 0)
+        XCTAssertLessThan(phase, 2 * .pi)
+    }
+
     func testPopoverSizingDefaultsAndClampsHeight() {
         var sizing = PopoverSizing()
         XCTAssertEqual(sizing.contentSize, NSSize(width: 360, height: 260))

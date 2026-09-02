@@ -100,7 +100,10 @@ only re-sample the already blurred slab); the selected tab pill, the header's ci
 the probe button use small `glassEffect` shapes behind `if #available(macOS 26.0, *)`.
 Both the header and the tab row live in a `ZStack` above the scroll view, which
 starts with a spacer the height of the chrome, `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
-oxblood gradient), the simplified `ProviderMark` drawings, and the header. `heroModel` derives that
+oxblood gradient; its surface is the mark's sine wave at a `wavePhase`, or flat when `nil`, and the
+hero drives that phase from a `TimelineView` at the menu bar's tick interval and wave speed while
+`PopoverPresentation.isShown` is true and `liquidMotionIsAllowed` (the Settings toggle, Reduce Motion
+and battery, shared with the status item) permits; the level itself never animates), the simplified `ProviderMark` drawings, and the header. `heroModel` derives that
 header from `menuBarLiquidLevels` and `MenuBarLiquidAnimation.floorLevel`, the same call the status
 item makes, and takes the row-visibility sets as required arguments so it resolves a pinned row from
 the same list Settings offers, so the popover and the mark cannot disagree; it adds the floor account's soonest reset

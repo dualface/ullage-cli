@@ -171,6 +171,9 @@ extension View {
 /// application icon read as the same object.
 struct LiquidVessel: View {
     let ratio: Double
+    /// Phase of the surface wave, in radians; `nil` draws a flat surface. The
+    /// height never depends on it, so an animating phase only moves the wave.
+    var wavePhase: Double? = nil
     var size: CGFloat = 64
     @Environment(\.colorScheme) private var colorScheme
 
@@ -215,27 +218,32 @@ struct LiquidVessel: View {
     private static let liquidTop = Color(red: 0.85, green: 0.27, blue: 0.37)
     private static let liquidBottom = Color(red: 0.55, green: 0.10, blue: 0.20)
 
-    /// Wave crest amplitude, in mark units.
-    private static let amplitude: CGFloat = 1.8
+    /// Wave crest amplitude, in mark units; matches the menu bar mark.
+    static let amplitude: CGFloat = 1.8
 
     private var surfacePath: Path {
+        Self.surfacePath(surfaceY: surfaceY, wavePhase: wavePhase)
+    }
+
+    /// One wavelength of sine across the vessel at `wavePhase`, sampled the
+    /// same way `UllageMark` draws the menu bar surface; a flat line when the
+    /// phase is `nil`.
+    static func surfacePath(surfaceY: CGFloat, wavePhase: Double?, steps: Int = 24) -> Path {
+        let amplitude = wavePhase == nil ? 0 : amplitude
+        let phase = wavePhase ?? 0
         var path = Path()
-        path.move(to: CGPoint(x: 0, y: surfaceY + Self.amplitude))
-        path.addCurve(
-            to: CGPoint(x: 34, y: surfaceY),
-            control1: CGPoint(x: 12, y: surfaceY - Self.amplitude),
-            control2: CGPoint(x: 22, y: surfaceY + Self.amplitude)
-        )
-        path.addCurve(
-            to: CGPoint(x: 68, y: surfaceY),
-            control1: CGPoint(x: 46, y: surfaceY - Self.amplitude),
-            control2: CGPoint(x: 56, y: surfaceY - Self.amplitude)
-        )
-        path.addCurve(
-            to: CGPoint(x: 100, y: surfaceY - Self.amplitude),
-            control1: CGPoint(x: 80, y: surfaceY + Self.amplitude),
-            control2: CGPoint(x: 90, y: surfaceY + Self.amplitude)
-        )
+        for step in 0...steps {
+            let t = Double(step) / Double(steps)
+            let point = CGPoint(
+                x: 100 * t,
+                y: surfaceY + amplitude * CGFloat(sin(phase + t * .pi * 2))
+            )
+            if step == 0 {
+                path.move(to: point)
+            } else {
+                path.addLine(to: point)
+            }
+        }
         return path
     }
 
@@ -425,12 +433,26 @@ struct ProviderBadge: View {
 struct PopoverHero: View {
     let model: HeroModel
     let isRefreshing: Bool
+    /// True while the popover is on screen; the wave only runs then.
+    let isPresented: Bool
+    let settings: AppSettings
     let refresh: () -> Void
     let openSettings: () -> Void
 
     var body: some View {
+        // The gate is read here, outside the timeline, so the power source
+        // and Reduce Motion are queried when the hero's inputs change, not on
+        // every frame. The level is fixed by `model.ratio`; only the surface
+        // moves, at the menu bar's frame rate and wave speed.
+        let animates = isPresented && liquidMotionIsAllowed(settings: settings)
         HStack(spacing: 14) {
-            LiquidVessel(ratio: model.ratio, size: 64)
+            TimelineView(.animation(minimumInterval: MenuBarLiquidAnimation.tickInterval(), paused: !animates)) { context in
+                LiquidVessel(
+                    ratio: model.ratio,
+                    wavePhase: animates ? Self.wavePhase(at: context.date) : nil,
+                    size: 64
+                )
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.caption)
                     .font(.system(size: 11, weight: .semibold))
@@ -484,6 +506,13 @@ struct PopoverHero: View {
 
     private var tierColor: Color {
         Color(nsColor: progressColor(for: RemainingTier(ratio: model.ratio)))
+    }
+
+    /// Wave phase for a frame: the menu bar's angular speed applied to the
+    /// clock, so the wave keeps the same pace across openings of the popover.
+    static func wavePhase(at date: Date) -> Double {
+        let radians = date.timeIntervalSinceReferenceDate * MenuBarLiquidAnimation.waveRadiansPerSecond
+        return radians.truncatingRemainder(dividingBy: 2 * .pi)
     }
 }
 

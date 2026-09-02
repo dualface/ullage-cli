@@ -48,7 +48,8 @@ row float and the cards scroll underneath them. macOS 14 and 15 open a
 standard popover on a tinted backdrop of large oxblood and blue shapes, with
 frosted cards over it. Its header
 repeats what the menu bar mark is tracking, as a filled vessel beside the
-percentage, the account it came from, that account's soonest reset, and the
+percentage (its surface wobbles while the popover is open, at a fixed level,
+under the same conditions that let the menu bar liquid move), the account it came from, that account's soonest reset, and the
 runner-up account. Account tabs are a row of pills that wraps onto
 further rows rather than scrolling, so every account stays clickable
 without a sideways gesture; an account with a row in its lowest two tiers

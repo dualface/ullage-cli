@@ -10,6 +10,7 @@ enum SelectedTab: Hashable {
 struct RootView: View {
     @Bindable var store: UsageStore
     @Bindable var settings: AppSettings
+    let presentation: PopoverPresentation
     let openSettings: () -> Void
     let onPreferredHeightChanged: (CGFloat) -> Void
     @State private var selectedTab: SelectedTab = .overview
@@ -45,6 +46,8 @@ struct RootView: View {
                     PopoverHero(
                         model: hero,
                         isRefreshing: store.connectionState == .loading,
+                        isPresented: presentation.isShown,
+                        settings: settings,
                         refresh: store.refresh,
                         openSettings: openSettings
                     )
