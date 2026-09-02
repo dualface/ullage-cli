@@ -516,6 +516,13 @@ struct PopoverHero: View {
                         .font(.system(size: 34, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .kerning(-1)
+                        // The number is the headline, so it takes the width it
+                        // asks for and shrinks rather than wrapping: a long
+                        // account name beside "100%" used to squeeze the sign
+                        // onto a line of its own.
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .layoutPriority(1)
                         .foregroundStyle(tierColor)
                         .shadow(color: tierColor.opacity(0.55), radius: 12)
                         .contentTransition(.numericText())
