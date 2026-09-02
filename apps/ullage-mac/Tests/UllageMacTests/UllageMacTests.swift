@@ -255,6 +255,36 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testHeroModelTracksTheSameLevelAsTheMenuBarLiquid() throws {
+        let snapshots = try UllageFixtures.snapshots()
+        let accounts = snapshots.map {
+            Account(id: $0.accountId, provider: $0.usage.data?.provider ?? "unknown", label: nil, enabled: true)
+        }
+        let levels = menuBarLiquidLevels(accounts: accounts, snapshots: snapshots, pinnedMetricID: nil)
+        let floor = try XCTUnwrap(MenuBarLiquidAnimation.floorLevel(in: levels))
+
+        let hero = try XCTUnwrap(heroModel(accounts: accounts, snapshots: snapshots, pinnedMetricID: nil))
+        XCTAssertEqual(hero.ratio, floor.remainingRatio)
+        XCTAssertEqual(hero.title, floor.displayName)
+        XCTAssertEqual(hero.caption, "Lowest remaining")
+        // More than one account, so the runner-up is named and ranks no lower.
+        let detail = try XCTUnwrap(hero.detail)
+        XCTAssertTrue(detail.contains("next "), detail)
+
+        let options = menuBarMetricOptions(accounts: accounts, snapshots: snapshots)
+        let pinned = try XCTUnwrap(options.max { $0.remainingRatio < $1.remainingRatio })
+        let pinnedHero = try XCTUnwrap(
+            heroModel(accounts: accounts, snapshots: snapshots, pinnedMetricID: pinned.id)
+        )
+        XCTAssertEqual(pinnedHero.ratio, pinned.remainingRatio)
+        XCTAssertEqual(pinnedHero.title, pinned.title)
+        XCTAssertEqual(pinnedHero.caption, "Tracking")
+        XCTAssertFalse(pinnedHero.detail?.contains("next ") ?? false)
+
+        XCTAssertNil(heroModel(accounts: [], snapshots: [], pinnedMetricID: nil))
+    }
+
+    @MainActor
     func testMenuBarMetricPinDefaultsToNilAndRoundTrips() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

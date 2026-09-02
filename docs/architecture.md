@@ -79,6 +79,12 @@ Reduce Motion is enabled, or when the "Animate liquid" setting (`animatesMenuBar
 is off, the liquid holds still at the floor with a flat surface and the cycle is parked at its
 trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
+`PopoverChrome.swift` holds the popover's shared surfaces: the tinted `AtmosphereBackground`, the
+`glassPanel` modifier, `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
+oxblood gradient), the simplified `ProviderMark` drawings, and the header. `heroModel` derives that
+header from `menuBarLiquidLevels` and `MenuBarLiquidAnimation.floorLevel`, the same call the status
+item makes, so the popover and the mark cannot disagree; it adds the floor account's soonest reset
+and the runner-up level. Both appearances are driven from `colorScheme` rather than fixed colors.
 Overview uses a provider-specific catalog (ChatGPT 5h, weekly, and reset credits, Claude 5h and Fable,
 Cursor auto and api, Grok usage and GrokBuild). Each account tab can show or hide any progress row on
 Overview. Catalog rows default to visible (`AppSettings.hiddenOverviewItemIDs`

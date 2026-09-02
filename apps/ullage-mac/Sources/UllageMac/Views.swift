@@ -13,11 +13,25 @@ struct RootView: View {
     let openSettings: () -> Void
     let onPreferredHeightChanged: (CGFloat) -> Void
     @State private var selectedTab: SelectedTab = .overview
+    @State private var chromeHeight: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
-            TabBar(accounts: store.accounts, selected: $selectedTab)
-            Divider()
+            VStack(spacing: 0) {
+                if let hero {
+                    PopoverHero(
+                        model: hero,
+                        isRefreshing: store.connectionState == .loading,
+                        refresh: store.refresh,
+                        openSettings: openSettings
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                }
+                TabBar(store: store, settings: settings, selected: $selectedTab)
+            }
+            .measuredHeight(ChromeHeightPreferenceKey.self)
             ScrollView {
                 Group {
                     if let emptyState = emptyState {
@@ -31,22 +45,39 @@ struct RootView: View {
                         }
                     }
                 }
-                .padding(14)
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: ContentHeightPreferenceKey.self, value: proxy.size.height)
-                    }
-                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 14)
+                .measuredHeight(ContentHeightPreferenceKey.self)
             }
         }
         .frame(width: 360)
-        .background(.regularMaterial)
-        .onPreferenceChange(ContentHeightPreferenceKey.self) { contentHeight in
-            onPreferredHeightChanged(45 + contentHeight)
+        .background { AtmosphereBackground() }
+        .onPreferenceChange(ChromeHeightPreferenceKey.self) { height in
+            chromeHeight = height
+            reportHeight()
+        }
+        .onPreferenceChange(ContentHeightPreferenceKey.self) { height in
+            contentHeight = height
+            reportHeight()
         }
         .onChange(of: store.accounts.map(\.id)) { _, accountIDs in
             selectedTab = normalizedSelection(selectedTab, accountIDs: accountIDs)
         }
+    }
+
+    private func reportHeight() {
+        onPreferredHeightChanged(chromeHeight + contentHeight)
+    }
+
+    /// The hero mirrors the menu bar mark, so it is hidden whenever the mark
+    /// itself has nothing to show.
+    private var hero: HeroModel? {
+        guard emptyState == nil else { return nil }
+        return heroModel(
+            accounts: store.accounts,
+            snapshots: store.snapshots,
+            pinnedMetricID: settings.menuBarMetricID
+        )
     }
 
     private var emptyState: AnyView? {
@@ -117,42 +148,113 @@ private struct ContentHeightPreferenceKey: PreferenceKey {
     }
 }
 
-private struct TabBar: View {
-    let accounts: [Account]
-    @Binding var selected: SelectedTab
+private struct ChromeHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
 
-    private var titles: [String: String] { tabTitles(for: accounts) }
+private extension View {
+    func measuredHeight<Key: PreferenceKey>(_ key: Key.Type) -> some View where Key.Value == CGFloat {
+        background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: key, value: proxy.size.height)
+            }
+        }
+    }
+}
+
+private struct TabBar: View {
+    let store: UsageStore
+    let settings: AppSettings
+    @Binding var selected: SelectedTab
+    @Environment(\.colorScheme) private var colorScheme
+    @Namespace private var highlight
+
+    private var titles: [String: String] { tabTitles(for: store.accounts) }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                tab(title: "Overview", value: .overview, enabled: true)
-                ForEach(accounts, id: \.id) { account in
-                    tab(title: titles[account.id] ?? account.provider, value: .account(account.id), enabled: account.enabled)
+            HStack(spacing: 4) {
+                tab(title: "Overview", value: .overview, enabled: true, warning: nil)
+                ForEach(store.accounts, id: \.id) { account in
+                    tab(
+                        title: titles[account.id] ?? account.provider,
+                        value: .account(account.id),
+                        enabled: account.enabled,
+                        warning: warningTier(for: account)
+                    )
                 }
             }
-            .padding(.horizontal, 5)
+            .padding(4)
+            .background {
+                Capsule().fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.55))
+            }
+            .overlay {
+                Capsule().strokeBorder(
+                    colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.06),
+                    lineWidth: 1
+                )
+            }
+            .padding(.horizontal, 12)
         }
-        .frame(height: 44)
+        .padding(.vertical, 10)
     }
 
-    private func tab(title: String, value: SelectedTab, enabled: Bool) -> some View {
-        Button {
+    /// A dot on the tab when that account has a row in its last two tiers, so
+    /// the account worth opening is visible without switching tabs.
+    private func warningTier(for account: Account) -> RemainingTier? {
+        guard let usage = store.snapshot(for: account.id)?.usage.data else { return nil }
+        let ratios = visibleOverviewItems(
+            for: usage,
+            accountID: account.id,
+            hiddenIDs: settings.hiddenOverviewItemIDs,
+            shownIDs: settings.shownOverviewItemIDs
+        ).compactMap(\.row.remainingRatio)
+        guard let lowest = ratios.min() else { return nil }
+        let tier = RemainingTier(ratio: lowest)
+        return tier == .low || tier == .critical ? tier : nil
+    }
+
+    private func tab(
+        title: String,
+        value: SelectedTab,
+        enabled: Bool,
+        warning: RemainingTier?
+    ) -> some View {
+        let isSelected = selected == value
+        return Button {
             selected = value
         } label: {
-            VStack(spacing: 5) {
-                Text(title).font(.system(size: 12, weight: selected == value ? .semibold : .regular))
-                Capsule()
-                    .fill(selected == value ? Color.accentColor : Color.clear)
-                    .frame(height: 2)
+            HStack(spacing: 5) {
+                if let warning {
+                    let color = Color(nsColor: progressColor(for: warning))
+                    Circle()
+                        .fill(color)
+                        .frame(width: 6, height: 6)
+                        .shadow(color: color.opacity(0.8), radius: 4)
+                }
+                Text(title)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 9)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background {
+                if isSelected {
+                    Capsule()
+                        .fill(colorScheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.95))
+                        .shadow(color: .black.opacity(colorScheme == .dark ? 0.25 : 0.08), radius: 3, y: 1)
+                        .matchedGeometryEffect(id: "tab", in: highlight)
+                }
+            }
+            .contentShape(Capsule())
             .foregroundStyle(enabled ? .primary : .tertiary)
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
+        .animation(.snappy(duration: 0.25), value: selected)
     }
 }
 
@@ -162,22 +264,26 @@ private struct OverviewView: View {
 
     var body: some View {
         let cards = overviewCards
-        VStack(spacing: 14) {
+        VStack(spacing: 10) {
             if cards.isEmpty, hasHiddenProgressRows {
                 hiddenOverviewHint
             } else {
                 ForEach(cards) { card in
-                    UsageCardHeader(
-                        account: card.account,
-                        usage: card.usage,
-                        snapshot: card.snapshot,
-                        timestampLabel: "updated",
-                        timestamp: card.snapshot.lastSuccessAt
-                    )
-                    ForEach(card.items) { item in
-                        SummaryRowView(row: item.row)
+                    VStack(spacing: 12) {
+                        UsageCardHeader(
+                            account: card.account,
+                            usage: card.usage,
+                            snapshot: card.snapshot,
+                            timestampLabel: "updated",
+                            timestamp: card.snapshot.lastSuccessAt
+                        )
+                        ForEach(card.items) { item in
+                            SummaryRowView(row: item.row)
+                        }
                     }
-                    Divider()
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .glassPanel()
                 }
             }
         }
@@ -222,6 +328,7 @@ private struct OverviewView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 28)
+        .glassPanel()
         .accessibilityElement(children: .combine)
     }
 }
@@ -243,7 +350,7 @@ private struct AccountView: View {
     private var snapshot: SnapshotPayload? { store.snapshot(for: accountID) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             if let account, let snapshot, let usage = snapshot.usage.data {
                 UsageCardHeader(
                     account: account,
@@ -252,17 +359,21 @@ private struct AccountView: View {
                     timestampLabel: "observed",
                     timestamp: usage.observedAt
                 )
+                .padding(.horizontal, 2)
                 let identified = identifiedSummaryRows(for: usage)
                 let catalogIDs = catalogProgressIDs(for: usage, accountID: accountID)
                 let grouped = groupedIdentifiedRows(identified)
                 ForEach(Array(grouped.enumerated()), id: \.element.0) { _, group in
                     let window = group.0
                     let windowRows = group.1
-                    VStack(alignment: .leading, spacing: 7) {
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text(window).font(.headline)
+                            Text(window).font(.system(size: 13, weight: .bold))
                             Spacer()
-                            Text(resetText(windowRows.first?.row.resetsAt)).font(.caption).foregroundStyle(.secondary)
+                            Text(resetText(windowRows.first?.row.resetsAt))
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
                         }
                         ForEach(Array(windowRows.enumerated()), id: \.offset) { _, item in
                             SummaryRowView(
@@ -272,26 +383,23 @@ private struct AccountView: View {
                             )
                         }
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .glassPanel()
                 }
                 HStack {
-                    Button {
-                        store.probe(accountID: accountID)
-                    } label: {
-                        if store.probingAccountIDs.contains(accountID) {
-                            ProgressView().controlSize(.small)
-                        } else if let seconds = store.rateLimitSeconds(accountID) {
-                            Text("Retry in \(seconds)s")
-                        } else {
-                            Text("Probe now")
-                        }
-                    }
+                    ProbeButton(
+                        isProbing: store.probingAccountIDs.contains(accountID),
+                        retrySeconds: store.rateLimitSeconds(accountID),
+                        action: { store.probe(accountID: accountID) }
+                    )
                     .disabled(store.probingAccountIDs.contains(accountID) || store.isRateLimited(accountID))
-                    .focusEffectDisabled()
                     Spacer()
                     Text("last error: \(errorKind(snapshot.lastError))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .padding(.horizontal, 2)
             }
         }
     }
@@ -327,6 +435,46 @@ private struct AccountView: View {
     }
 }
 
+private struct ProbeButton: View {
+    let isProbing: Bool
+    let retrySeconds: Int?
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if isProbing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.trianglehead.2.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                if let retrySeconds {
+                    Text("Retry in \(retrySeconds)s").monospacedDigit()
+                } else if !isProbing {
+                    Text("Probe now")
+                }
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background {
+                Capsule().fill(Self.accent.opacity(isEnabled ? 0.18 : 0.08))
+            }
+            .overlay {
+                Capsule().strokeBorder(Self.accent.opacity(isEnabled ? 0.35 : 0.15), lineWidth: 1)
+            }
+            .shadow(color: Self.accent.opacity(isEnabled ? 0.35 : 0), radius: 8)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+    }
+
+    private static let accent = Color(red: 0.85, green: 0.27, blue: 0.37)
+}
+
 private struct OverviewRowToggle {
     let visible: Bool
     let setVisible: (Bool) -> Void
@@ -340,50 +488,79 @@ private struct UsageCardHeader: View {
     let timestamp: Date
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text(providerDisplayName(account.provider)).font(.headline)
-                if let label = account.label { Text(label).foregroundStyle(.secondary) }
-                Spacer()
-                BadgeList(account: account, snapshot: snapshot, summary: summarize(usage))
-            }
+        // Badges get their own row: at 360 pt they squeeze into slivers when
+        // they share a line with the name, plan and timestamp.
+        let badges = badgeNames(account: account, snapshot: snapshot, summary: summarize(usage))
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                if let plan = usage.plan { Text(plan) }
-                Text("\(timestampLabel) \(relativeTime(timestamp))")
+                ProviderBadge(provider: account.provider)
+                Text(providerDisplayName(account.provider))
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize()
+                if let label = account.label {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if let plan = usage.plan {
+                    PlanChip(text: plan)
+                }
+                Spacer(minLength: 4)
+                Text("\(timestampLabel) \(relativeTimeText(timestamp))")
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            if !badges.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(badges, id: \.self) { Badge(text: $0) }
+                    Spacer(minLength: 0)
+                }
+            }
         }
     }
 }
 
-private struct BadgeList: View {
-    let account: Account
-    let snapshot: SnapshotPayload
-    let summary: UsageSummary
+private struct PlanChip: View {
+    let text: String
 
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(badges, id: \.self) { Badge(text: $0) }
-        }
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .kerning(0.4)
+            .foregroundStyle(Self.accent)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background { Capsule().fill(Self.accent.opacity(0.16)) }
+            .fixedSize()
     }
 
-    private var badges: [String] {
-        badgeNames(account: account, snapshot: snapshot, summary: summary)
-    }
+    private static let accent = Color(red: 0.94, green: 0.42, blue: 0.51)
 }
 
 private struct Badge: View {
     let text: String
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         Text(text)
             .font(.system(size: 9, weight: .medium))
-            .padding(.horizontal, 5)
+            .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(.thinMaterial, in: Capsule())
-            .overlay {
-                Capsule().stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+            .background {
+                Capsule().fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.white.opacity(0.75))
             }
+            .overlay {
+                Capsule().strokeBorder(
+                    colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.08),
+                    lineWidth: 1
+                )
+            }
+            .fixedSize()
     }
 }
 
@@ -393,11 +570,11 @@ private struct SummaryRowView: View {
     var overviewToggle: OverviewRowToggle?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
                 HStack(spacing: 4) {
                     Text(showWindow ? row.window : row.metric)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if showWindow {
@@ -416,7 +593,7 @@ private struct SummaryRowView: View {
                         Image(systemName: overviewToggle.visible ? "eye" : "eye.slash")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(overviewToggle.visible ? .secondary : .tertiary)
-                            .frame(width: 28, height: 28)
+                            .frame(width: 26, height: 22)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -425,19 +602,29 @@ private struct SummaryRowView: View {
                     .focusEffectDisabled()
                 }
                 Text(summaryValueText(row.value) + (row.disabled ? " (off)" : ""))
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(valueColor)
+                    .contentTransition(.numericText())
                     .fixedSize(horizontal: true, vertical: false)
                 if showWindow {
                     Text(resetText(row.resetsAt))
-                        .font(.caption)
+                        .font(.system(size: 11))
+                        .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: true, vertical: false)
                 }
             }
             if let ratio = row.remainingRatio {
                 SegmentedProgress(ratio: ratio)
+                    .animation(.snappy(duration: 0.35), value: ratio)
             }
         }
+    }
+
+    private var valueColor: Color {
+        guard let ratio = row.remainingRatio, !row.disabled else { return .primary }
+        return Color(nsColor: progressColor(for: RemainingTier(ratio: ratio)))
     }
 }
 
@@ -472,17 +659,19 @@ func progressSegmentFill(ratio: Double, index: Int, segmentCount: Int = 10) -> D
 private struct ProgressSegment: View {
     let fill: Double
     let color: Color
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         GeometryReader { geo in
             Capsule()
-                .fill(Color(nsColor: .separatorColor))
+                .fill(colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10))
                 .overlay(alignment: .trailing) {
                     Rectangle()
                         .fill(color)
                         .frame(width: geo.size.width * min(max(fill, 0), 1))
                 }
                 .clipShape(Capsule())
+                .shadow(color: color.opacity(fill > 0 ? 0.55 : 0), radius: 3)
         }
         .frame(height: 5)
     }
@@ -505,22 +694,30 @@ struct EmptyStateView: View {
     let action: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "gauge.with.dots.needle.33percent")
-                .font(.system(size: 28))
-                .foregroundStyle(.secondary)
+        VStack(spacing: 12) {
+            LiquidVessel(ratio: 0, size: 56)
             Text(title).font(.headline)
-            if let detail { Text(detail).multilineTextAlignment(.center).foregroundStyle(.secondary) }
+            if let detail {
+                Text(detail)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            }
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
                     .focusEffectDisabled()
+                    .padding(.top, 2)
             }
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 26)
         .frame(maxWidth: .infinity, minHeight: 180)
+        .glassPanel()
+        .padding(.top, 12)
     }
 }
 
-private func relativeTime(_ date: Date, now: Date = Date()) -> String {
+func relativeTimeText(_ date: Date, now: Date = Date()) -> String {
     let seconds = Int(date.timeIntervalSince(now))
     let absolute = abs(seconds)
     let text: String
@@ -532,7 +729,7 @@ private func relativeTime(_ date: Date, now: Date = Date()) -> String {
 }
 
 private func resetText(_ date: Date?) -> String {
-    date.map { "resets \(relativeTime($0))" } ?? ""
+    date.map { "resets \(relativeTimeText($0))" } ?? ""
 }
 
 private func errorKind(_ error: SanitizedErrorPayload?) -> String {

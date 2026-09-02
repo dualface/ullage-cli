@@ -41,6 +41,16 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump
 apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 ```
 
+The popover is 360 points wide and opens on a tinted backdrop: frosted cards
+over an oxblood-to-blue wash, in both light and dark appearance. Its header
+repeats what the menu bar mark is tracking, as a filled vessel beside the
+percentage, the account it came from, that account's soonest reset, and the
+runner-up account. Account tabs are a scrolling row of pills; an account with a
+row in its lowest two tiers carries a colored dot. Every account is a card
+titled by its provider mark, plan, and badges, and each row keeps the ten-cell
+bar filled from the right and colored by tier. Provider marks are the app's own
+simplified drawings, not the companies' official logos.
+
 The menu bar mark and application icon share one Swift/CoreGraphics drawing
 implementation in the `UllageMac` executable. The menu bar variant uses
 dedicated geometry for legibility at 18 points. Its liquid is a solid fill

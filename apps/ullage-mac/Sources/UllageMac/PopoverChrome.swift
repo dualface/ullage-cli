@@ -1,0 +1,523 @@
+import SwiftUI
+import UllageKit
+
+// MARK: - Surfaces
+
+/// Tinted backdrop behind the popover: an oxblood wash from the top leading
+/// corner, a cool wash from the bottom trailing corner, over a flat base.
+struct AtmosphereBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            base
+            RadialGradient(
+                colors: [warmTint, warmTint.opacity(0)],
+                center: .topLeading,
+                startRadius: 0,
+                endRadius: 320
+            )
+            RadialGradient(
+                colors: [coolTint, coolTint.opacity(0)],
+                center: .bottomTrailing,
+                startRadius: 0,
+                endRadius: 300
+            )
+        }
+        .ignoresSafeArea()
+    }
+
+    private var base: Color {
+        colorScheme == .dark ? Color(red: 0.055, green: 0.051, blue: 0.067) : Color(white: 0.96)
+    }
+
+    private var warmTint: Color {
+        colorScheme == .dark
+            ? Color(red: 0.29, green: 0.06, blue: 0.13).opacity(0.85)
+            : Color(red: 0.85, green: 0.45, blue: 0.52).opacity(0.20)
+    }
+
+    private var coolTint: Color {
+        colorScheme == .dark
+            ? Color(red: 0.12, green: 0.16, blue: 0.29).opacity(0.85)
+            : Color(red: 0.45, green: 0.55, blue: 0.80).opacity(0.16)
+    }
+}
+
+/// Frosted panel with a top inset highlight and a soft drop shadow.
+struct GlassPanel: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    var cornerRadius: CGFloat = 18
+    var prominent = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [fillTop, fillBottom],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [highlight, border],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .shadow(color: .black.opacity(shadowOpacity), radius: prominent ? 16 : 10, y: prominent ? 8 : 5)
+    }
+
+    private var isDark: Bool { colorScheme == .dark }
+    private var fillTop: Color {
+        isDark ? .white.opacity(prominent ? 0.12 : 0.10) : .white.opacity(prominent ? 0.70 : 0.58)
+    }
+    private var fillBottom: Color {
+        isDark ? .white.opacity(prominent ? 0.05 : 0.04) : .white.opacity(prominent ? 0.45 : 0.34)
+    }
+    private var highlight: Color { isDark ? .white.opacity(0.28) : .white.opacity(0.85) }
+    private var border: Color { isDark ? .white.opacity(0.10) : .black.opacity(0.08) }
+    private var shadowOpacity: Double { isDark ? (prominent ? 0.45 : 0.32) : (prominent ? 0.16 : 0.10) }
+}
+
+extension View {
+    func glassPanel(cornerRadius: CGFloat = 18, prominent: Bool = false) -> some View {
+        modifier(GlassPanel(cornerRadius: cornerRadius, prominent: prominent))
+    }
+}
+
+// MARK: - Vessel
+
+/// The U-vessel from the app mark, filled to `ratio` with the oxblood liquid.
+/// Shares `UllageMark`'s 100x100 geometry so the popover, the menu bar and the
+/// application icon read as the same object.
+struct LiquidVessel: View {
+    let ratio: Double
+    var size: CGFloat = 64
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var clamped: Double { min(max(ratio.isFinite ? ratio : 0, 0), 1) }
+    private var surfaceY: CGFloat { 91.5 - 81.5 * CGFloat(clamped) }
+
+    var body: some View {
+        Canvas { context, canvasSize in
+            let scale = canvasSize.width / 100
+            context.scaleBy(x: scale, y: scale)
+
+            if clamped > 0 {
+                context.clip(to: Self.cavity)
+                context.fill(liquidPath, with: .linearGradient(
+                    Gradient(colors: [Self.liquidTop, Self.liquidBottom]),
+                    startPoint: CGPoint(x: 50, y: surfaceY),
+                    endPoint: CGPoint(x: 50, y: 100)
+                ))
+                context.stroke(
+                    surfacePath,
+                    with: .color(.white.opacity(0.45)),
+                    lineWidth: 1.6
+                )
+            }
+        }
+        .frame(width: size, height: size)
+        .overlay {
+            Canvas { context, canvasSize in
+                let scale = canvasSize.width / 100
+                context.scaleBy(x: scale, y: scale)
+                context.stroke(Self.wall, with: .color(wallColor), lineWidth: 9)
+            }
+        }
+        .shadow(color: Self.liquidTop.opacity(clamped > 0 ? 0.55 : 0), radius: size * 0.16)
+        .accessibilityHidden(true)
+    }
+
+    private var wallColor: Color {
+        colorScheme == .dark ? Color(red: 0.95, green: 0.92, blue: 0.87) : Color(white: 0.14)
+    }
+
+    private static let liquidTop = Color(red: 0.85, green: 0.27, blue: 0.37)
+    private static let liquidBottom = Color(red: 0.55, green: 0.10, blue: 0.20)
+
+    /// Wave crest amplitude, in mark units.
+    private static let amplitude: CGFloat = 1.8
+
+    private var surfacePath: Path {
+        var path = Path()
+        path.move(to: CGPoint(x: 0, y: surfaceY + Self.amplitude))
+        path.addCurve(
+            to: CGPoint(x: 34, y: surfaceY),
+            control1: CGPoint(x: 12, y: surfaceY - Self.amplitude),
+            control2: CGPoint(x: 22, y: surfaceY + Self.amplitude)
+        )
+        path.addCurve(
+            to: CGPoint(x: 68, y: surfaceY),
+            control1: CGPoint(x: 46, y: surfaceY - Self.amplitude),
+            control2: CGPoint(x: 56, y: surfaceY - Self.amplitude)
+        )
+        path.addCurve(
+            to: CGPoint(x: 100, y: surfaceY - Self.amplitude),
+            control1: CGPoint(x: 80, y: surfaceY + Self.amplitude),
+            control2: CGPoint(x: 90, y: surfaceY + Self.amplitude)
+        )
+        return path
+    }
+
+    private var liquidPath: Path {
+        var path = surfacePath
+        path.addLine(to: CGPoint(x: 100, y: 100))
+        path.addLine(to: CGPoint(x: 0, y: 100))
+        path.closeSubpath()
+        return path
+    }
+
+    private static let cavity: Path = {
+        var path = Path()
+        path.move(to: CGPoint(x: 16.5, y: 10))
+        path.addLine(to: CGPoint(x: 16.5, y: 58))
+        path.addArc(
+            center: CGPoint(x: 50, y: 58),
+            radius: 33.5,
+            startAngle: .degrees(180),
+            endAngle: .degrees(0),
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: 83.5, y: 10))
+        path.closeSubpath()
+        return path
+    }()
+
+    private static let wall: Path = {
+        var path = Path()
+        path.move(to: CGPoint(x: 12, y: 6))
+        path.addLine(to: CGPoint(x: 12, y: 58))
+        path.addArc(
+            center: CGPoint(x: 50, y: 58),
+            radius: 38,
+            startAngle: .degrees(180),
+            endAngle: .degrees(0),
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: 88, y: 6))
+        return path
+    }()
+}
+
+// MARK: - Provider marks
+
+/// Simplified stand-in marks for each provider, drawn on a 24x24 grid.
+/// They are approximations, not the companies' official logos.
+struct ProviderMark: View {
+    let provider: String
+    var size: CGFloat = 16
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Canvas { context, canvasSize in
+            let scale = canvasSize.width / 24
+            context.scaleBy(x: scale, y: scale)
+            let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+            context.stroke(path, with: .color(tint), style: style)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+
+    private var tint: Color {
+        switch provider {
+        case "claude": Color(red: 0.85, green: 0.47, blue: 0.34)
+        default: colorScheme == .dark ? Color(white: 0.96) : Color(white: 0.16)
+        }
+    }
+
+    private var lineWidth: CGFloat {
+        switch provider {
+        case "claude": 2.6
+        case "grok": 2.4
+        default: 1.8
+        }
+    }
+
+    private var path: Path {
+        switch provider {
+        case "chatgpt": Self.knot
+        case "claude": Self.sunburst
+        case "cursor": Self.cube
+        case "grok": Self.cross
+        default: Self.dot
+        }
+    }
+
+    private static func hexagon(radius: CGFloat, center: CGPoint = CGPoint(x: 12, y: 12)) -> Path {
+        var path = Path()
+        for step in 0..<6 {
+            let angle = Double(step) / 6 * 2 * .pi - .pi / 2
+            let point = CGPoint(
+                x: center.x + radius * CGFloat(cos(angle)),
+                y: center.y + radius * CGFloat(sin(angle))
+            )
+            if step == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    private static let knot: Path = {
+        var path = hexagon(radius: 8.8)
+        path.addPath(hexagon(radius: 3.8))
+        for step in 0..<6 {
+            let angle = Double(step) / 6 * 2 * .pi - .pi / 2
+            let inner = CGPoint(x: 12 + 3.8 * CGFloat(cos(angle)), y: 12 + 3.8 * CGFloat(sin(angle)))
+            let outer = CGPoint(x: 12 + 8.8 * CGFloat(cos(angle)), y: 12 + 8.8 * CGFloat(sin(angle)))
+            path.move(to: inner)
+            path.addLine(to: outer)
+        }
+        return path
+    }()
+
+    private static let sunburst: Path = {
+        var path = Path()
+        for step in 0..<8 {
+            let angle = Double(step) / 8 * 2 * .pi
+            let inner = CGPoint(x: 12 + 4.2 * CGFloat(cos(angle)), y: 12 + 4.2 * CGFloat(sin(angle)))
+            let outer = CGPoint(x: 12 + 8.2 * CGFloat(cos(angle)), y: 12 + 8.2 * CGFloat(sin(angle)))
+            path.move(to: inner)
+            path.addLine(to: outer)
+        }
+        return path
+    }()
+
+    private static let cube: Path = {
+        var path = Path()
+        path.move(to: CGPoint(x: 12, y: 2.8))
+        path.addLine(to: CGPoint(x: 20, y: 7.4))
+        path.addLine(to: CGPoint(x: 20, y: 16.6))
+        path.addLine(to: CGPoint(x: 12, y: 21.2))
+        path.addLine(to: CGPoint(x: 4, y: 16.6))
+        path.addLine(to: CGPoint(x: 4, y: 7.4))
+        path.closeSubpath()
+        path.move(to: CGPoint(x: 4, y: 7.4))
+        path.addLine(to: CGPoint(x: 12, y: 12))
+        path.addLine(to: CGPoint(x: 20, y: 7.4))
+        path.move(to: CGPoint(x: 12, y: 12))
+        path.addLine(to: CGPoint(x: 12, y: 21.2))
+        return path
+    }()
+
+    private static let cross: Path = {
+        var path = Path()
+        path.move(to: CGPoint(x: 5, y: 4))
+        path.addLine(to: CGPoint(x: 19, y: 20))
+        path.move(to: CGPoint(x: 19, y: 4))
+        path.addLine(to: CGPoint(x: 13.5, y: 10.3))
+        path.move(to: CGPoint(x: 5, y: 20))
+        path.addLine(to: CGPoint(x: 10.5, y: 13.7))
+        return path
+    }()
+
+    private static let dot: Path = {
+        Path(ellipseIn: CGRect(x: 8, y: 8, width: 8, height: 8))
+    }()
+}
+
+/// Provider mark inside a rounded tile, as used beside every account name.
+struct ProviderBadge: View {
+    let provider: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ProviderMark(provider: provider)
+            .frame(width: 26, height: 26)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.white.opacity(0.65))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.08),
+                        lineWidth: 1
+                    )
+            }
+    }
+}
+
+// MARK: - Hero
+
+/// The single number the menu bar liquid is tracking, plus the account it came
+/// from and the runner-up, so the popover and the mark agree at a glance.
+struct PopoverHero: View {
+    let model: HeroModel
+    let isRefreshing: Bool
+    let refresh: () -> Void
+    let openSettings: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            LiquidVessel(ratio: model.ratio, size: 64)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.caption)
+                    .font(.system(size: 11, weight: .semibold))
+                    .kerning(0.6)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(percentageText(model.ratio * 100))
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .kerning(-1)
+                        .foregroundStyle(tierColor)
+                        .shadow(color: tierColor.opacity(0.55), radius: 12)
+                        .contentTransition(.numericText())
+                    Text(model.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if let detail = model.detail {
+                    Text(detail)
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 8) {
+                CircleIconButton(
+                    systemName: "arrow.clockwise",
+                    label: "Refresh",
+                    spinning: isRefreshing,
+                    action: refresh
+                )
+                CircleIconButton(systemName: "gearshape", label: "Settings", action: openSettings)
+            }
+        }
+        .padding(14)
+        .glassPanel(cornerRadius: 22, prominent: true)
+        .animation(.snappy(duration: 0.35), value: model.ratio)
+    }
+
+    private var tierColor: Color {
+        Color(nsColor: progressColor(for: RemainingTier(ratio: model.ratio)))
+    }
+}
+
+private struct CircleIconButton: View {
+    let systemName: String
+    let label: String
+    var spinning = false
+    let action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .background {
+                    Circle().fill(
+                        colorScheme == .dark
+                            ? Color.white.opacity(isHovering ? 0.16 : 0.08)
+                            : Color.white.opacity(isHovering ? 0.90 : 0.65)
+                    )
+                }
+                .overlay {
+                    Circle().strokeBorder(
+                        colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.07),
+                        lineWidth: 1
+                    )
+                }
+                .rotationEffect(.degrees(spinning ? 360 : 0))
+                .animation(
+                    spinning
+                        ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                        : .default,
+                    value: spinning
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .onHover { isHovering = $0 }
+        .help(label)
+        .accessibilityLabel(label)
+    }
+}
+
+/// What the hero shows: the level the menu bar tracks, where it came from, and
+/// the runner-up account when there is one.
+struct HeroModel: Equatable {
+    let ratio: Double
+    let title: String
+    let caption: String
+    let detail: String?
+}
+
+/// Build the hero from the same levels that drive the menu bar liquid, so the
+/// two never disagree. Returns `nil` when no account has a usable level.
+@MainActor
+func heroModel(
+    accounts: [Account],
+    snapshots: [SnapshotPayload],
+    pinnedMetricID: String?,
+    now: Date = Date()
+) -> HeroModel? {
+    let levels = menuBarLiquidLevels(
+        accounts: accounts,
+        snapshots: snapshots,
+        pinnedMetricID: pinnedMetricID
+    )
+    guard let floor = MenuBarLiquidAnimation.floorLevel(in: levels) else { return nil }
+    let isPinned = pinnedMetricID != nil && levels.count == 1
+    let caption = isPinned ? "Tracking" : "Lowest remaining"
+
+    var parts: [String] = []
+    if let reset = soonestReset(accountID: floor.accountID, snapshots: snapshots, now: now) {
+        parts.append("resets \(reset)")
+    }
+    let runnerUp = levels
+        .filter { $0.accountID != floor.accountID }
+        .min { $0.remainingRatio < $1.remainingRatio }
+    if let runnerUp {
+        parts.append("next \(runnerUp.displayName) \(percentageText(runnerUp.remainingRatio * 100))")
+    }
+
+    return HeroModel(
+        ratio: floor.remainingRatio,
+        title: floor.displayName,
+        caption: caption,
+        detail: parts.isEmpty ? nil : parts.joined(separator: " · ")
+    )
+}
+
+/// Soonest future reset among an account's Overview rows that carry a ratio.
+private func soonestReset(
+    accountID: String,
+    snapshots: [SnapshotPayload],
+    now: Date
+) -> String? {
+    guard let usage = snapshots.first(where: { $0.accountId == accountID })?.usage.data else {
+        return nil
+    }
+    let resets = overviewItems(for: usage)
+        .filter { $0.row.remainingRatio != nil }
+        .compactMap(\.row.resetsAt)
+        .filter { $0 > now }
+    guard let soonest = resets.min() else { return nil }
+    return relativeTimeText(soonest, now: now)
+}
