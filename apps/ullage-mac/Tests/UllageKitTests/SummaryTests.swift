@@ -192,28 +192,30 @@ private func date(_ value: String) throws -> Date {
 }
 
 @Test func extraProgressRowsJoinOverviewOnlyWhenShown() throws {
-    let chatgpt = try usage("chatgpt")
-    let catalog = catalogProgressIDs(for: chatgpt, accountID: "chatgpt")
+    let snapshot = try fixture("chatgpt")
+    let chatgpt = try #require(snapshot.usage.data)
+    let catalog = catalogProgressIDs(for: chatgpt, accountID: snapshot.accountId)
     let extra = try #require(identifiedSummaryRows(for: chatgpt).first { row in
-        row.row.remainingRatio != nil && !catalog.contains(row.persistenceID(accountID: "chatgpt"))
+        row.row.remainingRatio != nil && !catalog.contains(row.persistenceID(accountID: snapshot.accountId))
     })
     #expect(extra.row.metric == "requests")
     #expect(
-        visibleOverviewItems(for: chatgpt, accountID: "chatgpt", hiddenIDs: []).map(\.row.metric)
+        visibleOverviewItems(for: chatgpt, accountID: snapshot.accountId, hiddenIDs: []).map(\.row.metric)
             .contains("requests") == false
     )
-    let shown = extra.persistenceID(accountID: "chatgpt")
+    let shown = extra.persistenceID(accountID: snapshot.accountId)
     #expect(
         visibleOverviewItems(
             for: chatgpt,
-            accountID: "chatgpt",
+            accountID: snapshot.accountId,
             hiddenIDs: [],
             shownIDs: [shown]
         ).map(\.row.metric).contains("requests")
     )
+    let account = Account(id: snapshot.accountId, provider: "chatgpt", label: nil, enabled: true)
     #expect(menuBarMetricOptions(
-        accounts: [Account(id: "chatgpt", provider: "chatgpt", label: nil, enabled: true)],
-        snapshots: [try fixture("chatgpt")],
+        accounts: [account],
+        snapshots: [snapshot],
         shownOverviewItemIDs: [shown]
     ).contains(where: { $0.title.contains("requests") }))
 }
