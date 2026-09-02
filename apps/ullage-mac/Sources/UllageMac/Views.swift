@@ -352,6 +352,12 @@ private struct TabBar: View {
                             .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                             .lineLimit(1)
                             .fixedSize()
+                            // A font weight is not something SwiftUI can
+                            // interpolate, so inside the pill's animation it
+                            // cross-fades the two renderings of the label and
+                            // the text reads as flickering while it redraws.
+                            // The weight changes at once; only the pill moves.
+                            .transaction { $0.animation = nil }
                     }
             }
             .padding(.horizontal, 12)
