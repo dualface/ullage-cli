@@ -482,6 +482,53 @@ final class UllageMacTests: XCTestCase {
         XCTAssertTrue(AppSettings(defaults: defaults).animatesMenuBarLiquid)
     }
 
+    func testBackdropDriftStaysBoundedAndCloses() {
+        // The loop closes: the last frame lands where the first one starts.
+        for turns in [1.0, 2.0, 3.0] {
+            let start = backdropDrift(progress: 0, turns: turns, seed: 0.4, reach: 14)
+            let end = backdropDrift(progress: 1, turns: turns, seed: 0.4, reach: 14)
+            XCTAssertEqual(start.width, end.width, accuracy: 1e-9)
+            XCTAssertEqual(start.height, end.height, accuracy: 1e-9)
+        }
+
+        // No shape ever leaves its reach, so the anchored composition holds.
+        for step in 0...200 {
+            let drift = backdropDrift(
+                progress: Double(step) / 200,
+                turns: 2,
+                seed: 1.7,
+                reach: 10
+            )
+            XCTAssertLessThanOrEqual(abs(drift.width), 10 + 1e-9)
+            XCTAssertLessThanOrEqual(abs(drift.height), 6 + 1e-9)
+        }
+
+        // Seeds put the shapes out of step rather than sliding them together.
+        let first = backdropDrift(progress: 0.25, turns: 1, seed: 0, reach: 14)
+        let second = backdropDrift(progress: 0.25, turns: 1, seed: 3.4, reach: 14)
+        XCTAssertGreaterThan(abs(first.width - second.width), 1)
+
+        // The clock folds into the loop, and folds the same way either side of
+        // the reference date.
+        let reference = Date(timeIntervalSinceReferenceDate: 0)
+        XCTAssertEqual(backdropProgress(at: reference, loop: 60), 0, accuracy: 1e-9)
+        XCTAssertEqual(
+            backdropProgress(at: reference.addingTimeInterval(75), loop: 60),
+            0.25,
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(
+            backdropProgress(at: reference.addingTimeInterval(-15), loop: 60),
+            0.75,
+            accuracy: 1e-9
+        )
+        for offset in stride(from: -300.0, through: 300.0, by: 7.5) {
+            let progress = backdropProgress(at: reference.addingTimeInterval(offset), loop: 60)
+            XCTAssertGreaterThanOrEqual(progress, 0)
+            XCTAssertLessThan(progress, 1)
+        }
+    }
+
     @MainActor
     func testLiquidGlassSettingDefaultsOnRoundTripsAndGatesTheGlass() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"

@@ -27,18 +27,51 @@ extension EnvironmentValues {
     }
 }
 
-/// Backdrop behind the `NSPopover` on macOS 14 and 15, where there is no
-/// Liquid Glass: a solid base carrying two blurred discs and a diagonal
-/// streak, which the frosted panels pick up as tone and shape. macOS 26 draws
-/// no backdrop at all; the popover surface there is glass over whatever the
-/// panel covers (see `PopoverSurface`).
+/// Backdrop behind the `NSPopover` without Liquid Glass: a solid base carrying
+/// two blurred discs and a diagonal streak, which the frosted panels pick up
+/// as tone and shape. The glass presentation draws no backdrop at all; its
+/// surface is glass over whatever the panel covers (see `PopoverSurface`).
 struct AtmosphereBackground: View {
+    /// True while the popover is on screen and the app may move things. The
+    /// shapes drift under the same gate as the menu bar liquid, and hold where
+    /// they are rather than snapping home when it closes.
+    var animates = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        StructuredBackdrop(isDark: colorScheme == .dark)
-            .ignoresSafeArea()
+        TimelineView(
+            .animation(minimumInterval: MenuBarLiquidAnimation.tickInterval(), paused: !animates)
+        ) { context in
+            StructuredBackdrop(
+                isDark: colorScheme == .dark,
+                progress: backdropProgress(at: context.date)
+            )
+        }
+        .ignoresSafeArea()
     }
+}
+
+/// Position in the backdrop's loop, in `0..<1`. The whole pattern repeats every
+/// `backdropLoopSeconds`, so no shape jumps when the clock comes round.
+func backdropProgress(at date: Date, loop: Double = backdropLoopSeconds) -> Double {
+    guard loop > 0 else { return 0 }
+    let seconds = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: loop)
+    return (seconds < 0 ? seconds + loop : seconds) / loop
+}
+
+/// One turn of the slowest shape. Long enough that the backdrop reads as
+/// weather rather than as something sliding across the window.
+let backdropLoopSeconds: Double = 60
+
+/// Where one backdrop shape sits at this point in the loop, as an offset from
+/// where it rests. `turns` is how many times the shape goes round in one loop —
+/// a whole number, so the pattern closes on itself — and `seed` puts the shapes
+/// out of step, so they drift as weather instead of sliding as one block. The
+/// path is a flattened ellipse: the popover is taller than it is wide, and
+/// vertical travel is the more noticeable of the two.
+func backdropDrift(progress: Double, turns: Double, seed: Double, reach: CGFloat) -> CGSize {
+    let angle = progress * 2 * .pi * turns + seed
+    return CGSize(width: reach * CGFloat(sin(angle)), height: reach * 0.6 * CGFloat(cos(angle)))
 }
 
 /// Two discs and a streak on a solid base. The shapes are anchored to the top
@@ -46,40 +79,52 @@ struct AtmosphereBackground: View {
 /// has the warm disc and the streak behind it and the last card always has the
 /// cool disc, whatever the popover's height. The blur keeps the edges from
 /// reading as flat cut-outs while leaving enough contrast to show through the
-/// frosted panels.
+/// frosted panels. Each one drifts a few points around that anchor, which the
+/// blur turns into a slow change of tone rather than a visible move.
 private struct StructuredBackdrop: View {
     let isDark: Bool
+    let progress: Double
 
     var body: some View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let height = proxy.size.height
+            let warmDrift = drift(turns: 1, seed: 0, reach: 14)
+            let roseDrift = drift(turns: 2, seed: 1.7, reach: 10)
+            let coolDrift = drift(turns: 1, seed: 3.4, reach: 16)
+            let streakDrift = drift(turns: 3, seed: 0.9, reach: 8)
             ZStack {
                 base
                 Circle()
                     .fill(warm)
                     .frame(width: 340, height: 340)
-                    .position(x: width * 0.22, y: 40)
+                    .position(x: width * 0.22 + warmDrift.width, y: 40 + warmDrift.height)
                     .blur(radius: 14)
                 Circle()
                     .fill(rose)
                     .frame(width: 220, height: 220)
-                    .position(x: width * 0.96, y: height * 0.48)
+                    .position(x: width * 0.96 + roseDrift.width, y: height * 0.48 + roseDrift.height)
                     .blur(radius: 18)
                 Circle()
                     .fill(cool)
                     .frame(width: 300, height: 300)
-                    .position(x: width * 0.30, y: height - 30)
+                    .position(x: width * 0.30 + coolDrift.width, y: height - 30 + coolDrift.height)
                     .blur(radius: 16)
                 Capsule()
                     .fill(streak)
                     .frame(width: width * 1.3, height: 26)
-                    .rotationEffect(.degrees(-24))
-                    .position(x: width * 0.55, y: 132)
+                    // The streak leans with its drift, a couple of degrees, so
+                    // it does not read as a bar being pushed around.
+                    .rotationEffect(.degrees(-24 + Double(streakDrift.width) * 0.25))
+                    .position(x: width * 0.55 + streakDrift.width, y: 132 + streakDrift.height)
                     .blur(radius: 5)
             }
             .clipped()
         }
+    }
+
+    private func drift(turns: Double, seed: Double, reach: CGFloat) -> CGSize {
+        backdropDrift(progress: progress, turns: turns, seed: seed, reach: reach)
     }
 
     private var base: Color {
@@ -119,6 +164,9 @@ struct PopoverSurface: ViewModifier {
     /// centre of the panel. Unused without glass, where `NSPopover` draws its
     /// own arrow outside the content.
     var pointerOffset: CGFloat = 0
+    /// Whether the flat presentation's backdrop drifts. Unused with glass,
+    /// which has no backdrop of its own to move.
+    var animatesBackdrop = false
     @Environment(\.usesLiquidGlass) private var usesLiquidGlass
 
     func body(content: Content) -> some View {
@@ -129,7 +177,7 @@ struct PopoverSurface: ViewModifier {
                 .clipShape(shape)
                 .glassEffect(.clear, in: shape)
         } else {
-            content.background { AtmosphereBackground() }
+            content.background { AtmosphereBackground(animates: animatesBackdrop) }
         }
     }
 }

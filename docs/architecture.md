@@ -104,7 +104,13 @@ the item's own toggle), Escape closes it, and so does another application activa
 26 the same `RootView` goes into an `NSPopover` and `PopoverSurface` paints `AtmosphereBackground`
 instead: a solid base with two blurred discs and a diagonal streak, anchored to the top and bottom
 edges so the header and the last card always have a shape behind them. That is also what macOS 26
-draws with the switch off. `PopoverChrome.swift` holds
+draws with the switch off. Each shape drifts around its anchor on a flattened ellipse, a few points
+across, with a whole number of turns per one-minute loop so the pattern closes on itself and no
+shape jumps when the clock comes round; different seeds keep them out of step, so the backdrop
+reads as weather rather than as one block sliding. The drift runs at the menu bar's frame rate,
+only while the popover is on screen, and behind the same gate as the menu bar liquid — the
+"Animate liquid" setting, Reduce Motion, and AC power — holding where it is rather than snapping
+home when it stops. `PopoverChrome.swift` holds
 those surfaces plus the `glassPanel` modifier, a layered material with an inset highlight used by
 the header, the tab row and the cards on every macOS version (glass nested in the glass slab would
 only re-sample the already blurred slab); the selected tab pill, the header's circular buttons and

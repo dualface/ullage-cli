@@ -59,7 +59,12 @@ struct RootView: View {
             .measuredHeight(ChromeHeightPreferenceKey.self)
         }
         .frame(width: 360)
-        .modifier(PopoverSurface(pointerOffset: presentation.pointerOffset))
+        .modifier(PopoverSurface(
+            pointerOffset: presentation.pointerOffset,
+            // Read here, outside the timeline, so the power source and Reduce
+            // Motion are queried when the view's inputs change, not per frame.
+            animatesBackdrop: presentation.isShown && liquidMotionIsAllowed(settings: settings)
+        ))
         // Outermost, so the surface modifier above and everything inside read
         // the same answer.
         .environment(\.usesLiquidGlass, liquidGlassIsEnabled(settings: settings))
