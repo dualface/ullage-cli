@@ -6,18 +6,18 @@ enum DumpCommand {
     static func run(mode: AppMode = .current) async -> Int32 {
         do {
             let source: any UsageDataSource
-            let hiddenOverviewItemIDs: Set<String>
+            let visibility: DumpOverviewVisibility
             switch mode {
             case .mock:
                 source = MockDataSource()
-                hiddenOverviewItemIDs = dumpHiddenOverviewItemIDs(mode: .mock, settings: nil)
+                visibility = dumpOverviewVisibility(mode: .mock, settings: nil)
             case .daemon:
                 let settings = AppSettings()
                 guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
                     throw DataSourceSetupError.deviceNotPaired
                 }
                 source = DaemonClient(baseURL: settings.serverURL, token: token)
-                hiddenOverviewItemIDs = dumpHiddenOverviewItemIDs(mode: .daemon, settings: settings)
+                visibility = dumpOverviewVisibility(mode: .daemon, settings: settings)
             }
 
             async let accounts = source.accounts()
@@ -25,7 +25,8 @@ enum DumpCommand {
             let output = dumpOutput(
                 accounts: try await accounts,
                 snapshots: try await snapshots,
-                hiddenOverviewItemIDs: hiddenOverviewItemIDs
+                hiddenOverviewItemIDs: visibility.hidden,
+                shownOverviewItemIDs: visibility.shown
             )
             print(output)
             return 0
@@ -44,20 +45,29 @@ enum DumpCommand {
     }
 }
 
+struct DumpOverviewVisibility: Equatable {
+    var hidden: Set<String>
+    var shown: Set<String>
+}
+
 @MainActor
-func dumpHiddenOverviewItemIDs(mode: AppMode, settings: AppSettings?) -> Set<String> {
+func dumpOverviewVisibility(mode: AppMode, settings: AppSettings?) -> DumpOverviewVisibility {
     switch mode {
     case .mock:
-        return []
+        return DumpOverviewVisibility(hidden: [], shown: [])
     case .daemon:
-        return settings?.hiddenOverviewItemIDs ?? []
+        return DumpOverviewVisibility(
+            hidden: settings?.hiddenOverviewItemIDs ?? [],
+            shown: settings?.shownOverviewItemIDs ?? []
+        )
     }
 }
 
 func dumpOutput(
     accounts: [Account],
     snapshots: [SnapshotPayload],
-    hiddenOverviewItemIDs: Set<String> = []
+    hiddenOverviewItemIDs: Set<String> = [],
+    shownOverviewItemIDs: Set<String> = []
 ) -> String {
     let accounts = sortedAccounts(accounts)
     let snapshotsByID = snapshots.reduce(into: [String: SnapshotPayload]()) { result, snapshot in
@@ -70,7 +80,8 @@ func dumpOutput(
         let items = visibleOverviewItems(
             for: usage,
             accountID: account.id,
-            hiddenIDs: hiddenOverviewItemIDs
+            hiddenIDs: hiddenOverviewItemIDs,
+            shownIDs: shownOverviewItemIDs
         )
         guard !items.isEmpty else { continue }
         lines.append("[\(providerDisplayName(account.provider))] \(dumpBadges(account, snapshot, usage))")

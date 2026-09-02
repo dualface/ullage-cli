@@ -284,6 +284,13 @@ final class UllageMacTests: XCTestCase {
         )
         settings.setOverviewItemVisible("acct|weekly|usage|0", visible: true)
         XCTAssertEqual(AppSettings(defaults: defaults).hiddenOverviewItemIDs, [])
+        XCTAssertEqual(AppSettings(defaults: defaults).shownOverviewItemIDs, [])
+
+        settings.setOverviewItemVisible("acct|5h|requests|0", visible: true, catalogDefault: false)
+        XCTAssertEqual(AppSettings(defaults: defaults).shownOverviewItemIDs, ["acct|5h|requests|0"])
+        settings.setOverviewItemVisible("acct|5h|requests|0", visible: false, catalogDefault: false)
+        XCTAssertEqual(AppSettings(defaults: defaults).shownOverviewItemIDs, [])
+        XCTAssertEqual(AppSettings(defaults: defaults).hiddenOverviewItemIDs, [])
     }
 
     @MainActor
@@ -293,11 +300,12 @@ final class UllageMacTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let settings = AppSettings(defaults: defaults)
         settings.setOverviewItemVisible("acct|weekly|usage|0", visible: false)
+        settings.setOverviewItemVisible("acct|5h|requests|0", visible: true, catalogDefault: false)
 
-        XCTAssertEqual(dumpHiddenOverviewItemIDs(mode: .mock, settings: settings), [])
+        XCTAssertEqual(dumpOverviewVisibility(mode: .mock, settings: settings), DumpOverviewVisibility(hidden: [], shown: []))
         XCTAssertEqual(
-            dumpHiddenOverviewItemIDs(mode: .daemon, settings: settings),
-            ["acct|weekly|usage|0"]
+            dumpOverviewVisibility(mode: .daemon, settings: settings),
+            DumpOverviewVisibility(hidden: ["acct|weekly|usage|0"], shown: ["acct|5h|requests|0"])
         )
     }
 

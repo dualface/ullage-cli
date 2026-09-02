@@ -300,7 +300,8 @@ private struct SettingsView: View {
         var options = menuBarMetricOptions(
             accounts: store.accounts,
             snapshots: store.snapshots,
-            hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs
+            hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs,
+            shownOverviewItemIDs: settings.shownOverviewItemIDs
         )
         if let pinned = settings.menuBarMetricID, !options.contains(where: { $0.id == pinned }) {
             options.append(MenuBarMetricOption(
@@ -318,7 +319,8 @@ private struct SettingsView: View {
            !menuBarMetricOptions(
                 accounts: store.accounts,
                 snapshots: store.snapshots,
-                hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs
+                hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs,
+                shownOverviewItemIDs: settings.shownOverviewItemIDs
            )
                .contains(where: { $0.id == pinned }) {
             return "The pinned row is missing from the latest refresh; the liquid falls back to the lowest remaining until it returns."

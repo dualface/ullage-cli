@@ -72,8 +72,23 @@ public struct OverviewItem: Equatable, Identifiable, Sendable {
 
     /// Stable across refreshes: `accountID|windowKey|measurement|occurrence`.
     public func persistenceID(accountID: String) -> String {
-        "\(accountID)|\(id.windowKey)|\(id.measurementName)|\(id.occurrence)"
+        persistenceID(accountID: accountID, id: id)
     }
+}
+
+/// One summarized account-tab row with a stable identity.
+public struct IdentifiedSummaryRow: Equatable, Identifiable, Sendable {
+    public let id: OverviewItem.ID
+    public let row: SummaryRow
+    fileprivate let windowIndex: Int
+
+    public func persistenceID(accountID: String) -> String {
+        persistenceID(accountID: accountID, id: id)
+    }
+}
+
+private func persistenceID(accountID: String, id: OverviewItem.ID) -> String {
+    "\(accountID)|\(id.windowKey)|\(id.measurementName)|\(id.occurrence)"
 }
 
 public func badgeNames(
@@ -150,12 +165,78 @@ public func overviewItems(for usage: SubscriptionUsage) -> [OverviewItem] {
         }
 }
 
+public func identifiedSummaryRows(for usage: SubscriptionUsage) -> [IdentifiedSummaryRow] {
+    let windows = projectedWindows(for: usage)
+    var occurrences: [OverviewIdentityBase: Int] = [:]
+    return zip(usage.windows.indices, windows).flatMap { windowIndex, projected -> [IdentifiedSummaryRow] in
+        let window = usage.windows[windowIndex]
+        return projected.map { item in
+            let identity = OverviewIdentityBase(
+                windowKey: overviewIdentityKey(window.window),
+                measurementName: item.measurementName
+            )
+            let occurrence = occurrences[identity, default: 0]
+            occurrences[identity] = occurrence + 1
+            return IdentifiedSummaryRow(
+                id: OverviewItem.ID(
+                    windowKey: identity.windowKey,
+                    measurementName: identity.measurementName,
+                    occurrence: occurrence
+                ),
+                row: item.row,
+                windowIndex: windowIndex
+            )
+        }
+    }
+}
+
+public func catalogProgressIDs(for usage: SubscriptionUsage, accountID: String) -> Set<String> {
+    Set(overviewItems(for: usage).compactMap { item in
+        item.row.remainingRatio == nil ? nil : item.persistenceID(accountID: accountID)
+    })
+}
+
+public func overviewProgressIsVisible(
+    id: String,
+    catalogDefault: Bool,
+    hiddenIDs: Set<String>,
+    shownIDs: Set<String>
+) -> Bool {
+    if hiddenIDs.contains(id) { return false }
+    return catalogDefault || shownIDs.contains(id)
+}
+
 public func visibleOverviewItems(
     for usage: SubscriptionUsage,
     accountID: String,
-    hiddenIDs: Set<String>
+    hiddenIDs: Set<String>,
+    shownIDs: Set<String> = []
 ) -> [OverviewItem] {
-    overviewItems(for: usage).filter { !hiddenIDs.contains($0.persistenceID(accountID: accountID)) }
+    let catalog = overviewItems(for: usage)
+    let catalogIDs = Set(catalog.map { $0.persistenceID(accountID: accountID) })
+    var items = catalog.filter { item in
+        let id = item.persistenceID(accountID: accountID)
+        guard item.row.remainingRatio != nil else { return true }
+        return overviewProgressIsVisible(
+            id: id,
+            catalogDefault: true,
+            hiddenIDs: hiddenIDs,
+            shownIDs: shownIDs
+        )
+    }
+    for row in identifiedSummaryRows(for: usage) where row.row.remainingRatio != nil {
+        let id = row.persistenceID(accountID: accountID)
+        if catalogIDs.contains(id) { continue }
+        if overviewProgressIsVisible(
+            id: id,
+            catalogDefault: false,
+            hiddenIDs: hiddenIDs,
+            shownIDs: shownIDs
+        ) {
+            items.append(OverviewItem(id: row.id, row: row.row, windowIndex: row.windowIndex))
+        }
+    }
+    return items
 }
 
 private struct OverviewIdentityBase: Hashable {
@@ -372,7 +453,8 @@ public struct MenuBarAccountLevel: Equatable, Sendable {
 public func menuBarAccountLevels(
     accounts: [Account],
     snapshots: [SnapshotPayload],
-    hiddenOverviewItemIDs: Set<String> = []
+    hiddenOverviewItemIDs: Set<String> = [],
+    shownOverviewItemIDs: Set<String> = []
 ) -> [MenuBarAccountLevel] {
     let titles = tabTitles(for: accounts)
     let snapshotsByID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.accountId, $0) })
@@ -382,7 +464,8 @@ public func menuBarAccountLevels(
               let ratio = menuBarFillRatio(
                 for: usage,
                 accountID: account.id,
-                hiddenIDs: hiddenOverviewItemIDs
+                hiddenIDs: hiddenOverviewItemIDs,
+                shownIDs: shownOverviewItemIDs
               ) else { return nil }
         return MenuBarAccountLevel(
             accountID: account.id,
@@ -414,7 +497,8 @@ public struct MenuBarMetricOption: Equatable, Identifiable, Sendable {
 public func menuBarMetricOptions(
     accounts: [Account],
     snapshots: [SnapshotPayload],
-    hiddenOverviewItemIDs: Set<String> = []
+    hiddenOverviewItemIDs: Set<String> = [],
+    shownOverviewItemIDs: Set<String> = []
 ) -> [MenuBarMetricOption] {
     let titles = tabTitles(for: accounts)
     let snapshotsByID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.accountId, $0) })
@@ -425,7 +509,8 @@ public func menuBarMetricOptions(
         return visibleOverviewItems(
             for: usage,
             accountID: account.id,
-            hiddenIDs: hiddenOverviewItemIDs
+            hiddenIDs: hiddenOverviewItemIDs,
+            shownIDs: shownOverviewItemIDs
         ).compactMap { item in
             guard !item.row.disabled, let ratio = item.row.remainingRatio else { return nil }
             let metric = item.row.metric == "usage" ? "" : " " + item.row.metric
@@ -447,13 +532,15 @@ public func menuBarLiquidLevels(
     accounts: [Account],
     snapshots: [SnapshotPayload],
     pinnedMetricID: String?,
-    hiddenOverviewItemIDs: Set<String> = []
+    hiddenOverviewItemIDs: Set<String> = [],
+    shownOverviewItemIDs: Set<String> = []
 ) -> [MenuBarAccountLevel] {
     if let pinnedMetricID,
        let option = menuBarMetricOptions(
             accounts: accounts,
             snapshots: snapshots,
-            hiddenOverviewItemIDs: hiddenOverviewItemIDs
+            hiddenOverviewItemIDs: hiddenOverviewItemIDs,
+            shownOverviewItemIDs: shownOverviewItemIDs
        ).first(where: { $0.id == pinnedMetricID }) {
         return [MenuBarAccountLevel(
             accountID: option.accountID,
@@ -464,19 +551,22 @@ public func menuBarLiquidLevels(
     return menuBarAccountLevels(
         accounts: accounts,
         snapshots: snapshots,
-        hiddenOverviewItemIDs: hiddenOverviewItemIDs
+        hiddenOverviewItemIDs: hiddenOverviewItemIDs,
+        shownOverviewItemIDs: shownOverviewItemIDs
     )
 }
 
 public func menuBarFillRatio(
     accounts: [Account],
     snapshots: [SnapshotPayload],
-    hiddenOverviewItemIDs: Set<String> = []
+    hiddenOverviewItemIDs: Set<String> = [],
+    shownOverviewItemIDs: Set<String> = []
 ) -> Double? {
     let levels = menuBarAccountLevels(
         accounts: accounts,
         snapshots: snapshots,
-        hiddenOverviewItemIDs: hiddenOverviewItemIDs
+        hiddenOverviewItemIDs: hiddenOverviewItemIDs,
+        shownOverviewItemIDs: shownOverviewItemIDs
     )
     guard !levels.isEmpty else { return nil }
     return levels.map(\.remainingRatio).min()
@@ -490,9 +580,15 @@ public func quantizedMenuBarFillRatio(_ ratio: Double) -> Double {
 private func menuBarFillRatio(
     for usage: SubscriptionUsage,
     accountID: String,
-    hiddenIDs: Set<String>
+    hiddenIDs: Set<String>,
+    shownIDs: Set<String>
 ) -> Double? {
-    let items = visibleOverviewItems(for: usage, accountID: accountID, hiddenIDs: hiddenIDs)
+    let items = visibleOverviewItems(
+        for: usage,
+        accountID: accountID,
+        hiddenIDs: hiddenIDs,
+        shownIDs: shownIDs
+    )
     guard !items.isEmpty else { return nil }
     if items.contains(where: { windowHitItsLimit(usage.windows[$0.windowIndex]) }) {
         return 0

@@ -58,6 +58,7 @@ final class StatusItemController: NSObject {
             _ = settings.animatesMenuBarLiquid
             _ = settings.menuBarMetricID
             _ = settings.hiddenOverviewItemIDs
+            _ = settings.shownOverviewItemIDs
         } onChange: { [weak self] in
             Task { @MainActor in
                 // Re-derive the levels: a new pin changes what the liquid
@@ -123,7 +124,8 @@ final class StatusItemController: NSObject {
                 accounts: accounts,
                 snapshots: snapshots,
                 pinnedMetricID: settings.menuBarMetricID,
-                hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs
+                hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs,
+                shownOverviewItemIDs: settings.shownOverviewItemIDs
             )
             presentation = levels.isEmpty ? .noData : .liquid(levels)
         } else if connectionState == .loading {

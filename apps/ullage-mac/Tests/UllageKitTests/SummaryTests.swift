@@ -191,6 +191,33 @@ private func date(_ value: String) throws -> Date {
     #expect(visibleOverviewItems(for: grok, accountID: "other", hiddenIDs: [hidden]).count == 2)
 }
 
+@Test func extraProgressRowsJoinOverviewOnlyWhenShown() throws {
+    let chatgpt = try usage("chatgpt")
+    let catalog = catalogProgressIDs(for: chatgpt, accountID: "chatgpt")
+    let extra = try #require(identifiedSummaryRows(for: chatgpt).first { row in
+        row.row.remainingRatio != nil && !catalog.contains(row.persistenceID(accountID: "chatgpt"))
+    })
+    #expect(extra.row.metric == "requests")
+    #expect(
+        visibleOverviewItems(for: chatgpt, accountID: "chatgpt", hiddenIDs: []).map(\.row.metric)
+            .contains("requests") == false
+    )
+    let shown = extra.persistenceID(accountID: "chatgpt")
+    #expect(
+        visibleOverviewItems(
+            for: chatgpt,
+            accountID: "chatgpt",
+            hiddenIDs: [],
+            shownIDs: [shown]
+        ).map(\.row.metric).contains("requests")
+    )
+    #expect(menuBarMetricOptions(
+        accounts: [Account(id: "chatgpt", provider: "chatgpt", label: nil, enabled: true)],
+        snapshots: [try fixture("chatgpt")],
+        shownOverviewItemIDs: [shown]
+    ).contains(where: { $0.title.contains("requests") }))
+}
+
 @Test func overviewSkipsMissingCatalogItems() throws {
     let data = Data(#"""
     {

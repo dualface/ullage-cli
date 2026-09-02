@@ -190,7 +190,8 @@ private struct OverviewView: View {
             let items = visibleOverviewItems(
                 for: usage,
                 accountID: account.id,
-                hiddenIDs: settings.hiddenOverviewItemIDs
+                hiddenIDs: settings.hiddenOverviewItemIDs,
+                shownIDs: settings.shownOverviewItemIDs
             )
             guard !items.isEmpty else { return nil }
             return OverviewCard(account: account, usage: usage, snapshot: snapshot, items: items)
@@ -251,26 +252,23 @@ private struct AccountView: View {
                     timestampLabel: "observed",
                     timestamp: usage.observedAt
                 )
-                let rows = summarize(usage).rows
-                let grouped = groupedRows(rows)
-                let overviewItemsByRow = assignedOverviewItems(
-                    grouped: grouped,
-                    catalog: overviewItems(for: usage)
-                )
-                ForEach(Array(grouped.enumerated()), id: \.element.0) { groupIndex, group in
+                let identified = identifiedSummaryRows(for: usage)
+                let catalogIDs = catalogProgressIDs(for: usage, accountID: accountID)
+                let grouped = groupedIdentifiedRows(identified)
+                ForEach(Array(grouped.enumerated()), id: \.element.0) { _, group in
                     let window = group.0
                     let windowRows = group.1
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
                             Text(window).font(.headline)
                             Spacer()
-                            Text(resetText(windowRows.first?.resetsAt)).font(.caption).foregroundStyle(.secondary)
+                            Text(resetText(windowRows.first?.row.resetsAt)).font(.caption).foregroundStyle(.secondary)
                         }
-                        ForEach(Array(windowRows.enumerated()), id: \.offset) { rowIndex, row in
+                        ForEach(Array(windowRows.enumerated()), id: \.offset) { _, item in
                             SummaryRowView(
-                                row: row,
+                                row: item.row,
                                 showWindow: false,
-                                overviewToggle: overviewToggle(for: overviewItemsByRow[groupIndex][rowIndex])
+                                overviewToggle: overviewToggle(for: item, catalogIDs: catalogIDs)
                             )
                         }
                     }
@@ -298,35 +296,33 @@ private struct AccountView: View {
         }
     }
 
-    private func groupedRows(_ rows: [SummaryRow]) -> [(String, [SummaryRow])] {
+    private func groupedIdentifiedRows(
+        _ rows: [IdentifiedSummaryRow]
+    ) -> [(String, [IdentifiedSummaryRow])] {
         var order: [String] = []
-        var groups: [String: [SummaryRow]] = [:]
+        var groups: [String: [IdentifiedSummaryRow]] = [:]
         for row in rows {
-            if groups[row.window] == nil { order.append(row.window) }
-            groups[row.window, default: []].append(row)
+            if groups[row.row.window] == nil { order.append(row.row.window) }
+            groups[row.row.window, default: []].append(row)
         }
         return order.map { ($0, groups[$0] ?? []) }
     }
 
-    private func assignedOverviewItems(
-        grouped: [(String, [SummaryRow])],
-        catalog: [OverviewItem]
-    ) -> [[OverviewItem?]] {
-        var remaining = catalog
-        return grouped.map { _, windowRows in
-            windowRows.map { row in
-                guard let index = remaining.firstIndex(where: { $0.row == row }) else { return nil }
-                return remaining.remove(at: index)
-            }
-        }
-    }
-
-    private func overviewToggle(for item: OverviewItem?) -> OverviewRowToggle? {
-        guard let item, item.row.remainingRatio != nil else { return nil }
+    private func overviewToggle(
+        for item: IdentifiedSummaryRow,
+        catalogIDs: Set<String>
+    ) -> OverviewRowToggle? {
+        guard item.row.remainingRatio != nil else { return nil }
         let id = item.persistenceID(accountID: accountID)
+        let catalogDefault = catalogIDs.contains(id)
         return OverviewRowToggle(
-            visible: !settings.hiddenOverviewItemIDs.contains(id),
-            setVisible: { settings.setOverviewItemVisible(id, visible: $0) }
+            visible: overviewProgressIsVisible(
+                id: id,
+                catalogDefault: catalogDefault,
+                hiddenIDs: settings.hiddenOverviewItemIDs,
+                shownIDs: settings.shownOverviewItemIDs
+            ),
+            setVisible: { settings.setOverviewItemVisible(id, visible: $0, catalogDefault: catalogDefault) }
         )
     }
 }

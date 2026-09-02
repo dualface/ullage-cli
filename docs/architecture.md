@@ -80,12 +80,13 @@ is off, the liquid holds still at the floor with a flat surface and the cycle is
 trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
 Overview uses a provider-specific catalog (ChatGPT 5h, weekly, and reset credits, Claude 5h and Fable,
-Cursor auto and api, Grok usage and GrokBuild). Each account tab can hide a catalog progress row from
-Overview (`AppSettings.hiddenOverviewItemIDs`); rows without a remaining bar
-cannot be toggled. Hidden rows are omitted from Overview, daemon dump,
-`menuBarMetricOptions`, and the default floor. Mock dump ignores those
-preferences. An empty Overview after hiding every row shows a hint to restore
-them from an account tab. Unknown providers keep every window in the shortest
+Cursor auto and api, Grok usage and GrokBuild). Each account tab can show or hide any progress row on
+Overview. Catalog rows default to visible (`AppSettings.hiddenOverviewItemIDs`
+hides them); other progress rows default to hidden (`shownOverviewItemIDs`
+adds them). Rows without a remaining bar cannot be toggled. Visible rows drive
+Overview, daemon dump, `menuBarMetricOptions`, and the default floor. Mock dump
+ignores those preferences. An empty Overview after hiding every row shows a
+hint to restore them from an account tab. Unknown providers keep every window in the shortest
 available time tier, and a reached limit in those retained windows takes precedence as 0% for that
 account, which makes the floor empty.
 The headless dump retains the per-account Overview projection used by account tabs,

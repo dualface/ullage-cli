@@ -14,6 +14,7 @@ final class AppSettings {
     private static let animatesMenuBarLiquidKey = "animatesMenuBarLiquid"
     private static let menuBarMetricIDKey = "menuBarMetricID"
     private static let hiddenOverviewItemIDsKey = "hiddenOverviewItemIDs"
+    private static let shownOverviewItemIDsKey = "shownOverviewItemIDs"
     private let defaults: UserDefaults
     private let saveDeviceToken: (String) throws -> Void
 
@@ -42,10 +43,17 @@ final class AppSettings {
         }
     }
 
-    /// Overview catalog item persistence IDs the user hid from Overview.
+    /// Catalog progress IDs the user hid from Overview.
     var hiddenOverviewItemIDs: Set<String> {
         didSet {
             defaults.set(Array(hiddenOverviewItemIDs).sorted(), forKey: Self.hiddenOverviewItemIDsKey)
+        }
+    }
+
+    /// Extra (non-catalog) progress IDs the user added to Overview.
+    var shownOverviewItemIDs: Set<String> {
+        didSet {
+            defaults.set(Array(shownOverviewItemIDs).sorted(), forKey: Self.shownOverviewItemIDsKey)
         }
     }
 
@@ -62,13 +70,24 @@ final class AppSettings {
         animatesMenuBarLiquid = defaults.object(forKey: Self.animatesMenuBarLiquidKey) as? Bool ?? true
         menuBarMetricID = defaults.string(forKey: Self.menuBarMetricIDKey).flatMap { $0.isEmpty ? nil : $0 }
         hiddenOverviewItemIDs = Set(defaults.stringArray(forKey: Self.hiddenOverviewItemIDsKey) ?? [])
+        shownOverviewItemIDs = Set(defaults.stringArray(forKey: Self.shownOverviewItemIDsKey) ?? [])
     }
 
-    func setOverviewItemVisible(_ id: String, visible: Bool) {
+    func setOverviewItemVisible(_ id: String, visible: Bool, catalogDefault: Bool = true) {
         if visible {
             hiddenOverviewItemIDs.remove(id)
+            if catalogDefault {
+                shownOverviewItemIDs.remove(id)
+            } else {
+                shownOverviewItemIDs.insert(id)
+            }
         } else {
-            hiddenOverviewItemIDs.insert(id)
+            shownOverviewItemIDs.remove(id)
+            if catalogDefault {
+                hiddenOverviewItemIDs.insert(id)
+            } else {
+                hiddenOverviewItemIDs.remove(id)
+            }
         }
     }
 

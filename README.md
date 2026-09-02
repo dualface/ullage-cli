@@ -59,11 +59,11 @@ app polls the daemon every 30 seconds from launch, whether or not the popover
 is open, so the mark shows live data without a click. The accessibility
 description reports the floor account and its percentage. Overview uses a provider-specific
 catalog: ChatGPT 5h and weekly windows plus reset credits, Claude 5h and Fable, Cursor
-auto and api, and Grok usage and GrokBuild. Each account tab can hide a catalog
-progress row from Overview with an eye control; rows without a remaining bar
-cannot be toggled. Hidden rows also drop out of the menu bar pin list and the
-default lowest-remaining floor. Hiding every visible row leaves an Overview
-hint pointing back to the account tabs. Unknown providers keep every window
+auto and api, and Grok usage and GrokBuild. Each account tab can show or hide any progress row on Overview with an eye
+control; rows without a remaining bar cannot be toggled. Catalog rows start
+visible, other progress rows start hidden. Hidden rows also drop out of the
+menu bar pin list and the default lowest-remaining floor. Hiding every visible
+row leaves an Overview hint pointing back to the account tabs. Unknown providers keep every window
 in the shortest available time tier. A reached limit in those retained windows
 takes precedence as 0% for that account, so the liquid empties completely at
 the bottom of each breath. After the first refresh, an exclamation mark
