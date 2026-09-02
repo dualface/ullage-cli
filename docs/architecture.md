@@ -85,7 +85,8 @@ a layered material plus inset highlight on macOS 14 and 15; the selected tab pil
 circular buttons and the probe button branch the same way), `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
 oxblood gradient), the simplified `ProviderMark` drawings, and the header. `heroModel` derives that
 header from `menuBarLiquidLevels` and `MenuBarLiquidAnimation.floorLevel`, the same call the status
-item makes, so the popover and the mark cannot disagree; it adds the floor account's soonest reset
+item makes, and takes the row-visibility sets as required arguments so it resolves a pinned row from
+the same list Settings offers, so the popover and the mark cannot disagree; it adds the floor account's soonest reset
 and the runner-up level. Both appearances are driven from `colorScheme` rather than fixed colors.
 Overview uses a provider-specific catalog (ChatGPT 5h, weekly, and reset credits, Claude 5h and Fable,
 Cursor auto and api, Grok usage and GrokBuild). Each account tab can show or hide any progress row on

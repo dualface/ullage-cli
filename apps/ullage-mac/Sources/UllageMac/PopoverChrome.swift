@@ -527,23 +527,50 @@ struct HeroModel: Equatable {
 /// Build the hero from the same levels that drive the menu bar liquid, so the
 /// two never disagree. Returns `nil` when no account has a usable level.
 @MainActor
+/// The row-visibility sets are required, not defaulted: the header resolves the
+/// pinned row through the same lists the menu bar and Settings use, and passing
+/// empty sets here would hide rows the user opted in and silently unpin them.
 func heroModel(
     accounts: [Account],
     snapshots: [SnapshotPayload],
     pinnedMetricID: String?,
+    hiddenOverviewItemIDs: Set<String>,
+    shownOverviewItemIDs: Set<String>,
     now: Date = Date()
 ) -> HeroModel? {
     let levels = menuBarLiquidLevels(
         accounts: accounts,
         snapshots: snapshots,
-        pinnedMetricID: pinnedMetricID
+        pinnedMetricID: pinnedMetricID,
+        hiddenOverviewItemIDs: hiddenOverviewItemIDs,
+        shownOverviewItemIDs: shownOverviewItemIDs
     )
     guard let floor = MenuBarLiquidAnimation.floorLevel(in: levels) else { return nil }
-    let isPinned = pinnedMetricID != nil && levels.count == 1
-    let caption = isPinned ? "Tracking" : "Lowest remaining"
+    let pinned: MenuBarMetricOption? = pinnedMetricID.flatMap { id in
+        menuBarMetricOptions(
+            accounts: accounts,
+            snapshots: snapshots,
+            hiddenOverviewItemIDs: hiddenOverviewItemIDs,
+            shownOverviewItemIDs: shownOverviewItemIDs
+        ).first { $0.id == id }
+    }
+    let caption = pinned == nil ? "Lowest remaining" : "Tracking"
 
     var parts: [String] = []
-    if let reset = soonestReset(accountID: floor.accountID, snapshots: snapshots, now: now) {
+    // A pinned row reports its own window; otherwise the floor account's
+    // soonest visible reset.
+    let reset: String? = if let pinned {
+        pinned.resetsAt.flatMap { $0 > now ? relativeTimeText($0, now: now) : nil }
+    } else {
+        soonestReset(
+            accountID: floor.accountID,
+            snapshots: snapshots,
+            hiddenOverviewItemIDs: hiddenOverviewItemIDs,
+            shownOverviewItemIDs: shownOverviewItemIDs,
+            now: now
+        )
+    }
+    if let reset {
         parts.append("resets \(reset)")
     }
     let runnerUp = levels
@@ -565,12 +592,19 @@ func heroModel(
 private func soonestReset(
     accountID: String,
     snapshots: [SnapshotPayload],
+    hiddenOverviewItemIDs: Set<String>,
+    shownOverviewItemIDs: Set<String>,
     now: Date
 ) -> String? {
     guard let usage = snapshots.first(where: { $0.accountId == accountID })?.usage.data else {
         return nil
     }
-    let resets = overviewItems(for: usage)
+    let resets = visibleOverviewItems(
+        for: usage,
+        accountID: accountID,
+        hiddenIDs: hiddenOverviewItemIDs,
+        shownIDs: shownOverviewItemIDs
+    )
         .filter { $0.row.remainingRatio != nil }
         .compactMap(\.row.resetsAt)
         .filter { $0 > now }

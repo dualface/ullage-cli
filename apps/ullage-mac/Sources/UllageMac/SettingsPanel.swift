@@ -308,7 +308,8 @@ private struct SettingsView: View {
                 id: pinned,
                 accountID: "",
                 title: "Pinned metric (currently unavailable)",
-                remainingRatio: 0
+                remainingRatio: 0,
+                resetsAt: nil
             ))
         }
         return options

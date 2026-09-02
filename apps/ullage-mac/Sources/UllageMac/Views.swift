@@ -78,7 +78,9 @@ struct RootView: View {
         return heroModel(
             accounts: store.accounts,
             snapshots: store.snapshots,
-            pinnedMetricID: settings.menuBarMetricID
+            pinnedMetricID: settings.menuBarMetricID,
+            hiddenOverviewItemIDs: settings.hiddenOverviewItemIDs,
+            shownOverviewItemIDs: settings.shownOverviewItemIDs
         )
     }
 

@@ -479,12 +479,21 @@ public struct MenuBarMetricOption: Equatable, Identifiable, Sendable {
     /// "Claude · 5h" or "Cursor · monthly auto"; the account part is the tab title.
     public let title: String
     public let remainingRatio: Double
+    /// When this row's own window resets, for callers that display the pin.
+    public let resetsAt: Date?
 
-    public init(id: String, accountID: String, title: String, remainingRatio: Double) {
+    public init(
+        id: String,
+        accountID: String,
+        title: String,
+        remainingRatio: Double,
+        resetsAt: Date? = nil
+    ) {
         self.id = id
         self.accountID = accountID
         self.title = title
         self.remainingRatio = remainingRatio
+        self.resetsAt = resetsAt
     }
 }
 
@@ -514,7 +523,8 @@ public func menuBarMetricOptions(
                 id: item.persistenceID(accountID: account.id),
                 accountID: account.id,
                 title: "\(accountTitle) · \(item.row.window)\(metric)",
-                remainingRatio: ratio
+                remainingRatio: ratio,
+                resetsAt: item.row.resetsAt
             )
         }
     }

@@ -305,7 +305,13 @@ final class UllageMacTests: XCTestCase {
         let levels = menuBarLiquidLevels(accounts: accounts, snapshots: snapshots, pinnedMetricID: nil)
         let floor = try XCTUnwrap(MenuBarLiquidAnimation.floorLevel(in: levels))
 
-        let hero = try XCTUnwrap(heroModel(accounts: accounts, snapshots: snapshots, pinnedMetricID: nil))
+        let hero = try XCTUnwrap(heroModel(
+            accounts: accounts,
+            snapshots: snapshots,
+            pinnedMetricID: nil,
+            hiddenOverviewItemIDs: [],
+            shownOverviewItemIDs: []
+        ))
         XCTAssertEqual(hero.ratio, floor.remainingRatio)
         XCTAssertEqual(hero.title, floor.displayName)
         XCTAssertEqual(hero.caption, "Lowest remaining")
@@ -315,15 +321,95 @@ final class UllageMacTests: XCTestCase {
 
         let options = menuBarMetricOptions(accounts: accounts, snapshots: snapshots)
         let pinned = try XCTUnwrap(options.max { $0.remainingRatio < $1.remainingRatio })
-        let pinnedHero = try XCTUnwrap(
-            heroModel(accounts: accounts, snapshots: snapshots, pinnedMetricID: pinned.id)
-        )
+        let pinnedHero = try XCTUnwrap(heroModel(
+            accounts: accounts,
+            snapshots: snapshots,
+            pinnedMetricID: pinned.id,
+            hiddenOverviewItemIDs: [],
+            shownOverviewItemIDs: []
+        ))
         XCTAssertEqual(pinnedHero.ratio, pinned.remainingRatio)
         XCTAssertEqual(pinnedHero.title, pinned.title)
         XCTAssertEqual(pinnedHero.caption, "Tracking")
         XCTAssertFalse(pinnedHero.detail?.contains("next ") ?? false)
 
-        XCTAssertNil(heroModel(accounts: [], snapshots: [], pinnedMetricID: nil))
+        XCTAssertNil(heroModel(
+            accounts: [],
+            snapshots: [],
+            pinnedMetricID: nil,
+            hiddenOverviewItemIDs: [],
+            shownOverviewItemIDs: []
+        ))
+    }
+
+    @MainActor
+    func testHeroTracksAPinnedRowThatOnlyOptedIntoOverview() throws {
+        let snapshot = try UllageFixtures.snapshot(named: "claude")
+        let usage = try XCTUnwrap(snapshot.usage.data)
+        let account = Account(id: snapshot.accountId, provider: "claude", label: nil, enabled: true)
+        let catalog = catalogProgressIDs(for: usage, accountID: account.id)
+        // A progress row outside the catalog: visible only once opted in.
+        let extra = try XCTUnwrap(identifiedSummaryRows(for: usage).first {
+            $0.row.remainingRatio != nil && !catalog.contains($0.persistenceID(accountID: account.id))
+        })
+        let pinID = extra.persistenceID(accountID: account.id)
+        let shown: Set<String> = [pinID]
+
+        let hero = try XCTUnwrap(heroModel(
+            accounts: [account],
+            snapshots: [snapshot],
+            pinnedMetricID: pinID,
+            hiddenOverviewItemIDs: [],
+            shownOverviewItemIDs: shown
+        ))
+        XCTAssertEqual(hero.caption, "Tracking")
+        XCTAssertEqual(hero.ratio, extra.row.remainingRatio)
+
+        // The header must agree with the level the menu bar liquid uses.
+        let levels = menuBarLiquidLevels(
+            accounts: [account],
+            snapshots: [snapshot],
+            pinnedMetricID: pinID,
+            hiddenOverviewItemIDs: [],
+            shownOverviewItemIDs: shown
+        )
+        XCTAssertEqual(levels.count, 1)
+        XCTAssertEqual(hero.ratio, levels.first?.remainingRatio)
+        XCTAssertEqual(hero.title, levels.first?.displayName)
+
+        // Regression: dropping the opt-in made the header lose the pin and
+        // silently fall back while Settings still showed it selected.
+        let withoutOptIn = try XCTUnwrap(heroModel(
+            accounts: [account],
+            snapshots: [snapshot],
+            pinnedMetricID: pinID,
+            hiddenOverviewItemIDs: [],
+            shownOverviewItemIDs: []
+        ))
+        XCTAssertEqual(withoutOptIn.caption, "Lowest remaining")
+        XCTAssertNotEqual(withoutOptIn.title, hero.title)
+    }
+
+    @MainActor
+    func testHeroReportsThePinnedRowsOwnReset() throws {
+        let snapshots = try UllageFixtures.snapshots()
+        let accounts = snapshots.map {
+            Account(id: $0.accountId, provider: $0.usage.data?.provider ?? "unknown", label: nil, enabled: true)
+        }
+        let now = Date(timeIntervalSince1970: 0)
+        let options = menuBarMetricOptions(accounts: accounts, snapshots: snapshots)
+        let dated = try XCTUnwrap(options.first { ($0.resetsAt ?? now) > now })
+        let hero = try XCTUnwrap(heroModel(
+            accounts: accounts,
+            snapshots: snapshots,
+            pinnedMetricID: dated.id,
+            hiddenOverviewItemIDs: [],
+            shownOverviewItemIDs: [],
+            now: now
+        ))
+        let reset = try XCTUnwrap(dated.resetsAt)
+        let detail = try XCTUnwrap(hero.detail)
+        XCTAssertEqual(detail, "resets \(relativeTimeText(reset, now: now))")
     }
 
     @MainActor
