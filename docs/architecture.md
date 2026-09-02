@@ -79,7 +79,13 @@ Reduce Motion is enabled, or when the "Animate liquid" setting (`animatesMenuBar
 is off, the liquid holds still at the floor with a flat surface and the cycle is parked at its
 trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
-`PopoverController` presents the content two ways. On macOS 26 it is a transparent, borderless,
+`PopoverController` presents the content two ways, chosen by `liquidGlassIsEnabled(settings:)`:
+macOS 26 has to offer Liquid Glass and the `usesLiquidGlass` setting has to want it. Every surface
+that would branch on the system version asks that one function instead, and views too deep to hold
+the settings object read the same answer from the `usesLiquidGlass` environment value, which
+`RootView` writes once. The controller reads it when the popover opens, and tears down the shell it
+built last time when the answer changed, so turning the switch off gives the macOS 14 and 15
+presentation exactly rather than an imitation of it. With glass it is a transparent, borderless,
 non-activating `NSPanel` hung below the status item, and `RootView` applies `PopoverSurface`, a
 root-level `glassEffect(.clear)` clipped to `PopoverBubble`: a 22-point rounded rectangle with a
 9-point pointer rising from its top edge, since a borderless panel has no frame to draw the arrow
@@ -97,7 +103,8 @@ local mouse-down monitor close it on any click outside it (clicks on the status 
 the item's own toggle), Escape closes it, and so does another application activating. Below macOS
 26 the same `RootView` goes into an `NSPopover` and `PopoverSurface` paints `AtmosphereBackground`
 instead: a solid base with two blurred discs and a diagonal streak, anchored to the top and bottom
-edges so the header and the last card always have a shape behind them. `PopoverChrome.swift` holds
+edges so the header and the last card always have a shape behind them. That is also what macOS 26
+draws with the switch off. `PopoverChrome.swift` holds
 those surfaces plus the `glassPanel` modifier, a layered material with an inset highlight used by
 the header, the tab row and the cards on every macOS version (glass nested in the glass slab would
 only re-sample the already blurred slab); the selected tab pill, the header's circular buttons and

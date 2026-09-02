@@ -3,6 +3,30 @@ import UllageKit
 
 // MARK: - Surfaces
 
+/// Whether the app draws itself in Liquid Glass: the system has to offer it and
+/// the user has to want it. Everything that would branch on the macOS version
+/// asks this instead, so turning the option off gives exactly the presentation
+/// macOS 14 and 15 get rather than an approximation of it.
+@MainActor
+func liquidGlassIsEnabled(settings: AppSettings) -> Bool {
+    guard #available(macOS 26.0, *) else { return false }
+    return settings.usesLiquidGlass
+}
+
+/// The same answer, for views too deep to be handed the settings object.
+/// `RootView` writes it once; the default is the flat presentation, since a
+/// view outside the popover has no glass to sit on.
+private struct UsesLiquidGlassKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var usesLiquidGlass: Bool {
+        get { self[UsesLiquidGlassKey.self] }
+        set { self[UsesLiquidGlassKey.self] = newValue }
+    }
+}
+
 /// Backdrop behind the `NSPopover` on macOS 14 and 15, where there is no
 /// Liquid Glass: a solid base carrying two blurred discs and a diagonal
 /// streak, which the frosted panels pick up as tone and shape. macOS 26 draws
@@ -92,12 +116,13 @@ private struct StructuredBackdrop: View {
 /// on the slab, so the slab needs no dimming layer for legibility.
 struct PopoverSurface: ViewModifier {
     /// Where the pointer's tip sits along the top edge, in points from the
-    /// centre of the panel. Unused below macOS 26, where `NSPopover` draws its
+    /// centre of the panel. Unused without glass, where `NSPopover` draws its
     /// own arrow outside the content.
     var pointerOffset: CGFloat = 0
+    @Environment(\.usesLiquidGlass) private var usesLiquidGlass
 
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
+        if usesLiquidGlass, #available(macOS 26.0, *) {
             let shape = PopoverBubble(pointerOffset: pointerOffset)
             content
                 .padding(.top, PopoverBubble.pointerHeight)
@@ -579,6 +604,7 @@ private struct CircleIconButton: View {
     var spinning = false
     let action: () -> Void
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.usesLiquidGlass) private var usesLiquidGlass
     @State private var isHovering = false
 
     var body: some View {
@@ -615,7 +641,7 @@ private struct CircleIconButton: View {
 
     @ViewBuilder
     private var icon: some View {
-        if #available(macOS 26.0, *) {
+        if usesLiquidGlass, #available(macOS 26.0, *) {
             glyph.glassEffect(.regular.interactive(), in: .circle)
         } else {
             glyph

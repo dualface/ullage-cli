@@ -1,12 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// Presents the popover content below the status item. On macOS 26 the
-/// content sits in a transparent borderless panel whose root is Liquid Glass,
-/// so the desktop and windows the panel covers show through it, refracted.
-/// `NSPopover` cannot do that: its frame draws its own material, which blurs
-/// whatever is behind the window to a flat tone before the content view can
-/// sample it. macOS 14 and 15 keep the `NSPopover`.
+/// Presents the popover content below the status item. With Liquid Glass the
+/// content sits in a transparent borderless panel whose root is glass, so the
+/// desktop and windows the panel covers show through it, refracted. `NSPopover`
+/// cannot do that: its frame draws its own material, which blurs whatever is
+/// behind the window to a flat tone before the content view can sample it.
+/// Without glass — macOS 14 and 15, or the option turned off — the `NSPopover`
+/// is the presentation, frame and arrow included.
 /// Whether the popover is on screen, for content that should only run while
 /// it is visible, such as the hero's wave.
 @MainActor
@@ -32,14 +33,18 @@ final class PopoverController: NSObject, NSPopoverDelegate {
     private var hostingController: NSHostingController<RootView>?
     private let presentation = PopoverPresentation()
     private var sizing = PopoverSizing()
-    private let popover: NSPopover?
+    private var popover: NSPopover?
     private var panel: NSPanel?
+    /// Which shell is built right now, so a change to the Liquid Glass setting
+    /// tears the other one down instead of reusing it. `nil` until the first
+    /// `show` builds one.
+    private var presentsInGlass: Bool?
     private var anchor = NSRect.zero
     private var dismissalMonitors: [Any] = []
     private var activationObserver: NSObjectProtocol?
 
     var isShown: Bool {
-        if let popover { return popover.isShown }
+        if let popover, popover.isShown { return true }
         return panel?.isVisible ?? false
     }
 
@@ -47,22 +52,22 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         self.store = store
         self.settings = settings
         self.openSettings = openSettings
-        if #available(macOS 26.0, *) {
-            popover = nil
-        } else {
-            let popover = NSPopover()
-            popover.behavior = .transient
-            self.popover = popover
-        }
         super.init()
-        popover?.delegate = self
     }
 
     func show(relativeTo rect: NSRect, of view: NSView) {
+        // Read the setting here, not at launch: turning Liquid Glass off swaps
+        // the whole shell, and the next opening is when that has to take hold.
+        let inGlass = liquidGlassIsEnabled(settings: settings)
+        if presentsInGlass != inGlass {
+            discardShell()
+            presentsInGlass = inGlass
+        }
         let controller = hostingController ?? makeHostingController()
         let screen = view.window?.screen ?? NSScreen.main
         sizing.update(preferredHeight: sizing.preferredHeight, maximumHeight: maximumHeight(for: screen))
-        if let popover {
+        if !inGlass {
+            let popover = self.popover ?? makePopover()
             if popover.contentViewController == nil {
                 popover.contentViewController = controller
             }
@@ -85,13 +90,36 @@ final class PopoverController: NSObject, NSPopoverDelegate {
     }
 
     func close() {
-        if let popover {
-            popover.performClose(nil)
-        } else {
-            removeDismissalMonitors()
-            panel?.orderOut(nil)
-            presentation.isShown = false
-        }
+        // Whichever shell is up: `performClose` on a popover that is not shown
+        // and `orderOut` on a panel that is not visible are both no-ops.
+        popover?.performClose(nil)
+        removeDismissalMonitors()
+        panel?.orderOut(nil)
+        presentation.isShown = false
+    }
+
+    /// Drop both shells and the view that was hosted in one of them, so the
+    /// next `show` builds what the setting now asks for. The hosting controller
+    /// goes too: it belongs to one container at a time, and the two shells do
+    /// not agree on height either — the glass panel carries the pointer inside
+    /// its own frame — so the sizing starts over with them.
+    private func discardShell() {
+        close()
+        popover?.contentViewController = nil
+        popover?.delegate = nil
+        popover = nil
+        panel?.contentViewController = nil
+        panel = nil
+        hostingController = nil
+        sizing = PopoverSizing()
+    }
+
+    private func makePopover() -> NSPopover {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.delegate = self
+        self.popover = popover
+        return popover
     }
 
     /// The transient popover also closes on its own; the wave must stop then too.

@@ -483,6 +483,29 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testLiquidGlassSettingDefaultsOnRoundTripsAndGatesTheGlass() {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(AppSettings(defaults: defaults).usesLiquidGlass)
+        let settings = AppSettings(defaults: defaults)
+        settings.usesLiquidGlass = false
+        XCTAssertFalse(AppSettings(defaults: defaults).usesLiquidGlass)
+        // Off is the flat presentation on every version.
+        XCTAssertFalse(liquidGlassIsEnabled(settings: settings))
+
+        settings.usesLiquidGlass = true
+        XCTAssertTrue(AppSettings(defaults: defaults).usesLiquidGlass)
+        if #available(macOS 26.0, *) {
+            XCTAssertTrue(liquidGlassIsEnabled(settings: settings))
+        } else {
+            // Wanting glass is not enough where the system has none to give.
+            XCTAssertFalse(liquidGlassIsEnabled(settings: settings))
+        }
+    }
+
+    @MainActor
     func testIconPaletteDefaultsRejectsInvalidValuesAndRoundTrips() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -523,6 +546,10 @@ final class UllageMacTests: XCTestCase {
         XCTAssertNil(formattedPairCode("ABCDEFG"))
     }
 
+    /// The panel is a list of short sections, not a scrolling preferences
+    /// window: it has to stay well inside a laptop screen. The ceiling moves
+    /// only when a section is genuinely added — the Appearance section put it
+    /// up by roughly a section's worth — never to make sprawl fit.
     @MainActor
     func testSettingsPanelContentHeightIsCompact() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"
@@ -538,7 +565,7 @@ final class UllageMacTests: XCTestCase {
         let height = controller.window?.contentRect(forFrameRect: controller.window!.frame).height
             ?? 0
         XCTAssertGreaterThan(height, 100)
-        XCTAssertLessThan(height, 460)
+        XCTAssertLessThan(height, 600)
     }
 
     @MainActor

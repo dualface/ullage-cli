@@ -177,6 +177,12 @@ private struct SettingsView: View {
             statusSection
             Divider()
             menuBarSection
+            // Only where there is glass to turn off. Below macOS 26 the flat
+            // presentation is the only one, so the switch would do nothing.
+            if #available(macOS 26.0, *) {
+                Divider()
+                appearanceSection
+            }
         }
         .padding(20)
         .frame(width: 420)
@@ -269,6 +275,18 @@ private struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
+        }
+    }
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Appearance")
+                .font(.headline)
+            Toggle("Liquid Glass", isOn: $settings.usesLiquidGlass)
+            Text("Off restores the plain popover macOS 14 and 15 draw, from the next time it opens.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

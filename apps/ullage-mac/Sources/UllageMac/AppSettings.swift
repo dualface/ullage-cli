@@ -12,6 +12,7 @@ final class AppSettings {
     private static let pairedDeviceNameKey = "pairedDeviceName"
     private static let pairedAtKey = "pairedAt"
     private static let animatesMenuBarLiquidKey = "animatesMenuBarLiquid"
+    private static let usesLiquidGlassKey = "usesLiquidGlass"
     private static let menuBarMetricIDKey = "menuBarMetricID"
     private static let hiddenOverviewItemIDsKey = "hiddenOverviewItemIDs"
     private static let shownOverviewItemIDsKey = "shownOverviewItemIDs"
@@ -29,6 +30,14 @@ final class AppSettings {
     /// level with a flat surface and runs no animation timer.
     var animatesMenuBarLiquid: Bool {
         didSet { defaults.set(animatesMenuBarLiquid, forKey: Self.animatesMenuBarLiquidKey) }
+    }
+
+    /// Whether the popover draws itself in Liquid Glass. Off is the
+    /// presentation macOS 14 and 15 get, down to the `NSPopover` frame, and it
+    /// is what the option means on macOS 26 as well. Below macOS 26 the value
+    /// is stored but has nothing to switch.
+    var usesLiquidGlass: Bool {
+        didSet { defaults.set(usesLiquidGlass, forKey: Self.usesLiquidGlassKey) }
     }
 
     /// `MenuBarMetricOption.id` pinned as the liquid level; `nil` means the
@@ -68,6 +77,7 @@ final class AppSettings {
         iconPalette = defaults.string(forKey: Self.iconPaletteKey)
             .flatMap(UllageMark.Palette.init(rawValue:)) ?? .default
         animatesMenuBarLiquid = defaults.object(forKey: Self.animatesMenuBarLiquidKey) as? Bool ?? true
+        usesLiquidGlass = defaults.object(forKey: Self.usesLiquidGlassKey) as? Bool ?? true
         menuBarMetricID = defaults.string(forKey: Self.menuBarMetricIDKey).flatMap { $0.isEmpty ? nil : $0 }
         hiddenOverviewItemIDs = Set(defaults.stringArray(forKey: Self.hiddenOverviewItemIDsKey) ?? [])
         shownOverviewItemIDs = Set(defaults.stringArray(forKey: Self.shownOverviewItemIDsKey) ?? [])

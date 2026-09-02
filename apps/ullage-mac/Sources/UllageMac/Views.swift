@@ -60,6 +60,9 @@ struct RootView: View {
         }
         .frame(width: 360)
         .modifier(PopoverSurface(pointerOffset: presentation.pointerOffset))
+        // Outermost, so the surface modifier above and everything inside read
+        // the same answer.
+        .environment(\.usesLiquidGlass, liquidGlassIsEnabled(settings: settings))
         .onPreferenceChange(ChromeHeightPreferenceKey.self) { height in
             chromeHeight = height
             reportHeight()
@@ -76,15 +79,14 @@ struct RootView: View {
     private func reportHeight() {
         // Whole points only: fractional measurements made the popover resize by
         // a pixel on changes that did not really alter the layout.
-        onPreferredHeightChanged((chromeHeight + contentHeight + Self.pointerInset).rounded(.up))
+        onPreferredHeightChanged((chromeHeight + contentHeight + pointerInset).rounded(.up))
     }
 
-    /// The pointer is part of the panel on macOS 26, so the panel has to be
-    /// that much taller than its content. `NSPopover` draws its arrow outside
-    /// the content size, so nothing is added below macOS 26.
-    static var pointerInset: CGFloat {
-        if #available(macOS 26.0, *) { return PopoverBubble.pointerHeight }
-        return 0
+    /// The pointer is part of the glass panel, so the panel has to be that much
+    /// taller than its content. `NSPopover` draws its arrow outside the content
+    /// size, so the flat presentation adds nothing.
+    private var pointerInset: CGFloat {
+        liquidGlassIsEnabled(settings: settings) ? PopoverBubble.pointerHeight : 0
     }
 
     /// The hero mirrors the menu bar mark, so it is hidden whenever the mark
@@ -280,6 +282,7 @@ private struct TabBar: View {
     let settings: AppSettings
     @Binding var selected: SelectedTab
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.usesLiquidGlass) private var usesLiquidGlass
 
     private var titles: [String: String] { tabTitles(for: store.accounts) }
 
@@ -325,7 +328,7 @@ private struct TabBar: View {
 
     @ViewBuilder
     private var selectionBackground: some View {
-        if #available(macOS 26.0, *) {
+        if usesLiquidGlass, #available(macOS 26.0, *) {
             // Not `.interactive()`: the pill marks the selection, it is not the
             // control — the button above it is — and interactive glass
             // answering the pointer that just clicked flashed on its own.
@@ -616,10 +619,11 @@ private struct ProbeButton: View {
 private struct ProbeBackground: ViewModifier {
     let accent: Color
     let isEnabled: Bool
+    @Environment(\.usesLiquidGlass) private var usesLiquidGlass
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
+        if usesLiquidGlass, #available(macOS 26.0, *) {
             content.glassEffect(
                 .regular.tint(accent.opacity(isEnabled ? 0.5 : 0.15)).interactive(isEnabled),
                 in: .capsule

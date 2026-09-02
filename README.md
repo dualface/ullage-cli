@@ -46,7 +46,10 @@ it is a single slab of Liquid Glass in a transparent panel, so the desktop and
 windows it covers show through it and bend at its edges; the header and tab
 row float and the cards scroll underneath them. macOS 14 and 15 open a
 standard popover on a tinted backdrop of large oxblood and blue shapes, with
-frosted cards over it. Its header
+frosted cards over it. On macOS 26 the "Liquid Glass" switch in Settings
+chooses between the two: off gives that same standard popover, backdrop and
+all, and it takes effect the next time the popover opens. Below macOS 26 the
+switch is not shown, since the flat presentation is the only one. Its header
 repeats what the menu bar mark is tracking, as a filled vessel beside the
 percentage (its surface wobbles while the popover is open, at a fixed level,
 under the same conditions that let the menu bar liquid move), the account it came from, that account's soonest reset, and the
