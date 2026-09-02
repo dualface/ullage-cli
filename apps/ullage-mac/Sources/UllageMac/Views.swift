@@ -874,22 +874,22 @@ func relativeTimeText(_ date: Date, now: Date = Date()) -> String {
     return seconds >= 0 ? "in \(text)" : "\(text) ago"
 }
 
-/// How long until a window resets. Between an hour and two days it is given in
-/// hours with one decimal: "in 1d" hides whether the wait is 25 hours or 47,
-/// and that is the difference between waiting a limit out and planning around
-/// it. Past two days a tenth of an hour says nothing, so days take over, and
-/// under an hour minutes and seconds stay — "in 0.1h" is not a time anyone
-/// reads.
+/// How long until a window resets. Between an hour and two days it is given as
+/// hours and minutes: "in 1d" hides whether the wait is 25 hours or 47, and
+/// that is the difference between waiting a limit out and planning around it.
+/// Past two days the minutes say nothing, so days take over, and under an hour
+/// minutes and seconds stay as they are.
 func resetRelativeText(_ date: Date, now: Date = Date()) -> String {
     let seconds = date.timeIntervalSince(now)
     let absolute = abs(seconds)
     guard absolute >= 3_600, absolute < 172_800 else { return relativeTimeText(date, now: now) }
-    let hours = String(
-        format: "%.1fh",
-        locale: Locale(identifier: "en_US_POSIX"),
-        absolute / 3_600
-    )
-    return seconds >= 0 ? "in \(hours)" : "\(hours) ago"
+    // Round to the minute first, so 59.7 minutes carries into the hour instead
+    // of printing as "0h60m".
+    let totalMinutes = Int((absolute / 60).rounded())
+    let hours = totalMinutes / 60
+    let minutes = totalMinutes % 60
+    let text = minutes == 0 ? "\(hours)h" : "\(hours)h\(minutes)m"
+    return seconds >= 0 ? "in \(text)" : "\(text) ago"
 }
 
 private func resetText(_ date: Date?) -> String {

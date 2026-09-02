@@ -132,7 +132,7 @@ right, including a partial last cell (5% remaining paints half of one cell). Col
 semantic values selected solely by each row's remaining-percentage tier. A row with nothing left
 reads `used up` rather than `remains 0%`, which looks like a failed measurement, and a row under
 half a percent reads `remains <1%` rather than rounding down to the same misleading zero. Reset
-times between an hour and two days are given in tenths of an hour (`resets in 47.4h`), since `in
+times between an hour and two days are given as hours and minutes (`resets in 33h30m`), since `in
 1d` hides whether the wait is 25 hours or 47; days take over past that and minutes and seconds
 below an hour. The bar is not animated:
 switching tabs rebuilds the rows, and a ratio sliding toward its value reads as ten cells shifting
