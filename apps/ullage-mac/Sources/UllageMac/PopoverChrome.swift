@@ -10,7 +10,12 @@ struct AtmosphereBackground: View {
 
     var body: some View {
         ZStack {
-            base
+            // Liquid Glass refracts what is behind it, so on macOS 26 the
+            // backdrop is a scrim rather than a solid fill: opaque enough to
+            // keep the tone and text contrast, sheer enough that the panels
+            // have something to sample. A solid base flattened every panel
+            // into a plain rectangle.
+            base.opacity(baseOpacity)
             RadialGradient(
                 colors: [warmTint, warmTint.opacity(0)],
                 center: .topLeading,
@@ -25,6 +30,11 @@ struct AtmosphereBackground: View {
             )
         }
         .ignoresSafeArea()
+    }
+
+    private var baseOpacity: Double {
+        guard #available(macOS 26.0, *) else { return 1 }
+        return colorScheme == .dark ? 0.62 : 0.70
     }
 
     private var base: Color {

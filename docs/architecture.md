@@ -79,7 +79,9 @@ Reduce Motion is enabled, or when the "Animate liquid" setting (`animatesMenuBar
 is off, the liquid holds still at the floor with a flat surface and the cycle is parked at its
 trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
-`PopoverChrome.swift` holds the popover's shared surfaces: the tinted `AtmosphereBackground`, the
+`PopoverChrome.swift` holds the popover's shared surfaces: the tinted `AtmosphereBackground` (a
+solid fill below macOS 26, a scrim at 0.62 dark / 0.70 light on it, since Liquid Glass refracts what
+sits behind it and a solid backdrop flattens every panel), the
 `glassPanel` modifier (SwiftUI `glassEffect` behind `if #available(macOS 26.0, *)`, falling back to
 a layered material plus inset highlight on macOS 14 and 15; the selected tab pill, the header's
 circular buttons and the probe button branch the same way), `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
