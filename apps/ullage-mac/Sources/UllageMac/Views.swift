@@ -262,12 +262,24 @@ struct FlowLayout: Layout {
     }
 }
 
+/// Where each tab sits inside the row, so the row can keep a single pill and
+/// move it to the selected one.
+private struct TabAnchorKey: PreferenceKey {
+    static var defaultValue: [SelectedTab: Anchor<CGRect>] { [:] }
+
+    static func reduce(
+        value: inout [SelectedTab: Anchor<CGRect>],
+        nextValue: () -> [SelectedTab: Anchor<CGRect>]
+    ) {
+        value.merge(nextValue()) { _, next in next }
+    }
+}
+
 private struct TabBar: View {
     let store: UsageStore
     let settings: AppSettings
     @Binding var selected: SelectedTab
     @Environment(\.colorScheme) private var colorScheme
-    @Namespace private var highlight
 
     private var titles: [String: String] { tabTitles(for: store.accounts) }
 
@@ -290,6 +302,22 @@ private struct TabBar: View {
         // FlowLayout sizes itself to its widest row, so without this the
         // panel would shrink to the tabs instead of matching the header.
         .frame(maxWidth: .infinity, alignment: .leading)
+        // One pill for the whole row, moved to whichever tab is selected.
+        // Giving every tab its own pill and pairing them with
+        // `matchedGeometryEffect` tore down one glass view and built another
+        // on each switch, and a glass view fades in as it is created, which
+        // reads as the row flickering. This one is never recreated; it slides.
+        .backgroundPreferenceValue(TabAnchorKey.self) { anchors in
+            GeometryReader { proxy in
+                if let anchor = anchors[selected] {
+                    let bounds = proxy[anchor]
+                    selectionBackground
+                        .frame(width: bounds.width, height: bounds.height)
+                        .position(x: bounds.midX, y: bounds.midY)
+                }
+            }
+            .animation(.snappy(duration: 0.25), value: selected)
+        }
         .glassPanel(cornerRadius: 20)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -298,7 +326,10 @@ private struct TabBar: View {
     @ViewBuilder
     private var selectionBackground: some View {
         if #available(macOS 26.0, *) {
-            Capsule().fill(.clear).glassEffect(.clear.interactive(), in: .capsule)
+            // Not `.interactive()`: the pill marks the selection, it is not the
+            // control — the button above it is — and interactive glass
+            // answering the pointer that just clicked flashed on its own.
+            Capsule().fill(.clear).glassEffect(.clear, in: .capsule)
         } else {
             Capsule()
                 .fill(colorScheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.95))
@@ -352,28 +383,20 @@ private struct TabBar: View {
                             .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                             .lineLimit(1)
                             .fixedSize()
-                            // A font weight is not something SwiftUI can
-                            // interpolate, so inside the pill's animation it
-                            // cross-fades the two renderings of the label and
-                            // the text reads as flickering while it redraws.
-                            // The weight changes at once; only the pill moves.
-                            .transaction { $0.animation = nil }
                     }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background {
-                if isSelected {
-                    selectionBackground
-                        .matchedGeometryEffect(id: "tab", in: highlight)
-                }
-            }
+            // The pill lives in the row, not in the tab, and finds its place
+            // through this. A font weight is not something SwiftUI can
+            // interpolate either, so nothing here is animated: the label
+            // changes weight in one frame while the pill travels.
+            .anchorPreference(key: TabAnchorKey.self, value: .bounds) { [value: $0] }
             .contentShape(Capsule())
             .foregroundStyle(enabled ? .primary : .tertiary)
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-        .animation(.snappy(duration: 0.25), value: selected)
     }
 }
 

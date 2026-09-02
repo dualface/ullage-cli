@@ -203,7 +203,12 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         if let popover {
             popover.contentSize = sizing.contentSize
         } else if let panel, panel.isVisible {
-            panel.setFrame(panelFrame(height: sizing.height, screen: screen), display: true, animate: false)
+            // Only when it actually moved: setting the same frame still makes
+            // the panel redraw, and redrawing a glass root shows as a flicker.
+            let frame = panelFrame(height: sizing.height, screen: screen)
+            if frame != panel.frame {
+                panel.setFrame(frame, display: true, animate: false)
+            }
         }
     }
 
