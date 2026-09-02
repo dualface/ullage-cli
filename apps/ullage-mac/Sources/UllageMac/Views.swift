@@ -165,6 +165,83 @@ private extension View {
     }
 }
 
+/// Row assignment for a flow layout: greedy left to right, wrapping when the
+/// next item would cross `maxWidth`. An item wider than the row gets its own.
+func flowRows(widths: [CGFloat], maxWidth: CGFloat, spacing: CGFloat) -> [[Int]] {
+    var rows: [[Int]] = []
+    var row: [Int] = []
+    var used: CGFloat = 0
+    for (index, width) in widths.enumerated() {
+        let needed = row.isEmpty ? width : used + spacing + width
+        if !row.isEmpty, needed > maxWidth {
+            rows.append(row)
+            row = [index]
+            used = width
+        } else {
+            row.append(index)
+            used = needed
+        }
+    }
+    if !row.isEmpty { rows.append(row) }
+    return rows
+}
+
+/// Lays subviews out in wrapped rows at their ideal widths.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 4
+    var lineSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let sizes: [CGSize] = subviews.map { $0.sizeThatFits(.unspecified) }
+        var total: CGFloat = 0
+        for size in sizes { total += size.width }
+        let maxWidth: CGFloat = proposal.width ?? total
+        let widths: [CGFloat] = sizes.map(\.width)
+        let rows: [[Int]] = flowRows(widths: widths, maxWidth: maxWidth, spacing: spacing)
+
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+        for (index, row) in rows.enumerated() {
+            var rowWidth: CGFloat = 0
+            var rowHeight: CGFloat = 0
+            for item in row {
+                rowWidth += sizes[item].width
+                rowHeight = max(rowHeight, sizes[item].height)
+            }
+            rowWidth += spacing * CGFloat(max(row.count - 1, 0))
+            width = max(width, rowWidth)
+            height += rowHeight
+            if index > 0 { height += lineSpacing }
+        }
+        return CGSize(width: min(width, maxWidth), height: height)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout Void
+    ) {
+        let sizes: [CGSize] = subviews.map { $0.sizeThatFits(.unspecified) }
+        let widths: [CGFloat] = sizes.map(\.width)
+        let rows: [[Int]] = flowRows(widths: widths, maxWidth: bounds.width, spacing: spacing)
+        var y: CGFloat = bounds.minY
+        for row in rows {
+            var x: CGFloat = bounds.minX
+            var rowHeight: CGFloat = 0
+            for item in row { rowHeight = max(rowHeight, sizes[item].height) }
+            for index in row {
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y + (rowHeight - sizes[index].height) / 2),
+                    proposal: ProposedViewSize(sizes[index])
+                )
+                x += sizes[index].width + spacing
+            }
+            y += rowHeight + lineSpacing
+        }
+    }
+}
+
 private struct TabBar: View {
     let store: UsageStore
     let settings: AppSettings
@@ -175,39 +252,33 @@ private struct TabBar: View {
     private var titles: [String: String] { tabTitles(for: store.accounts) }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            scroller
-                .onChange(of: selected) { _, value in
-                    withAnimation(.snappy(duration: 0.25)) { proxy.scrollTo(value, anchor: .center) }
-                }
+        // Wrapped rows rather than a horizontal scroller: scrolling one needs a
+        // sideways gesture many mice cannot make, which left later accounts
+        // unreachable. Wrapping keeps every account clickable at any count.
+        FlowLayout(spacing: 4, lineSpacing: 4) {
+            tab(title: "Overview", value: .overview, enabled: true, warning: nil)
+            ForEach(store.accounts, id: \.id) { account in
+                tab(
+                    title: titles[account.id] ?? account.provider,
+                    value: .account(account.id),
+                    enabled: account.enabled,
+                    warning: warningTier(for: account)
+                )
+            }
         }
-    }
-
-    private var scroller: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                tab(title: "Overview", value: .overview, enabled: true, warning: nil)
-                ForEach(store.accounts, id: \.id) { account in
-                    tab(
-                        title: titles[account.id] ?? account.provider,
-                        value: .account(account.id),
-                        enabled: account.enabled,
-                        warning: warningTier(for: account)
-                    )
-                }
-            }
-            .padding(4)
-            .background {
-                Capsule().fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.55))
-            }
-            .overlay {
-                Capsule().strokeBorder(
+        .padding(4)
+        .background {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.55))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(
                     colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.06),
                     lineWidth: 1
                 )
-            }
-            .padding(.horizontal, 12)
         }
+        .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
@@ -261,7 +332,6 @@ private struct TabBar: View {
             .contentShape(Capsule())
             .foregroundStyle(enabled ? .primary : .tertiary)
         }
-        .id(value)
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .animation(.snappy(duration: 0.25), value: selected)

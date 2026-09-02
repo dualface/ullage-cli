@@ -45,8 +45,10 @@ The popover is 360 points wide and opens on a tinted backdrop: frosted cards
 over an oxblood-to-blue wash, in both light and dark appearance. Its header
 repeats what the menu bar mark is tracking, as a filled vessel beside the
 percentage, the account it came from, that account's soonest reset, and the
-runner-up account. Account tabs are a scrolling row of pills; an account with a
-row in its lowest two tiers carries a colored dot. Every account is a card
+runner-up account. Account tabs are a row of pills that wraps onto
+further rows rather than scrolling, so every account stays clickable
+without a sideways gesture; an account with a row in its lowest two tiers
+carries a colored dot. Every account is a card
 titled by its provider mark, plan, and badges, and each row keeps the ten-cell
 bar filled from the right and colored by tier. Provider marks are the app's own
 simplified drawings, not the companies' official logos.

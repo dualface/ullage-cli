@@ -254,6 +254,16 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(pairingEditingState(isPaired: true, isUnlocked: true), .unlockedForRepair)
     }
 
+    func testFlowRowsWrapWhenTheNextItemWouldOverflow() {
+        // Three 100 wide items with spacing 4 need 308 for one row.
+        XCTAssertEqual(flowRows(widths: [100, 100, 100], maxWidth: 308, spacing: 4), [[0, 1, 2]])
+        XCTAssertEqual(flowRows(widths: [100, 100, 100], maxWidth: 307, spacing: 4), [[0, 1], [2]])
+        XCTAssertEqual(flowRows(widths: [100, 100, 100], maxWidth: 100, spacing: 4), [[0], [1], [2]])
+        // An item wider than the row still gets placed rather than dropped.
+        XCTAssertEqual(flowRows(widths: [400, 50], maxWidth: 100, spacing: 4), [[0], [1]])
+        XCTAssertEqual(flowRows(widths: [], maxWidth: 100, spacing: 4), [])
+    }
+
     func testAccountLabelOnlyShowsWhenAProviderHasSeveralAccounts() {
         let solo = Account(id: "a", provider: "claude", label: "Work", enabled: true)
         let sibling = Account(id: "b", provider: "claude", label: " Personal ", enabled: true)
