@@ -759,8 +759,11 @@ private struct SummaryRowView: View {
                 }
             }
             if let ratio = row.remainingRatio {
+                // No animation: the row is rebuilt whenever the popover is,
+                // and a ratio that slides toward its value only reads as ten
+                // cells shifting on their own. The bar states the number it
+                // has right now.
                 SegmentedProgress(ratio: ratio)
-                    .animation(.snappy(duration: 0.35), value: ratio)
             }
         }
     }
