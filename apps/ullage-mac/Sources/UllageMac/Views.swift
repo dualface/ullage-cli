@@ -175,6 +175,15 @@ private struct TabBar: View {
     private var titles: [String: String] { tabTitles(for: store.accounts) }
 
     var body: some View {
+        ScrollViewReader { proxy in
+            scroller
+                .onChange(of: selected) { _, value in
+                    withAnimation(.snappy(duration: 0.25)) { proxy.scrollTo(value, anchor: .center) }
+                }
+        }
+    }
+
+    private var scroller: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
                 tab(title: "Overview", value: .overview, enabled: true, warning: nil)
@@ -252,6 +261,7 @@ private struct TabBar: View {
             .contentShape(Capsule())
             .foregroundStyle(enabled ? .primary : .tertiary)
         }
+        .id(value)
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .animation(.snappy(duration: 0.25), value: selected)
@@ -272,6 +282,7 @@ private struct OverviewView: View {
                     VStack(spacing: 12) {
                         UsageCardHeader(
                             account: card.account,
+                            accounts: store.accounts,
                             usage: card.usage,
                             snapshot: card.snapshot,
                             timestampLabel: "updated",
@@ -354,6 +365,7 @@ private struct AccountView: View {
             if let account, let snapshot, let usage = snapshot.usage.data {
                 UsageCardHeader(
                     account: account,
+                    accounts: store.accounts,
                     usage: usage,
                     snapshot: snapshot,
                     timestampLabel: "observed",
@@ -480,8 +492,18 @@ private struct OverviewRowToggle {
     let setVisible: (Bool) -> Void
 }
 
+/// An account's label only disambiguates when its provider has more than one
+/// account, matching how tab titles are built.
+func disambiguatingLabel(for account: Account, in accounts: [Account]) -> String? {
+    guard accounts.filter({ $0.provider == account.provider }).count > 1 else { return nil }
+    let trimmed = account.label?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let trimmed, !trimmed.isEmpty else { return nil }
+    return trimmed
+}
+
 private struct UsageCardHeader: View {
     let account: Account
+    let accounts: [Account]
     let usage: SubscriptionUsage
     let snapshot: SnapshotPayload
     let timestampLabel: String
@@ -498,7 +520,7 @@ private struct UsageCardHeader: View {
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .fixedSize()
-                if let label = account.label {
+                if let label = disambiguatingLabel(for: account, in: accounts) {
                     Text(label)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -529,7 +551,9 @@ private struct PlanChip: View {
     let text: String
 
     var body: some View {
-        Text(text)
+        // Providers spell plans differently ("Pro", "max_5x", "Ultra"); the
+        // chip normalizes them so a row of accounts reads as one vocabulary.
+        Text(text.lowercased())
             .font(.system(size: 10, weight: .semibold))
             .kerning(0.4)
             .foregroundStyle(Self.accent)

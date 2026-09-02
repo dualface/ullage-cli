@@ -254,6 +254,21 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(pairingEditingState(isPaired: true, isUnlocked: true), .unlockedForRepair)
     }
 
+    func testAccountLabelOnlyShowsWhenAProviderHasSeveralAccounts() {
+        let solo = Account(id: "a", provider: "claude", label: "Work", enabled: true)
+        let sibling = Account(id: "b", provider: "claude", label: " Personal ", enabled: true)
+        let other = Account(id: "c", provider: "grok", label: "Team", enabled: true)
+
+        XCTAssertNil(disambiguatingLabel(for: solo, in: [solo, other]))
+        XCTAssertEqual(disambiguatingLabel(for: solo, in: [solo, sibling]), "Work")
+        XCTAssertEqual(disambiguatingLabel(for: sibling, in: [solo, sibling]), "Personal")
+
+        let blank = Account(id: "d", provider: "claude", label: "  ", enabled: true)
+        XCTAssertNil(disambiguatingLabel(for: blank, in: [blank, solo]))
+        let unlabelled = Account(id: "e", provider: "claude", label: nil, enabled: true)
+        XCTAssertNil(disambiguatingLabel(for: unlabelled, in: [unlabelled, solo]))
+    }
+
     @MainActor
     func testHeroModelTracksTheSameLevelAsTheMenuBarLiquid() throws {
         let snapshots = try UllageFixtures.snapshots()

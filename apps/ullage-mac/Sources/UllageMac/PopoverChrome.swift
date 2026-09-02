@@ -372,7 +372,9 @@ struct PopoverHero: View {
                     .kerning(0.6)
                     .textCase(.uppercase)
                     .foregroundStyle(.secondary)
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                // Last baseline, not first: a wrapped account name keeps its
+                // bottom line sitting on the percentage's baseline.
+                HStack(alignment: .lastTextBaseline, spacing: 8) {
                     Text(percentageText(model.ratio * 100))
                         .font(.system(size: 34, weight: .bold, design: .rounded))
                         .monospacedDigit()
@@ -382,8 +384,8 @@ struct PopoverHero: View {
                         .contentTransition(.numericText())
                     Text(model.title)
                         .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let detail = model.detail {
                     Text(detail)
