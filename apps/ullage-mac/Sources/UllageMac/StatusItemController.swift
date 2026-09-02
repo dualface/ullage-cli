@@ -56,9 +56,13 @@ final class StatusItemController: NSObject {
     private func observeSettings() {
         withObservationTracking {
             _ = settings.animatesMenuBarLiquid
+            _ = settings.menuBarMetricID
         } onChange: { [weak self] in
             Task { @MainActor in
-                self?.reconcileAnimationTimer()
+                // Re-derive the levels: a new pin changes what the liquid
+                // tracks, and the presentation refresh also reconciles the
+                // timer for the animation toggle.
+                self?.refreshPresentationFromStore()
                 self?.observeSettings()
             }
         }
@@ -114,7 +118,11 @@ final class StatusItemController: NSObject {
         if store.lastRefreshedAt == nil {
             presentation = .initial
         } else if connectionState.hasMenuBarData {
-            let levels = menuBarAccountLevels(accounts: accounts, snapshots: snapshots)
+            let levels = menuBarLiquidLevels(
+                accounts: accounts,
+                snapshots: snapshots,
+                pinnedMetricID: settings.menuBarMetricID
+            )
             presentation = levels.isEmpty ? .noData : .liquid(levels)
         } else if connectionState == .loading {
             return
@@ -329,6 +337,7 @@ final class StatusItemController: NSObject {
     @objc private func showSettings() {
         let controller = settingsController ?? SettingsPanelController(
             settings: settings,
+            store: store,
             mode: mode,
             onSaved: { [weak self] in self?.store.invalidateDataSource() }
         )

@@ -449,6 +449,52 @@ private func date(_ value: String) throws -> Date {
     #expect(menuBarFillRatio(accounts: accounts, snapshots: snapshots) == 0.4)
 }
 
+@Test func menuBarMetricOptionsListEveryOverviewRowWithStableIDs() throws {
+    let snapshots = try [fixture("claude"), fixture("cursor")]
+    let accounts = [
+        Account(id: "fixture-cursor", provider: "cursor", label: nil, enabled: true),
+        Account(id: "fixture-claude", provider: "claude", label: nil, enabled: true),
+    ]
+    let options = menuBarMetricOptions(accounts: accounts, snapshots: snapshots)
+    #expect(options.map(\.accountID) == ["fixture-claude", "fixture-claude", "fixture-cursor", "fixture-cursor"])
+    #expect(options.allSatisfy { $0.id.hasPrefix($0.accountID + "|") })
+    #expect(Set(options.map(\.id)).count == options.count)
+    #expect(options.allSatisfy { $0.title.hasPrefix("Claude · ") || $0.title.hasPrefix("Cursor · ") })
+    #expect(options.map(\.remainingRatio).min() == 0.7)
+    #expect(options == menuBarMetricOptions(accounts: accounts, snapshots: snapshots.reversed()))
+    #expect(menuBarMetricOptions(accounts: accounts.map {
+        Account(id: $0.id, provider: $0.provider, label: nil, enabled: false)
+    }, snapshots: snapshots).isEmpty)
+}
+
+@Test func menuBarLiquidLevelsUsePinnedRowOrFallBackToEveryAccount() throws {
+    let snapshots = try [fixture("claude"), fixture("cursor"), fixture("grok")]
+    let accounts = [
+        Account(id: "fixture-claude", provider: "claude", label: nil, enabled: true),
+        Account(id: "fixture-cursor", provider: "cursor", label: nil, enabled: true),
+        Account(id: "fixture-grok", provider: "grok", label: nil, enabled: true),
+    ]
+    let options = menuBarMetricOptions(accounts: accounts, snapshots: snapshots)
+    let pinned = try #require(options.first(where: { $0.accountID == "fixture-cursor" }))
+
+    let pinnedLevels = menuBarLiquidLevels(accounts: accounts, snapshots: snapshots, pinnedMetricID: pinned.id)
+    #expect(pinnedLevels == [MenuBarAccountLevel(
+        accountID: "fixture-cursor", displayName: pinned.title, remainingRatio: pinned.remainingRatio
+    )])
+
+    let unpinned = menuBarLiquidLevels(accounts: accounts, snapshots: snapshots, pinnedMetricID: nil)
+    #expect(unpinned == menuBarAccountLevels(accounts: accounts, snapshots: snapshots))
+
+    let missing = menuBarLiquidLevels(accounts: accounts, snapshots: snapshots, pinnedMetricID: "gone|x|y|0")
+    #expect(missing == unpinned)
+
+    let cursorDisabled = accounts.map {
+        Account(id: $0.id, provider: $0.provider, label: nil, enabled: $0.id != "fixture-cursor")
+    }
+    let disabledPin = menuBarLiquidLevels(accounts: cursorDisabled, snapshots: snapshots, pinnedMetricID: pinned.id)
+    #expect(disabledPin.map(\.accountID) == ["fixture-claude", "fixture-grok"])
+}
+
 @Test func menuBarAccountLevelsKeepZeroWhenLimitReached() throws {
     let limitedData = Data(#"""
     {

@@ -255,6 +255,21 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuBarMetricPinDefaultsToNilAndRoundTrips() {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertNil(AppSettings(defaults: defaults).menuBarMetricID)
+        let settings = AppSettings(defaults: defaults)
+        settings.menuBarMetricID = "acct|weekly|usage|0"
+        XCTAssertEqual(AppSettings(defaults: defaults).menuBarMetricID, "acct|weekly|usage|0")
+        settings.menuBarMetricID = nil
+        XCTAssertNil(AppSettings(defaults: defaults).menuBarMetricID)
+        XCTAssertNil(defaults.object(forKey: "menuBarMetricID"))
+    }
+
+    @MainActor
     func testAnimateLiquidSettingDefaultsOnAndRoundTrips() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -317,6 +332,7 @@ final class UllageMacTests: XCTestCase {
         let settings = AppSettings(defaults: defaults)
         let controller = SettingsPanelController(
             settings: settings,
+            store: UsageStore(dataSourceFactory: { MockDataSource() }),
             mode: .mock,
             onSaved: {}
         )

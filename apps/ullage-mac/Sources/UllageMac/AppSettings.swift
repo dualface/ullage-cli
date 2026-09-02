@@ -12,6 +12,7 @@ final class AppSettings {
     private static let pairedDeviceNameKey = "pairedDeviceName"
     private static let pairedAtKey = "pairedAt"
     private static let animatesMenuBarLiquidKey = "animatesMenuBarLiquid"
+    private static let menuBarMetricIDKey = "menuBarMetricID"
     private let defaults: UserDefaults
     private let saveDeviceToken: (String) throws -> Void
 
@@ -28,6 +29,18 @@ final class AppSettings {
         didSet { defaults.set(animatesMenuBarLiquid, forKey: Self.animatesMenuBarLiquidKey) }
     }
 
+    /// `MenuBarMetricOption.id` pinned as the liquid level; `nil` means the
+    /// lowest remaining across all accounts.
+    var menuBarMetricID: String? {
+        didSet {
+            if let menuBarMetricID {
+                defaults.set(menuBarMetricID, forKey: Self.menuBarMetricIDKey)
+            } else {
+                defaults.removeObject(forKey: Self.menuBarMetricIDKey)
+            }
+        }
+    }
+
     init(
         defaults: UserDefaults = .standard,
         saveDeviceToken: @escaping (String) throws -> Void = { try Keychain.replaceDeviceToken($0) }
@@ -39,6 +52,7 @@ final class AppSettings {
         iconPalette = defaults.string(forKey: Self.iconPaletteKey)
             .flatMap(UllageMark.Palette.init(rawValue:)) ?? .default
         animatesMenuBarLiquid = defaults.object(forKey: Self.animatesMenuBarLiquidKey) as? Bool ?? true
+        menuBarMetricID = defaults.string(forKey: Self.menuBarMetricIDKey).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     var serverURL: URL {

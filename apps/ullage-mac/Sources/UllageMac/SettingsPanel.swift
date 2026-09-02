@@ -6,11 +6,13 @@ import UllageKit
 final class SettingsPanelController: NSWindowController {
     init(
         settings: AppSettings,
+        store: UsageStore,
         mode: AppMode,
         onSaved: @escaping () -> Void
     ) {
         let view = SettingsView(
             settings: settings,
+            store: store,
             mode: mode,
             onSaved: onSaved
         )
@@ -125,6 +127,7 @@ func connectionTestRequiresPairing(
 
 private struct SettingsView: View {
     @Bindable var settings: AppSettings
+    let store: UsageStore
     let mode: AppMode
     let onSaved: () -> Void
     @State private var serverURL: String
@@ -138,10 +141,12 @@ private struct SettingsView: View {
 
     init(
         settings: AppSettings,
+        store: UsageStore,
         mode: AppMode,
         onSaved: @escaping () -> Void
     ) {
         self.settings = settings
+        self.store = store
         self.mode = mode
         self.onSaved = onSaved
         _serverURL = State(initialValue: settings.serverURL.absoluteString)
@@ -272,11 +277,45 @@ private struct SettingsView: View {
             Text("Menu Bar")
                 .font(.headline)
             Toggle("Animate liquid", isOn: $settings.animatesMenuBarLiquid)
-            Text("Off keeps the liquid at the lowest remaining level with a flat surface.")
+            Text("Off keeps the liquid at the tracked level with a flat surface.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Liquid tracks", selection: $settings.menuBarMetricID) {
+                Text("Lowest remaining across accounts").tag(String?.none)
+                ForEach(liquidMetricOptions) { option in
+                    Text(option.title).tag(String?.some(option.id))
+                }
+            }
+            Text(liquidMetricCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// Current Overview rows, plus a placeholder for a pinned row that is not
+    /// available right now so the picker never shows an empty selection.
+    private var liquidMetricOptions: [MenuBarMetricOption] {
+        var options = menuBarMetricOptions(accounts: store.accounts, snapshots: store.snapshots)
+        if let pinned = settings.menuBarMetricID, !options.contains(where: { $0.id == pinned }) {
+            options.append(MenuBarMetricOption(
+                id: pinned,
+                accountID: "",
+                title: "Pinned metric (currently unavailable)",
+                remainingRatio: 0
+            ))
+        }
+        return options
+    }
+
+    private var liquidMetricCaption: String {
+        if let pinned = settings.menuBarMetricID,
+           !menuBarMetricOptions(accounts: store.accounts, snapshots: store.snapshots)
+               .contains(where: { $0.id == pinned }) {
+            return "The pinned row is missing from the latest refresh; the liquid falls back to the lowest remaining until it returns."
+        }
+        return "Pin one Overview row to the menu bar, or leave it on the lowest remaining."
     }
 
     private func pairDigitGroup(indices: Range<Int>) -> some View {

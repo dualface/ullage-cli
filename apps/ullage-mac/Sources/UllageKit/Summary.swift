@@ -371,6 +371,69 @@ public func menuBarAccountLevels(
     }
 }
 
+/// One Overview row a user can pin as the menu bar liquid level.
+public struct MenuBarMetricOption: Equatable, Identifiable, Sendable {
+    /// Stable across refreshes: account id, window key, measurement, occurrence.
+    public let id: String
+    public let accountID: String
+    /// "Claude · 5h" or "Cursor · monthly auto"; the account part is the tab title.
+    public let title: String
+    public let remainingRatio: Double
+
+    public init(id: String, accountID: String, title: String, remainingRatio: Double) {
+        self.id = id
+        self.accountID = accountID
+        self.title = title
+        self.remainingRatio = remainingRatio
+    }
+}
+
+/// Every enabled account's Overview rows that carry a remaining ratio, in
+/// stable account order. Disabled rows and money rows are not offered.
+public func menuBarMetricOptions(
+    accounts: [Account],
+    snapshots: [SnapshotPayload]
+) -> [MenuBarMetricOption] {
+    let titles = tabTitles(for: accounts)
+    let snapshotsByID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.accountId, $0) })
+    return sortedAccounts(accounts.filter(\.enabled)).flatMap { account -> [MenuBarMetricOption] in
+        guard let snapshot = snapshotsByID[account.id],
+              let usage = snapshot.usage.data else { return [] }
+        let accountTitle = titles[account.id] ?? providerDisplayName(account.provider)
+        return overviewItems(for: usage).compactMap { item in
+            guard !item.row.disabled, let ratio = item.row.remainingRatio else { return nil }
+            let metric = item.row.metric == "usage" ? "" : " " + item.row.metric
+            return MenuBarMetricOption(
+                id: "\(account.id)|\(item.id.windowKey)|\(item.id.measurementName)|\(item.id.occurrence)",
+                accountID: account.id,
+                title: "\(accountTitle) · \(item.row.window)\(metric)",
+                remainingRatio: ratio
+            )
+        }
+    }
+}
+
+/// Levels that drive the menu bar liquid. A pinned metric that is currently
+/// available becomes the single level; otherwise (no pin, or the pinned row
+/// vanished) every account's representative level is returned so the floor
+/// falls back to the lowest remaining.
+public func menuBarLiquidLevels(
+    accounts: [Account],
+    snapshots: [SnapshotPayload],
+    pinnedMetricID: String?
+) -> [MenuBarAccountLevel] {
+    if let pinnedMetricID,
+       let option = menuBarMetricOptions(accounts: accounts, snapshots: snapshots)
+           .first(where: { $0.id == pinnedMetricID }) {
+        return [MenuBarAccountLevel(
+            accountID: option.accountID,
+            displayName: option.title,
+            remainingRatio: option.remainingRatio
+        )]
+    }
+    return menuBarAccountLevels(accounts: accounts, snapshots: snapshots)
+}
+
 public func menuBarFillRatio(
     accounts: [Account],
     snapshots: [SnapshotPayload]

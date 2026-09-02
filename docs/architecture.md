@@ -67,7 +67,10 @@ The executable also owns the shared Swift/CoreGraphics U-vessel drawing implemen
 template menu bar mark and full-color application icon. `UllageMark.Palette` owns the six canonical
 application-icon palettes and their glass-rendering colors. The template variant uses dedicated
 geometry to remain legible at 18 points. Menu bar liquid is a solid fill with a wavy surface;
-`UllageKit` exposes per-account Overview remaining levels and pure animation helpers that pick the
+`UllageKit` exposes per-account Overview remaining levels, the list of pinnable Overview rows
+(`menuBarMetricOptions`, ids stable across refreshes), and `menuBarLiquidLevels`, which returns the
+pinned row as the single level or every account's level when nothing usable is pinned
+(`AppSettings.menuBarMetricID`). Pure animation helpers pick the
 lowest level as the floor (quantized to 20 steps for the accessibility value) and breathe the drawn
 height continuously from full to that floor and back over a forty-second cosine-eased cycle, with
 an approximately 10 fps wobble. While the wobble timer runs the status item controller holds a
