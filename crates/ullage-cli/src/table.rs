@@ -26,6 +26,8 @@ const BAR_FILLED: char = '#';
 const BAR_EMPTY: char = '-';
 /// Rendered width of `[` + bar + `]`.
 const BAR_RENDER_WIDTH: usize = BAR_WIDTH + 2;
+/// Where a reset stops being told in hours and starts being told in days.
+const TWO_DAYS_IN_SECONDS: i64 = 2 * 24 * 60 * 60;
 /// Remaining quota at or below which the bar turns red, then yellow.
 const CRITICAL_REMAINING: f64 = 0.10;
 const LOW_REMAINING: f64 = 0.25;
@@ -501,7 +503,7 @@ fn strip_gpt_prefix(metric: &str) -> Option<&str> {
 
 fn summary_value_text(value: &SummaryValue) -> (&'static str, String) {
     match value {
-        SummaryValue::Remains(percent) => ("remains", format_percent(*percent)),
+        SummaryValue::Remains(percent) => remains_text(*percent),
         SummaryValue::Used(percent) => ("used", format_percent(*percent)),
         SummaryValue::Balance { amount, currency } => {
             ("balance", format_money(*amount, &currency.code))
@@ -526,6 +528,23 @@ fn summary_value_text(value: &SummaryValue) -> (&'static str, String) {
         ),
         SummaryValue::Disabled => ("disabled", String::new()),
     }
+}
+
+/// How much is left, in words when the number alone would mislead. `remains
+/// 0%` reads like a measurement that came back empty rather than like quota
+/// that is gone, and since the percentage is rounded it also covers everything
+/// under half a percent, which is still usable.
+fn remains_text(percent: f64) -> (&'static str, String) {
+    if !percent.is_finite() {
+        return ("remains", format_percent(percent));
+    }
+    if percent <= 0.0 {
+        return ("used up", String::new());
+    }
+    if percent < 0.5 {
+        return ("remains", "<1%".into());
+    }
+    ("remains", format_percent(percent))
 }
 
 fn format_percent(percent: f64) -> String {
@@ -572,13 +591,35 @@ pub fn relative_future(moment: DateTime<Utc>, now: DateTime<Utc>) -> String {
     if seconds <= 0 {
         return "now".into();
     }
-    format!("in {}", duration_text(seconds))
+    format!("in {}", reset_duration_text(seconds))
 }
 
 /// Describes how far `moment` is behind `now`, e.g. `2m ago`.
 pub fn relative_past(moment: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let seconds = (now - moment).num_seconds().max(0);
     format!("{} ago", duration_text(seconds))
+}
+
+/// How long until a window resets. Days only take over past two of them:
+/// `in 1d15h` is readable, but a reset the table rounds to `1d` hides whether
+/// the wait is 25 hours or 47, and that decides whether a limit is worth
+/// waiting out. Under an hour this falls back to the shared shape, since
+/// minutes are all that is left to say.
+fn reset_duration_text(seconds: i64) -> String {
+    if seconds >= TWO_DAYS_IN_SECONDS {
+        return duration_text(seconds);
+    }
+    // Round to the nearest minute, so 59.7 minutes carries into the hour
+    // rather than printing as `0h60m`.
+    let minutes = (seconds + 30) / 60;
+    let hours = minutes / 60;
+    if hours == 0 {
+        return duration_text(seconds);
+    }
+    match minutes % 60 {
+        0 => format!("{hours}h"),
+        rest => format!("{hours}h{rest:02}m"),
+    }
 }
 
 fn duration_text(seconds: i64) -> String {
@@ -896,6 +937,66 @@ mod tests {
         );
         assert!(block.contains("monthly-usage"), "{block}");
         assert!(block.contains("monthly spend"), "{block}");
+    }
+
+    #[test]
+    fn spent_quota_reads_as_used_up_rather_than_zero_percent() {
+        assert_eq!(remains_text(73.0), ("remains", "73%".into()));
+        // Rounds to 1%, so the number still carries it.
+        assert_eq!(remains_text(0.6), ("remains", "1%".into()));
+        // Would round to 0% while quota is left: say how small it is instead.
+        assert_eq!(remains_text(0.4), ("remains", "<1%".into()));
+        assert_eq!(remains_text(0.0), ("used up", String::new()));
+        assert_eq!(remains_text(-5.0), ("used up", String::new()));
+        assert_eq!(remains_text(f64::NAN), ("remains", "-".into()));
+
+        let block = render_summary_rows(
+            &[SummaryRow {
+                remaining_ratio: Some(0.0),
+                ..summary_row("weekly", "usage", SummaryValue::Remains(0.0))
+            }],
+            at(12, 0),
+            &Palette::off(),
+        );
+        assert!(block.contains("used up"), "{block}");
+        assert!(!block.contains("0%"), "{block}");
+        // The row still carries its bar, empty.
+        assert!(block.contains("[----------]"), "{block}");
+    }
+
+    #[test]
+    fn resets_stay_in_hours_and_minutes_until_two_days() {
+        let now = at(12, 0);
+        let ahead = |minutes: i64| relative_future(now + chrono::Duration::minutes(minutes), now);
+        // Whole hours drop the minutes rather than printing `3h00m`.
+        assert_eq!(ahead(180), "in 3h");
+        assert_eq!(ahead(210), "in 3h30m");
+        // Past a day, still hours: `in 1d` would hide 25 hours against 47.
+        assert_eq!(ahead(25 * 60 + 1), "in 25h01m");
+        assert_eq!(ahead(47 * 60 + 59), "in 47h59m");
+        // Two days and beyond, days again.
+        assert_eq!(ahead(48 * 60), "in 2d00h");
+        assert_eq!(ahead(8130), "in 5d15h");
+        // Under an hour is unchanged.
+        assert_eq!(ahead(12), "in 12m");
+        assert_eq!(
+            relative_future(now + chrono::Duration::seconds(30), now),
+            "in <1m"
+        );
+        // Seconds round into the minute, and a full minute into the hour.
+        assert_eq!(
+            relative_future(now + chrono::Duration::seconds(3_600 + 31), now),
+            "in 1h01m"
+        );
+        assert_eq!(
+            relative_future(now + chrono::Duration::seconds(3_600 + 59 * 60 + 45), now),
+            "in 2h"
+        );
+        // "updated 30h ago" is a different question and keeps the old shape.
+        assert_eq!(
+            relative_past(now - chrono::Duration::minutes(30 * 60), now),
+            "1d06h ago"
+        );
     }
 
     #[test]

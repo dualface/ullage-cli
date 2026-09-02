@@ -481,7 +481,12 @@ snapshots and does not call the provider.
 
 Table output defaults to a readable summary: one line per usable measurement,
 with the window, the metric, how much quota is left, when the window resets,
-and a ten-cell progress bar as the last column.
+and a ten-cell progress bar as the last column. A row with nothing left reads
+`used up` rather than `remains 0%`, which looks like a measurement that came
+back empty, and a row under half a percent reads `remains <1%` rather than
+rounding down to that same zero. Resets stay in hours and minutes for up to two
+days (`resets in 33h30m`), since `in 1d` hides whether the wait is 25 hours or
+47; past that they are given in days.
 
 Two kinds of provider bookkeeping never become summary rows. The status booleans
 `allowed`, `limit_reached`, `has_credits`, `unlimited`, `on_demand_enabled`, and
