@@ -66,7 +66,9 @@ struct RootView: View {
     }
 
     private func reportHeight() {
-        onPreferredHeightChanged(chromeHeight + contentHeight)
+        // Whole points only: fractional measurements made the popover resize by
+        // a pixel on changes that did not really alter the layout.
+        onPreferredHeightChanged((chromeHeight + contentHeight).rounded(.up))
     }
 
     /// The hero mirrors the menu bar mark, so it is hidden whenever the mark
@@ -315,9 +317,20 @@ private struct TabBar: View {
                         .frame(width: 6, height: 6)
                         .shadow(color: color.opacity(0.8), radius: 4)
                 }
+                // Reserve the selected weight's width in both states: the
+                // semibold label is up to 2.4 pt wider, and letting the pill
+                // resize on selection moved the wrap point, which shifted the
+                // popover vertically on every tab switch.
                 Text(title)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
+                    .opacity(0)
+                    .overlay {
+                        Text(title)
+                            .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
