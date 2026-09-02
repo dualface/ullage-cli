@@ -410,7 +410,7 @@ final class UllageMacTests: XCTestCase {
         ))
         let reset = try XCTUnwrap(dated.resetsAt)
         let detail = try XCTUnwrap(hero.detail)
-        XCTAssertEqual(detail, "resets \(relativeTimeText(reset, now: now))")
+        XCTAssertEqual(detail, "resets \(resetRelativeText(reset, now: now))")
     }
 
     @MainActor
@@ -765,6 +765,27 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(moneyText(12.5, "EUR"), "€12.50")
         XCTAssertEqual(moneyText(12.5, "GBP"), "£12.50")
         XCTAssertEqual(moneyText(12.5, "SEK"), "SEK 12.50")
+    }
+
+    func testResetTimeUsesTenthsOfAnHourInsideTwoDays() {
+        let now = Date(timeIntervalSinceReferenceDate: 0)
+        func text(_ seconds: Double) -> String {
+            resetRelativeText(now.addingTimeInterval(seconds), now: now)
+        }
+        // Under an hour keeps the units that still mean something.
+        XCTAssertEqual(text(45), "in 45s")
+        XCTAssertEqual(text(45 * 60), "in 45m")
+        // From an hour to two days, tenths of an hour.
+        XCTAssertEqual(text(3_600), "in 1.0h")
+        XCTAssertEqual(text(3.5 * 3_600), "in 3.5h")
+        XCTAssertEqual(text(25 * 3_600), "in 25.0h")
+        XCTAssertEqual(text(47.4 * 3_600), "in 47.4h")
+        // Two days and past it, whole days again.
+        XCTAssertEqual(text(48 * 3_600), "in 2d")
+        XCTAssertEqual(text(10 * 86_400), "in 10d")
+        // The past reads the same way round.
+        XCTAssertEqual(text(-3.5 * 3_600), "3.5h ago")
+        XCTAssertEqual(text(-10 * 86_400), "10d ago")
     }
 
     func testSpentQuotaSaysSoInsteadOfShowingZeroPercent() {

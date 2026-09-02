@@ -699,7 +699,7 @@ func heroModel(
     // A pinned row reports its own window; otherwise the floor account's
     // soonest visible reset.
     let reset: String? = if let pinned {
-        pinned.resetsAt.flatMap { $0 > now ? relativeTimeText($0, now: now) : nil }
+        pinned.resetsAt.flatMap { $0 > now ? resetRelativeText($0, now: now) : nil }
     } else {
         soonestReset(
             accountID: floor.accountID,
@@ -748,5 +748,5 @@ private func soonestReset(
         .compactMap(\.row.resetsAt)
         .filter { $0 > now }
     guard let soonest = resets.min() else { return nil }
-    return relativeTimeText(soonest, now: now)
+    return resetRelativeText(soonest, now: now)
 }
