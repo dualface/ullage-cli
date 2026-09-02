@@ -84,7 +84,12 @@ private struct StructuredBackdrop: View {
 /// The popover's outer surface. On macOS 26 the whole popover is one Liquid
 /// Glass slab in a transparent panel, so the desktop and windows underneath
 /// show through it and bend at its edges; below macOS 26 it is the tinted
-/// backdrop inside the `NSPopover` frame.
+/// backdrop inside the `NSPopover` frame. The slab is `Glass.clear`, not
+/// `.regular`: regular glass blurs and tints so heavily that a plain window
+/// behind the popover (a white web page, a document) turns into a flat grey
+/// and the effect disappears, while clear glass keeps the page's structure
+/// visible and lenses it at the edges. Text sits on the frosted panels, not
+/// on the slab, so the slab needs no dimming layer for legibility.
 struct PopoverSurface: ViewModifier {
     static let cornerRadius: CGFloat = 22
 
@@ -93,7 +98,7 @@ struct PopoverSurface: ViewModifier {
             let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
             content
                 .clipShape(shape)
-                .glassEffect(.regular, in: shape)
+                .glassEffect(.clear, in: shape)
         } else {
             content.background { AtmosphereBackground() }
         }
