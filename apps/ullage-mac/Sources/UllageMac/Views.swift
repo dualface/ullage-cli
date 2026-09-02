@@ -285,7 +285,7 @@ private struct TabBar: View {
     @ViewBuilder
     private var selectionBackground: some View {
         if #available(macOS 26.0, *) {
-            Capsule().fill(.clear).glassEffect(.regular.interactive(), in: .capsule)
+            Capsule().fill(.clear).glassEffect(.clear.interactive(), in: .capsule)
         } else {
             Capsule()
                 .fill(colorScheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.95))

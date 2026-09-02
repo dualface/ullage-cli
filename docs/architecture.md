@@ -84,7 +84,8 @@ solid fill below macOS 26, a scrim at 0.35 dark / 0.45 light on it, since Liquid
 sits behind it and a solid backdrop flattens every panel), the
 `glassPanel` modifier (SwiftUI `glassEffect` behind `if #available(macOS 26.0, *)`, falling back to
 a layered material plus inset highlight on macOS 14 and 15; the selected tab pill, the header's
-circular buttons and the probe button branch the same way). Glass is applied only to the floating
+circular buttons and the probe button branch the same way; the floating chrome uses `Glass.clear`,
+since `.regular` renders as a near-opaque dark panel in dark appearance). Glass is applied only to the floating
 chrome, which the cards scroll underneath, because the effect refracts what is behind it and has
 nothing to show over a static backdrop; the cards keep the opaque panel so their text stays legible
 over any wallpaper. Both the header and the tab row live in a `ZStack` above the scroll view, which

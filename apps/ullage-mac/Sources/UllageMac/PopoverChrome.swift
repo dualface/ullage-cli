@@ -67,9 +67,12 @@ struct GlassPanel: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *), floating {
+            // `.clear` rather than `.regular`: the regular variant renders as a
+            // near-opaque dark panel in dark appearance, which is invisible as
+            // an effect over this backdrop.
             content
                 .glassEffect(
-                    .regular,
+                    .clear,
                     in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 )
         } else {
