@@ -264,6 +264,23 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(flowRows(widths: [], maxWidth: 100, spacing: 4), [])
     }
 
+    func testWrapFriendlyTitleKeepsPunctuationOffItsOwnLine() {
+        let joiner = "\u{2060}"
+        let nbsp = "\u{00A0}"
+
+        // The separator binds to the word before it, so it cannot start a line.
+        XCTAssertEqual(wrapFriendlyTitle("Claude · 5h"), "Claude\(nbsp)· 5h")
+        // Brackets bind inward, so neither can be stranded alone.
+        XCTAssertEqual(
+            wrapFriendlyTitle("Fable (weekly_scoped)"),
+            "Fable (\(joiner)weekly_scoped\(joiner))"
+        )
+        XCTAssertEqual(wrapFriendlyTitle("ChatGPT"), "ChatGPT")
+        XCTAssertEqual(wrapFriendlyTitle(""), "")
+        // Ordinary spaces stay breakable so the title can still wrap.
+        XCTAssertTrue(wrapFriendlyTitle("Cursor · monthly auto").hasSuffix("monthly auto"))
+    }
+
     func testAccountLabelOnlyShowsWhenAProviderHasSeveralAccounts() {
         let solo = Account(id: "a", provider: "claude", label: "Work", enabled: true)
         let sibling = Account(id: "b", provider: "claude", label: " Personal ", enabled: true)

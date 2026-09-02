@@ -382,9 +382,14 @@ struct PopoverHero: View {
                         .foregroundStyle(tierColor)
                         .shadow(color: tierColor.opacity(0.55), radius: 12)
                         .contentTransition(.numericText())
-                    Text(model.title)
+                    Text(wrapFriendlyTitle(model.title))
                         .font(.system(size: 13, weight: .semibold))
                         .multilineTextAlignment(.leading)
+                        // Bounded lines plus scale-to-fit: a token wider than
+                        // the column would otherwise break mid-word and strand
+                        // its closing bracket on a line of its own.
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.8)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let detail = model.detail {
@@ -459,6 +464,31 @@ private struct CircleIconButton: View {
         .help(label)
         .accessibilityLabel(label)
     }
+}
+
+/// Bind punctuation to its neighbour so a wrapped title never leaves a
+/// separator or a bracket alone on a line. The separator takes a non-breaking
+/// space before it, and brackets take a word joiner on their inner side, which
+/// pushes the break into the surrounding words instead.
+func wrapFriendlyTitle(_ title: String) -> String {
+    let wordJoiner = "\u{2060}"
+    let nonBreakingSpace = "\u{00A0}"
+    let opening: Set<Character> = ["(", "[", "{"]
+    let closing: Set<Character> = [")", "]", "}", ",", ".", ":", ";"]
+
+    var result = ""
+    let characters = Array(title)
+    for (index, character) in characters.enumerated() {
+        let next: Character? = index + 1 < characters.count ? characters[index + 1] : nil
+        if character == " ", next == "\u{00B7}" {
+            result += nonBreakingSpace
+        } else {
+            result.append(character)
+            if opening.contains(character) { result += wordJoiner }
+        }
+        if let next, closing.contains(next) { result += wordJoiner }
+    }
+    return result
 }
 
 /// What the hero shows: the level the menu bar tracks, where it came from, and
