@@ -46,7 +46,7 @@ public enum MenuBarLiquidAnimation {
     /// Target frame rate for the wobble timer (8–12 fps band).
     public static let framesPerSecond: Double = 10
     /// One full breath: full -> floor -> full.
-    public static let cycleDuration: TimeInterval = 8
+    public static let cycleDuration: TimeInterval = 40
     public static let waveRadiansPerSecond: Double = 2.4
 
     public static func tickInterval() -> TimeInterval {

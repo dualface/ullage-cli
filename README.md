@@ -46,11 +46,15 @@ implementation in the `UllageMac` executable. The menu bar variant uses
 dedicated geometry for legibility at 18 points. Its liquid is a solid fill
 with a wavy surface. The floor of the liquid is the lowest remaining ratio
 across enabled accounts with countable Overview remaining; the liquid breathes
-in an eight-second loop from a full vessel down to that floor and back up,
+in a forty-second loop from a full vessel down to that floor and back up,
 eased so the turnarounds are smooth. A light wobble runs at about 10 fps while
-the Mac is on AC power and Reduce Motion is off; battery power or Reduce Motion
-holds the liquid still at the floor level. The accessibility description
-reports the floor account and its percentage. Overview uses a provider-specific
+the Mac is on AC power and Reduce Motion is off, and the app holds a
+user-initiated activity during that time so App Nap does not throttle the
+timer. Battery power, Reduce Motion, or turning off "Animate liquid" in
+Settings holds the liquid still at the floor level with a flat surface. The
+app polls the daemon every 30 seconds from launch, whether or not the popover
+is open, so the mark shows live data without a click. The accessibility
+description reports the floor account and its percentage. Overview uses a provider-specific
 catalog: ChatGPT weekly windows and reset credits, Claude 5h and Fable, Cursor
 auto and api, and Grok usage and GrokBuild. Unknown providers keep every window
 in the shortest available time tier. A reached limit in those retained windows

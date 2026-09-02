@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class PopoverController: NSObject, NSPopoverDelegate {
+final class PopoverController: NSObject {
     private static let screenMargin: CGFloat = 24
 
     private let popover = NSPopover()
@@ -18,7 +18,6 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         self.openSettings = openSettings
         super.init()
         popover.behavior = .transient
-        popover.delegate = self
     }
 
     func show(relativeTo rect: NSRect, of view: NSView) {
@@ -37,16 +36,10 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         )
         popover.contentSize = sizing.contentSize
         popover.show(relativeTo: rect, of: view, preferredEdge: .minY)
-        store.start()
     }
 
     func close() {
         popover.performClose(nil)
-        store.stop()
-    }
-
-    func popoverDidClose(_ notification: Notification) {
-        store.stop()
     }
 
     private func updateContentHeight(_ preferredHeight: CGFloat) {

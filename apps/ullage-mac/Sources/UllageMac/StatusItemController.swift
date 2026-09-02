@@ -16,6 +16,8 @@ final class StatusItemController: NSObject {
     private var animationState = MenuBarLiquidAnimationState()
     private var animationTimer: Timer?
     private var lastTickUptime: TimeInterval?
+    /// Held while the wobble timer runs so App Nap does not throttle it.
+    private var animationActivity: NSObjectProtocol?
     private var reduceMotionObserver: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
     private var powerSourceRunLoopSource: CFRunLoopSource?
@@ -45,6 +47,21 @@ final class StatusItemController: NSObject {
         observeWorkspaceGates()
         startPowerSourceMonitoring()
         observeStore()
+        observeSettings()
+        // The menu bar shows live data from launch; the store keeps polling
+        // whether or not the popover is open and stops only at quit.
+        store.start()
+    }
+
+    private func observeSettings() {
+        withObservationTracking {
+            _ = settings.animatesMenuBarLiquid
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.reconcileAnimationTimer()
+                self?.observeSettings()
+            }
+        }
     }
 
     private func observeStore() {
@@ -146,7 +163,9 @@ final class StatusItemController: NSObject {
         case .initial, .noData:
             return .stop
         case .liquid:
-            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || PowerSource.isOnBattery {
+            if !settings.animatesMenuBarLiquid
+                || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                || PowerSource.isOnBattery {
                 return .freeze
             }
             return .animate
@@ -183,12 +202,20 @@ final class StatusItemController: NSObject {
         timer.tolerance = interval * 0.2
         RunLoop.main.add(timer, forMode: .common)
         animationTimer = timer
+        animationActivity = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Ullage menu bar liquid animation"
+        )
     }
 
     private func stopAnimationTimer() {
         animationTimer?.invalidate()
         animationTimer = nil
         lastTickUptime = nil
+        if let animationActivity {
+            ProcessInfo.processInfo.endActivity(animationActivity)
+            self.animationActivity = nil
+        }
     }
 
     private func tickAnimation() {
@@ -217,7 +244,7 @@ final class StatusItemController: NSObject {
     private func applyLiquidImage(gate: MenuBarLiquidMotionGate) {
         statusItem.button?.image = UllageMark.menuBarImage(
             fillRatio: animationState.displayedRatio,
-            wavePhase: gate == .animate ? animationState.wavePhase : 0,
+            wavePhase: gate == .animate ? animationState.wavePhase : nil,
             accountLabel: animationState.floorDisplayName,
             accessibilityRatio: animationState.floorRatio
         )

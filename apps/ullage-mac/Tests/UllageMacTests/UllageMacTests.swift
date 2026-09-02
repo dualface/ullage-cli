@@ -86,6 +86,31 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuBarFlatSurfaceIsLevelWhereTheWaveIsNot() throws {
+        let flat = try pngData(rasterizedMenuBarImage(fillRatio: 0.5, wavePhase: nil))
+        let wave = try pngData(rasterizedMenuBarImage(fillRatio: 0.5, wavePhase: 0))
+        XCTAssertNotEqual(flat, wave)
+
+        // At 50% the surface sits at y = 50.75; sample a row 1.15 units above
+        // it at a fine scale. A flat line leaves the row clear everywhere, while
+        // the wave (amplitude 1.8, positive sine downward) crests through it
+        // at x = 75.
+        let flatRep = try rasterizedMenuBarImage(fillRatio: 0.5, wavePhase: nil, scale: 10)
+        let waveRep = try rasterizedMenuBarImage(fillRatio: 0.5, wavePhase: 0, scale: 10)
+        func alpha(_ rep: NSBitmapImageRep, x: Double, y: Double) throws -> CGFloat {
+            let size = CGFloat(rep.pixelsWide)
+            let xPixel = Int((x / 100 * size).rounded(.down))
+            let yPixel = Int((y / 100 * size).rounded(.down))
+            return try XCTUnwrap(rep.colorAt(x: xPixel, y: yPixel)).alphaComponent
+        }
+        for x in stride(from: 25.0, through: 75.0, by: 5) {
+            XCTAssertLessThanOrEqual(try alpha(flatRep, x: x, y: 49.6), 0.05, "Flat surface at x=\(x)")
+        }
+        XCTAssertGreaterThanOrEqual(try alpha(waveRep, x: 75, y: 49.6), 0.3)
+        XCTAssertGreaterThanOrEqual(try alpha(flatRep, x: 50, y: 52), 0.3)
+    }
+
+    @MainActor
     func testMenuBarZeroFillLeavesTheVisibleCavityEmpty() throws {
         let representation = try rasterizedMenuBarImage(fillRatio: 0)
         let pixelSize = CGFloat(representation.pixelsWide)
@@ -200,6 +225,20 @@ final class UllageMacTests: XCTestCase {
             XCTAssertEqual(representation.pixelsWide, entry.pixelSize, entry.filename)
             XCTAssertEqual(representation.pixelsHigh, entry.pixelSize, entry.filename)
         }
+    }
+
+    @MainActor
+    func testAnimateLiquidSettingDefaultsOnAndRoundTrips() {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(AppSettings(defaults: defaults).animatesMenuBarLiquid)
+        let settings = AppSettings(defaults: defaults)
+        settings.animatesMenuBarLiquid = false
+        XCTAssertFalse(AppSettings(defaults: defaults).animatesMenuBarLiquid)
+        settings.animatesMenuBarLiquid = true
+        XCTAssertTrue(AppSettings(defaults: defaults).animatesMenuBarLiquid)
     }
 
     @MainActor
@@ -582,10 +621,10 @@ private func iconColor(
 @MainActor
 private func rasterizedMenuBarImage(
     fillRatio: Double?,
-    wavePhase: Double = 0
+    wavePhase: Double? = 0,
+    scale: Int = 2
 ) throws -> NSBitmapImageRep {
     let image = UllageMark.menuBarImage(fillRatio: fillRatio, wavePhase: wavePhase)
-    let scale = 2
     let pixelSize = Int(image.size.width) * scale
     let representation = try XCTUnwrap(NSBitmapImageRep(
         bitmapDataPlanes: nil,

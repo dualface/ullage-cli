@@ -88,15 +88,17 @@ enum UllageMark {
     static func menuBarImage() -> NSImage {
         menuBarImage(
             fillRatio: 0.3865,
-            wavePhase: 0,
+            wavePhase: nil,
             accountLabel: nil,
             accessibilityDescription: "Ullage"
         )
     }
 
+    /// `wavePhase` selects the surface: a phase draws the wobbling wave, `nil`
+    /// draws a flat line for the still (frozen or animation-off) states.
     static func menuBarImage(
         fillRatio: Double?,
-        wavePhase: Double = 0,
+        wavePhase: Double? = nil,
         accountLabel: String? = nil,
         accessibilityRatio: Double? = nil
     ) -> NSImage {
@@ -125,7 +127,7 @@ enum UllageMark {
 
     private static func menuBarImage(
         fillRatio: Double?,
-        wavePhase: Double,
+        wavePhase: Double?,
         accountLabel _: String?,
         accessibilityDescription: String
     ) -> NSImage {
@@ -183,7 +185,7 @@ enum UllageMark {
         style: Style,
         palette: Palette = .default,
         fillRatio: Double? = nil,
-        wavePhase: Double = 0
+        wavePhase: Double? = nil
     ) {
         context.saveGState()
         defer { context.restoreGState() }
@@ -282,7 +284,7 @@ enum UllageMark {
         palette: Palette,
         unit: CGFloat,
         fillRatio: Double?,
-        wavePhase: Double
+        wavePhase: Double?
     ) {
         switch style {
         case .applicationIcon:
@@ -467,7 +469,7 @@ enum UllageMark {
     private static func drawTemplateVessel(
         in context: CGContext,
         fillRatio: Double?,
-        wavePhase: Double
+        wavePhase: Double?
     ) {
         let vessel = CGMutablePath()
         vessel.move(to: CGPoint(x: 12, y: 6))
@@ -508,14 +510,16 @@ enum UllageMark {
         context.strokePath()
     }
 
-    /// Solid liquid filling the cavity up to a wavy surface at the remaining height.
+    /// Solid liquid filling the cavity up to the surface at the remaining
+    /// height: a wave at `wavePhase`, or a flat line when the phase is `nil`.
     private static func drawTemplateLiquidFill(
         in context: CGContext,
         fillRatio: Double,
-        wavePhase: Double
+        wavePhase: Double?
     ) {
         let surfaceY = 91.5 - 81.5 * CGFloat(fillRatio)
-        let amplitude: CGFloat = 1.8
+        let amplitude: CGFloat = wavePhase == nil ? 0 : 1.8
+        let wavePhase = wavePhase ?? 0
         let minX: CGFloat = 0
         let maxX: CGFloat = 100
         let liquid = CGMutablePath()

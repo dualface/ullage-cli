@@ -69,9 +69,13 @@ application-icon palettes and their glass-rendering colors. The template variant
 geometry to remain legible at 18 points. Menu bar liquid is a solid fill with a wavy surface;
 `UllageKit` exposes per-account Overview remaining levels and pure animation helpers that pick the
 lowest level as the floor (quantized to 20 steps for the accessibility value) and breathe the drawn
-height continuously from full to that floor and back over an eight-second cosine-eased cycle, with
-an approximately 10 fps wobble. On battery power or when Reduce Motion is enabled the liquid holds
-still at the floor and the cycle is parked at its trough so resuming rises out of the frozen level.
+height continuously from full to that floor and back over a forty-second cosine-eased cycle, with
+an approximately 10 fps wobble. While the wobble timer runs the status item controller holds a
+`ProcessInfo` user-initiated activity so App Nap does not throttle the timer. On battery power, when
+Reduce Motion is enabled, or when the "Animate liquid" setting (`animatesMenuBarLiquid`, default on)
+is off, the liquid holds still at the floor with a flat surface and the cycle is parked at its
+trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
+30-second cadence and keeps polling while the popover is closed; it stops only at quit.
 Overview uses a provider-specific catalog (ChatGPT weekly and reset credits, Claude 5h and Fable,
 Cursor auto and api, Grok usage and GrokBuild). Unknown providers keep every window in the shortest
 available time tier, and a reached limit in those retained windows takes precedence as 0% for that

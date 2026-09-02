@@ -493,6 +493,7 @@ private func date(_ value: String) throws -> Date {
 
 @Test func menuBarLiquidCycleRatioIsFullAtTheEndsAndFloorHalfway() {
     let cycle = MenuBarLiquidAnimation.cycleDuration
+    #expect(cycle == 40)
     #expect(MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: 0) == 1)
     #expect(abs(MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: cycle / 2) - 0.2) < 1e-9)
     #expect(abs(MenuBarLiquidAnimation.cycleRatio(floor: 0.2, secondsInCycle: cycle) - 1) < 1e-9)

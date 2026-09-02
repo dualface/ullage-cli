@@ -11,6 +11,7 @@ final class AppSettings {
     private static let iconPaletteKey = "iconPalette"
     private static let pairedDeviceNameKey = "pairedDeviceName"
     private static let pairedAtKey = "pairedAt"
+    private static let animatesMenuBarLiquidKey = "animatesMenuBarLiquid"
     private let defaults: UserDefaults
     private let saveDeviceToken: (String) throws -> Void
 
@@ -19,6 +20,12 @@ final class AppSettings {
 
     var iconPalette: UllageMark.Palette {
         didSet { defaults.set(iconPalette.rawValue, forKey: Self.iconPaletteKey) }
+    }
+
+    /// Whether the menu bar liquid breathes and wobbles. Off draws the floor
+    /// level with a flat surface and runs no animation timer.
+    var animatesMenuBarLiquid: Bool {
+        didSet { defaults.set(animatesMenuBarLiquid, forKey: Self.animatesMenuBarLiquidKey) }
     }
 
     init(
@@ -31,6 +38,7 @@ final class AppSettings {
         pairedAt = defaults.object(forKey: Self.pairedAtKey) as? Date
         iconPalette = defaults.string(forKey: Self.iconPaletteKey)
             .flatMap(UllageMark.Palette.init(rawValue:)) ?? .default
+        animatesMenuBarLiquid = defaults.object(forKey: Self.animatesMenuBarLiquidKey) as? Bool ?? true
     }
 
     var serverURL: URL {

@@ -143,6 +143,8 @@ private struct SettingsView: View {
             pairingSection
             Divider()
             statusSection
+            Divider()
+            menuBarSection
         }
         .padding(20)
         .frame(width: 420)
@@ -212,6 +214,18 @@ private struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
+        }
+    }
+
+    private var menuBarSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Menu Bar")
+                .font(.headline)
+            Toggle("Animate liquid", isOn: $settings.animatesMenuBarLiquid)
+            Text("Off keeps the liquid at the lowest remaining level with a flat surface.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
