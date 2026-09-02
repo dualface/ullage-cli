@@ -3,19 +3,32 @@ import UllageKit
 
 // MARK: - Surfaces
 
-/// Tinted backdrop behind the popover: an oxblood wash from the top leading
-/// corner, a cool wash from the bottom trailing corner, over a flat base.
+/// Backdrop behind the popover. Liquid Glass is refraction: a panel only
+/// reads as glass when the content behind it has edges and tones to bend, so
+/// on macOS 26 the backdrop is a solid base carrying a few large, high-contrast
+/// shapes that the header, the tab row and the cards all sit over. A flat wash
+/// (the macOS 14/15 backdrop, and every earlier attempt at a translucent
+/// scrim) left each glass panel indistinguishable from a plain rectangle.
 struct AtmosphereBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                StructuredBackdrop(isDark: colorScheme == .dark)
+            } else {
+                legacyWash
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    /// Oxblood wash from the top leading corner, a cool wash from the bottom
+    /// trailing corner, over a flat base: the layered material of the legacy
+    /// panels supplies the depth on macOS 14 and 15.
+    private var legacyWash: some View {
         ZStack {
-            // Liquid Glass refracts what is behind it, so on macOS 26 the
-            // backdrop is a scrim rather than a solid fill: opaque enough to
-            // keep the tone and text contrast, sheer enough that the panels
-            // have something to sample. A solid base flattened every panel
-            // into a plain rectangle.
-            base.opacity(baseOpacity)
+            base
             RadialGradient(
                 colors: [warmTint, warmTint.opacity(0)],
                 center: .topLeading,
@@ -29,12 +42,6 @@ struct AtmosphereBackground: View {
                 endRadius: 300
             )
         }
-        .ignoresSafeArea()
-    }
-
-    private var baseOpacity: Double {
-        guard #available(macOS 26.0, *) else { return 1 }
-        return colorScheme == .dark ? 0.55 : 0.62
     }
 
     private var base: Color {
@@ -54,25 +61,84 @@ struct AtmosphereBackground: View {
     }
 }
 
-/// Panel surface. `floating` marks the chrome that hovers over scrolling
-/// content, which is the only place Liquid Glass has anything to refract; the
-/// cards keep an opaque frosted panel so their text stays legible over any
-/// wallpaper.
+/// The macOS 26 backdrop: two discs and a streak on a solid base. The shapes
+/// are anchored to the top and bottom edges rather than scaled with the
+/// height, so the header always has the warm disc and the streak behind it
+/// and the last card always has the cool disc, whatever the popover's height.
+/// The blur keeps the edges from reading as flat cut-outs while leaving
+/// enough contrast for the glass to lens.
+private struct StructuredBackdrop: View {
+    let isDark: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let height = proxy.size.height
+            ZStack {
+                base
+                Circle()
+                    .fill(warm)
+                    .frame(width: 340, height: 340)
+                    .position(x: width * 0.22, y: 40)
+                    .blur(radius: 14)
+                Circle()
+                    .fill(rose)
+                    .frame(width: 220, height: 220)
+                    .position(x: width * 0.96, y: height * 0.48)
+                    .blur(radius: 18)
+                Circle()
+                    .fill(cool)
+                    .frame(width: 300, height: 300)
+                    .position(x: width * 0.30, y: height - 30)
+                    .blur(radius: 16)
+                Capsule()
+                    .fill(streak)
+                    .frame(width: width * 1.3, height: 26)
+                    .rotationEffect(.degrees(-24))
+                    .position(x: width * 0.55, y: 132)
+                    .blur(radius: 5)
+            }
+            .clipped()
+        }
+    }
+
+    private var base: Color {
+        isDark ? Color(red: 0.055, green: 0.051, blue: 0.067) : Color(white: 0.96)
+    }
+
+    private var warm: Color {
+        isDark ? Color(red: 0.44, green: 0.08, blue: 0.19) : Color(red: 0.90, green: 0.56, blue: 0.63)
+    }
+
+    private var rose: Color {
+        isDark ? Color(red: 0.60, green: 0.20, blue: 0.33) : Color(red: 0.96, green: 0.74, blue: 0.79)
+    }
+
+    private var cool: Color {
+        isDark ? Color(red: 0.16, green: 0.23, blue: 0.48) : Color(red: 0.62, green: 0.72, blue: 0.93)
+    }
+
+    private var streak: Color {
+        isDark
+            ? Color(red: 0.93, green: 0.88, blue: 0.82).opacity(0.72)
+            : Color(red: 0.42, green: 0.08, blue: 0.18).opacity(0.50)
+    }
+}
+
+/// Panel surface: Liquid Glass on macOS 26 for every panel, so the header,
+/// the tab row and the cards all refract the structured backdrop; a layered
+/// material with an inset highlight on macOS 14 and 15.
 struct GlassPanel: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     var cornerRadius: CGFloat = 18
     var prominent = false
-    var floating = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *), floating {
-            // `.clear` rather than `.regular`: the regular variant renders as a
-            // near-opaque dark panel in dark appearance, which is invisible as
-            // an effect over this backdrop.
+        if #available(macOS 26.0, *) {
             content
                 .glassEffect(
-                    .clear,
+                    .regular,
                     in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 )
         } else {
@@ -124,12 +190,8 @@ struct GlassPanel: ViewModifier {
 }
 
 extension View {
-    func glassPanel(
-        cornerRadius: CGFloat = 18,
-        prominent: Bool = false,
-        floating: Bool = false
-    ) -> some View {
-        modifier(GlassPanel(cornerRadius: cornerRadius, prominent: prominent, floating: floating))
+    func glassPanel(cornerRadius: CGFloat = 18, prominent: Bool = false) -> some View {
+        modifier(GlassPanel(cornerRadius: cornerRadius, prominent: prominent))
     }
 }
 
@@ -447,7 +509,7 @@ struct PopoverHero: View {
             }
         }
         .padding(14)
-        .glassPanel(cornerRadius: 22, prominent: true, floating: true)
+        .glassPanel(cornerRadius: 22, prominent: true)
         .animation(.snappy(duration: 0.35), value: model.ratio)
     }
 

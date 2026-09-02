@@ -41,11 +41,12 @@ apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump
 apps/ullage-mac/build/Ullage.app/Contents/MacOS/UllageMac --dump --mock
 ```
 
-The popover is 360 points wide and opens on a tinted backdrop: frosted cards
-over an oxblood-to-blue wash, in both light and dark appearance. On macOS 26 the header
-and the account-tab row are real Liquid Glass and the cards scroll underneath
-them; macOS 14 and 15 get an equivalent layered material instead. The cards
-themselves stay opaque so their text reads over any wallpaper. Its header
+The popover is 360 points wide and opens on a tinted backdrop, in both light
+and dark appearance. On macOS 26 every panel is real Liquid Glass: the header,
+the account-tab row and the cards all sit over a backdrop of large oxblood and
+blue shapes, because glass only shows as glass when there is something behind
+it to refract; the header and tab row float and the cards scroll underneath
+them. macOS 14 and 15 get frosted cards over an oxblood-to-blue wash instead. Its header
 repeats what the menu bar mark is tracking, as a filled vessel beside the
 percentage, the account it came from, that account's soonest reset, and the
 runner-up account. Account tabs are a row of pills that wraps onto

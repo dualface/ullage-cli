@@ -79,16 +79,18 @@ Reduce Motion is enabled, or when the "Animate liquid" setting (`animatesMenuBar
 is off, the liquid holds still at the floor with a flat surface and the cycle is parked at its
 trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
-`PopoverChrome.swift` holds the popover's shared surfaces: the tinted `AtmosphereBackground` (a
-solid fill below macOS 26, a scrim at 0.35 dark / 0.45 light on it, since Liquid Glass refracts what
-sits behind it and a solid backdrop flattens every panel), the
-`glassPanel` modifier (SwiftUI `glassEffect` behind `if #available(macOS 26.0, *)`, falling back to
-a layered material plus inset highlight on macOS 14 and 15; the selected tab pill, the header's
-circular buttons and the probe button branch the same way; the floating chrome uses `Glass.clear`,
-since `.regular` renders as a near-opaque dark panel in dark appearance). Glass is applied only to the floating
-chrome, which the cards scroll underneath, because the effect refracts what is behind it and has
-nothing to show over a static backdrop; the cards keep the opaque panel so their text stays legible
-over any wallpaper. Both the header and the tab row live in a `ZStack` above the scroll view, which
+`PopoverChrome.swift` holds the popover's shared surfaces: `AtmosphereBackground` (on macOS 26 a
+solid base carrying two blurred discs and a diagonal streak, anchored to the top and bottom edges so
+the header and the last card always have a shape behind them; below macOS 26 the oxblood-to-blue
+wash on a solid base), the `glassPanel` modifier (SwiftUI `glassEffect(.regular)` behind
+`if #available(macOS 26.0, *)`, falling back to a layered material plus inset highlight on macOS 14
+and 15; the selected tab pill, the header's circular buttons and the probe button branch the same
+way). Liquid Glass is refraction, so it only reads when the content behind it has edges and tones to
+bend: a flat base, a translucent scrim over the popover's own blurred material, and `Glass.clear`
+were each tried and each left the panels looking like plain rectangles, because the NSPopover
+material already blurs the wallpaper to a flat tone before anything in the content view samples it.
+The structured backdrop is what makes every panel, header, tab row and cards alike, show as glass.
+Both the header and the tab row live in a `ZStack` above the scroll view, which
 starts with a spacer the height of the chrome, `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
 oxblood gradient), the simplified `ProviderMark` drawings, and the header. `heroModel` derives that
 header from `menuBarLiquidLevels` and `MenuBarLiquidAnimation.floorLevel`, the same call the status

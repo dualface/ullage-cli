@@ -17,9 +17,8 @@ struct RootView: View {
     @State private var contentHeight: CGFloat = 0
 
     var body: some View {
-        // The header floats and the cards scroll underneath it: glass only
-        // reads as glass when there is moving content behind it, and stacking
-        // the header above an opaque column showed nothing.
+        // The header floats and the cards scroll underneath it, so the glass
+        // chrome has moving content to refract as well as the backdrop.
         ZStack(alignment: .top) {
             ScrollView {
                 VStack(spacing: 0) {
@@ -277,7 +276,7 @@ private struct TabBar: View {
             }
         }
             .padding(6)
-        .glassPanel(cornerRadius: 20, floating: true)
+        .glassPanel(cornerRadius: 20)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
