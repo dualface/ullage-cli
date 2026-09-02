@@ -44,6 +44,7 @@ enum DumpCommand {
     }
 }
 
+@MainActor
 func dumpHiddenOverviewItemIDs(mode: AppMode, settings: AppSettings?) -> Set<String> {
     switch mode {
     case .mock:
