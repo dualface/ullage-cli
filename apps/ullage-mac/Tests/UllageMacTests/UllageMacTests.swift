@@ -287,6 +287,21 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testMockDumpIgnoresHiddenOverviewPreferences() {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults)
+        settings.setOverviewItemVisible("acct|weekly|usage|0", visible: false)
+
+        XCTAssertEqual(dumpHiddenOverviewItemIDs(mode: .mock, settings: settings), [])
+        XCTAssertEqual(
+            dumpHiddenOverviewItemIDs(mode: .daemon, settings: settings),
+            ["acct|weekly|usage|0"]
+        )
+    }
+
+    @MainActor
     func testAnimateLiquidSettingDefaultsOnAndRoundTrips() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

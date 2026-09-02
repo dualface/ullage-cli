@@ -60,8 +60,10 @@ is open, so the mark shows live data without a click. The accessibility
 description reports the floor account and its percentage. Overview uses a provider-specific
 catalog: ChatGPT weekly windows and reset credits, Claude 5h and Fable, Cursor
 auto and api, and Grok usage and GrokBuild. Each account tab can hide a catalog
-row from Overview with an eye control; hidden rows also drop out of the menu bar
-pin list and the default lowest-remaining floor. Unknown providers keep every window
+progress row from Overview with an eye control; rows without a remaining bar
+cannot be toggled. Hidden rows also drop out of the menu bar pin list and the
+default lowest-remaining floor. Hiding every visible row leaves an Overview
+hint pointing back to the account tabs. Unknown providers keep every window
 in the shortest available time tier. A reached limit in those retained windows
 takes precedence as 0% for that account, so the liquid empties completely at
 the bottom of each breath. After the first refresh, an exclamation mark
@@ -96,8 +98,9 @@ from the application bundle. Copy `Ullage.app` to `/Applications` or
 
 `--dump` fetches the same accounts and usage projection as the menu bar UI and
 prints it without starting the AppKit application loop. Its Overview section
-uses the same provider-specific catalog as the popover, while the
-per-account sections continue to show all windows. `--render-iconset DIR
+uses the same provider-specific catalog as the popover, and a daemon dump
+omits rows hidden in Settings; `--dump --mock` always prints the full catalog.
+The per-account sections continue to show all windows. `--render-iconset DIR
 [--palette KEY]` likewise renders build assets without starting that loop and
 defaults to Oxblood. `--mock` and
 `ULLAGE_MOCK=1` remain available for demonstrations with bundled fixtures.

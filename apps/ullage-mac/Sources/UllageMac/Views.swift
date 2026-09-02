@@ -161,31 +161,76 @@ private struct OverviewView: View {
     let settings: AppSettings
 
     var body: some View {
+        let cards = overviewCards
         VStack(spacing: 14) {
-            ForEach(store.accounts, id: \.id) { account in
-                if let snapshot = store.snapshot(for: account.id), let usage = snapshot.usage.data {
-                    let items = visibleOverviewItems(
-                        for: usage,
-                        accountID: account.id,
-                        hiddenIDs: settings.hiddenOverviewItemIDs
+            if cards.isEmpty, hasHiddenProgressRows {
+                hiddenOverviewHint
+            } else {
+                ForEach(cards) { card in
+                    UsageCardHeader(
+                        account: card.account,
+                        usage: card.usage,
+                        snapshot: card.snapshot,
+                        timestampLabel: "updated",
+                        timestamp: card.snapshot.lastSuccessAt
                     )
-                    if !items.isEmpty {
-                        UsageCardHeader(
-                            account: account,
-                            usage: usage,
-                            snapshot: snapshot,
-                            timestampLabel: "updated",
-                            timestamp: snapshot.lastSuccessAt
-                        )
-                        ForEach(items) { item in
-                            SummaryRowView(row: item.row)
-                        }
-                        Divider()
+                    ForEach(card.items) { item in
+                        SummaryRowView(row: item.row)
                     }
+                    Divider()
                 }
             }
         }
     }
+
+    private var overviewCards: [OverviewCard] {
+        store.accounts.compactMap { account in
+            guard let snapshot = store.snapshot(for: account.id),
+                  let usage = snapshot.usage.data else { return nil }
+            let items = visibleOverviewItems(
+                for: usage,
+                accountID: account.id,
+                hiddenIDs: settings.hiddenOverviewItemIDs
+            )
+            guard !items.isEmpty else { return nil }
+            return OverviewCard(account: account, usage: usage, snapshot: snapshot, items: items)
+        }
+    }
+
+    private var hasHiddenProgressRows: Bool {
+        store.accounts.contains { account in
+            guard let usage = store.snapshot(for: account.id)?.usage.data else { return false }
+            return overviewItems(for: usage).contains { item in
+                item.row.remainingRatio != nil
+                    && settings.hiddenOverviewItemIDs.contains(item.persistenceID(accountID: account.id))
+            }
+        }
+    }
+
+    private var hiddenOverviewHint: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "eye.slash")
+                .font(.system(size: 22))
+                .foregroundStyle(.secondary)
+            Text("Overview is empty")
+                .font(.headline)
+            Text("Show a progress row again with the eye on its account tab.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct OverviewCard: Identifiable {
+    var id: String { account.id }
+    let account: Account
+    let usage: SubscriptionUsage
+    let snapshot: SnapshotPayload
+    let items: [OverviewItem]
 }
 
 private struct AccountView: View {
@@ -277,7 +322,7 @@ private struct AccountView: View {
     }
 
     private func overviewToggle(for item: OverviewItem?) -> OverviewRowToggle? {
-        guard let item else { return nil }
+        guard let item, item.row.remainingRatio != nil else { return nil }
         let id = item.persistenceID(accountID: accountID)
         return OverviewRowToggle(
             visible: !settings.hiddenOverviewItemIDs.contains(id),
@@ -373,8 +418,10 @@ private struct SummaryRowView: View {
                         overviewToggle.setVisible(!overviewToggle.visible)
                     } label: {
                         Image(systemName: overviewToggle.visible ? "eye" : "eye.slash")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(overviewToggle.visible ? .secondary : .tertiary)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help(overviewToggle.visible ? "Hide from Overview" : "Show in Overview")

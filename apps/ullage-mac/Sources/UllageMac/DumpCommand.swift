@@ -6,15 +6,18 @@ enum DumpCommand {
     static func run(mode: AppMode = .current) async -> Int32 {
         do {
             let source: any UsageDataSource
+            let hiddenOverviewItemIDs: Set<String>
             switch mode {
             case .mock:
                 source = MockDataSource()
+                hiddenOverviewItemIDs = dumpHiddenOverviewItemIDs(mode: .mock, settings: nil)
             case .daemon:
                 let settings = AppSettings()
                 guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
                     throw DataSourceSetupError.deviceNotPaired
                 }
                 source = DaemonClient(baseURL: settings.serverURL, token: token)
+                hiddenOverviewItemIDs = dumpHiddenOverviewItemIDs(mode: .daemon, settings: settings)
             }
 
             async let accounts = source.accounts()
@@ -22,7 +25,7 @@ enum DumpCommand {
             let output = dumpOutput(
                 accounts: try await accounts,
                 snapshots: try await snapshots,
-                hiddenOverviewItemIDs: AppSettings().hiddenOverviewItemIDs
+                hiddenOverviewItemIDs: hiddenOverviewItemIDs
             )
             print(output)
             return 0
@@ -38,6 +41,15 @@ enum DumpCommand {
             writeDumpError("could not load daemon usage: \(error)")
             return 1
         }
+    }
+}
+
+func dumpHiddenOverviewItemIDs(mode: AppMode, settings: AppSettings?) -> Set<String> {
+    switch mode {
+    case .mock:
+        return []
+    case .daemon:
+        return settings?.hiddenOverviewItemIDs ?? []
     }
 }
 
