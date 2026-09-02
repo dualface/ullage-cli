@@ -577,7 +577,7 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
-    func testRateLimitCountdownRestartsWhenPopoverReopens() async throws {
+    func testRateLimitCountdownSurvivesStoreRestart() async throws {
         let source = CountingDataSource(probeRetryAfter: 0.4)
         let store = UsageStore(dataSourceFactory: { source })
         store.start()

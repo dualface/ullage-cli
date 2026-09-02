@@ -2,9 +2,11 @@ import Foundation
 
 /// Whether the menu bar liquid may animate.
 public enum MenuBarLiquidMotionGate: Equatable, Sendable {
-    /// AC power and reduce-motion off: wobble and the breathing cycle may run.
+    /// Animation enabled in Settings, AC power, and reduce-motion off: wobble
+    /// and the breathing cycle may run.
     case animate
-    /// Battery or reduce-motion: hold the liquid still at the floor level.
+    /// Animation turned off in Settings, battery, or reduce-motion: hold the
+    /// liquid still at the floor level with a flat surface.
     case freeze
     /// Error / no data: stop motion; caller draws the exclamation mark.
     case stop

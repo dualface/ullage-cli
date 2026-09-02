@@ -36,6 +36,9 @@ final class PopoverController: NSObject {
         )
         popover.contentSize = sizing.contentSize
         popover.show(relativeTo: rect, of: view, preferredEdge: .minY)
+        // The store polls on its own; opening still asks for fresh data so the
+        // popover and the menu "Refresh" action do not wait for the next poll.
+        store.refresh()
     }
 
     func close() {
