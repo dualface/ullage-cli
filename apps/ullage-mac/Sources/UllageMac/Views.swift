@@ -17,7 +17,30 @@ struct RootView: View {
     @State private var contentHeight: CGFloat = 0
 
     var body: some View {
-        VStack(spacing: 0) {
+        // The header floats and the cards scroll underneath it: glass only
+        // reads as glass when there is moving content behind it, and stacking
+        // the header above an opaque column showed nothing.
+        ZStack(alignment: .top) {
+            ScrollView {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: chromeHeight)
+                    Group {
+                        if let emptyState = emptyState {
+                            emptyState
+                        } else {
+                            switch selectedTab {
+                            case .overview:
+                                OverviewView(store: store, settings: settings)
+                            case .account(let id):
+                                AccountView(store: store, settings: settings, accountID: id)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 14)
+                    .measuredHeight(ContentHeightPreferenceKey.self)
+                }
+            }
             VStack(spacing: 0) {
                 if let hero {
                     PopoverHero(
@@ -32,23 +55,6 @@ struct RootView: View {
                 TabBar(store: store, settings: settings, selected: $selectedTab)
             }
             .measuredHeight(ChromeHeightPreferenceKey.self)
-            ScrollView {
-                Group {
-                    if let emptyState = emptyState {
-                        emptyState
-                    } else {
-                        switch selectedTab {
-                        case .overview:
-                            OverviewView(store: store, settings: settings)
-                        case .account(let id):
-                            AccountView(store: store, settings: settings, accountID: id)
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 14)
-                .measuredHeight(ContentHeightPreferenceKey.self)
-            }
         }
         .frame(width: 360)
         .background { AtmosphereBackground() }
@@ -270,18 +276,8 @@ private struct TabBar: View {
                 )
             }
         }
-        .padding(4)
-        .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.55))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(
-                    colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.06),
-                    lineWidth: 1
-                )
-        }
+            .padding(6)
+        .glassPanel(cornerRadius: 20, floating: true)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }

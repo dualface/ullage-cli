@@ -34,7 +34,7 @@ struct AtmosphereBackground: View {
 
     private var baseOpacity: Double {
         guard #available(macOS 26.0, *) else { return 1 }
-        return colorScheme == .dark ? 0.35 : 0.45
+        return colorScheme == .dark ? 0.55 : 0.62
     }
 
     private var base: Color {
@@ -54,16 +54,19 @@ struct AtmosphereBackground: View {
     }
 }
 
-/// Liquid Glass where the system provides it, and a hand-built frosted panel
-/// with a top inset highlight below macOS 26.
+/// Panel surface. `floating` marks the chrome that hovers over scrolling
+/// content, which is the only place Liquid Glass has anything to refract; the
+/// cards keep an opaque frosted panel so their text stays legible over any
+/// wallpaper.
 struct GlassPanel: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     var cornerRadius: CGFloat = 18
     var prominent = false
+    var floating = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), floating {
             content
                 .glassEffect(
                     .regular,
@@ -118,8 +121,12 @@ struct GlassPanel: ViewModifier {
 }
 
 extension View {
-    func glassPanel(cornerRadius: CGFloat = 18, prominent: Bool = false) -> some View {
-        modifier(GlassPanel(cornerRadius: cornerRadius, prominent: prominent))
+    func glassPanel(
+        cornerRadius: CGFloat = 18,
+        prominent: Bool = false,
+        floating: Bool = false
+    ) -> some View {
+        modifier(GlassPanel(cornerRadius: cornerRadius, prominent: prominent, floating: floating))
     }
 }
 
@@ -437,7 +444,7 @@ struct PopoverHero: View {
             }
         }
         .padding(14)
-        .glassPanel(cornerRadius: 22, prominent: true)
+        .glassPanel(cornerRadius: 22, prominent: true, floating: true)
         .animation(.snappy(duration: 0.35), value: model.ratio)
     }
 

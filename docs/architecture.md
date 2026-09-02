@@ -84,7 +84,11 @@ solid fill below macOS 26, a scrim at 0.35 dark / 0.45 light on it, since Liquid
 sits behind it and a solid backdrop flattens every panel), the
 `glassPanel` modifier (SwiftUI `glassEffect` behind `if #available(macOS 26.0, *)`, falling back to
 a layered material plus inset highlight on macOS 14 and 15; the selected tab pill, the header's
-circular buttons and the probe button branch the same way), `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
+circular buttons and the probe button branch the same way). Glass is applied only to the floating
+chrome, which the cards scroll underneath, because the effect refracts what is behind it and has
+nothing to show over a static backdrop; the cards keep the opaque panel so their text stays legible
+over any wallpaper. Both the header and the tab row live in a `ZStack` above the scroll view, which
+starts with a spacer the height of the chrome, `LiquidVessel` (the mark's geometry redrawn in SwiftUI with the icon's
 oxblood gradient), the simplified `ProviderMark` drawings, and the header. `heroModel` derives that
 header from `menuBarLiquidLevels` and `MenuBarLiquidAnimation.floorLevel`, the same call the status
 item makes, and takes the row-visibility sets as required arguments so it resolves a pinned row from
