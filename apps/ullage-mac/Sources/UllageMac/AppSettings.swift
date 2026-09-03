@@ -17,8 +17,10 @@ final class AppSettings {
     private static let hiddenOverviewItemIDsKey = "hiddenOverviewItemIDs"
     private static let shownOverviewItemIDsKey = "shownOverviewItemIDs"
     private static let transportModeKey = "transportMode"
-    private static let localServiceChoiceMadeKey = "localServiceChoiceMade"
-    private static let backgroundServiceEnabledKey = "backgroundServiceEnabled"
+    private static let retiredLocalServiceKeys = [
+        "localServiceChoiceMade",
+        "backgroundServiceEnabled",
+    ]
     private let defaults: UserDefaults
     private let saveDeviceToken: (String) throws -> Void
 
@@ -27,14 +29,6 @@ final class AppSettings {
 
     var transportMode: ConnectionTransport {
         didSet { defaults.set(transportMode.rawValue, forKey: Self.transportModeKey) }
-    }
-
-    private(set) var localServiceChoiceMade: Bool {
-        didSet { defaults.set(localServiceChoiceMade, forKey: Self.localServiceChoiceMadeKey) }
-    }
-
-    private(set) var backgroundServiceEnabled: Bool {
-        didSet { defaults.set(backgroundServiceEnabled, forKey: Self.backgroundServiceEnabledKey) }
     }
 
     var iconPalette: AppPalette {
@@ -99,8 +93,9 @@ final class AppSettings {
         if storedTransport == nil {
             defaults.set(initialTransport.rawValue, forKey: Self.transportModeKey)
         }
-        localServiceChoiceMade = defaults.bool(forKey: Self.localServiceChoiceMadeKey)
-        backgroundServiceEnabled = defaults.bool(forKey: Self.backgroundServiceEnabledKey)
+        for key in Self.retiredLocalServiceKeys {
+            defaults.removeObject(forKey: key)
+        }
         iconPalette = defaults.string(forKey: Self.iconPaletteKey)
             .flatMap(AppPalette.init(rawValue:)) ?? .default
         animatesMenuBarLiquid = defaults.object(forKey: Self.animatesMenuBarLiquidKey) as? Bool ?? true
@@ -108,11 +103,6 @@ final class AppSettings {
         menuBarMetricID = defaults.string(forKey: Self.menuBarMetricIDKey).flatMap { $0.isEmpty ? nil : $0 }
         hiddenOverviewItemIDs = Set(defaults.stringArray(forKey: Self.hiddenOverviewItemIDsKey) ?? [])
         shownOverviewItemIDs = Set(defaults.stringArray(forKey: Self.shownOverviewItemIDsKey) ?? [])
-    }
-
-    func recordLocalService(enabled: Bool) {
-        localServiceChoiceMade = true
-        backgroundServiceEnabled = enabled
     }
 
     func setOverviewItemVisible(_ id: String, visible: Bool, catalogDefault: Bool = true) {

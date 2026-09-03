@@ -116,13 +116,14 @@ asset is required. Set the build palette with `ICON_PALETTE`, for example:
 make -C apps/ullage-mac bundle ICON_PALETTE=paper
 ```
 
-The client defaults to Local mode. On first launch, Settings explains that the
-embedded local service is disabled until the user selects **Enable Local
-Service**. The service is a nested Login Item registered with `SMAppService`;
-it runs the bundled Rust daemon without requiring a separate CLI installation.
-It remains running when the menu bar UI quits and can be disabled or restarted
-from Settings. Selecting Remote mode does not enable or disable the local
-service.
+The client defaults to Local mode. On first launch, it automatically registers
+the embedded local service without an app-specific consent prompt; macOS may
+show its own login-item notification. The service is a nested Login Item
+registered with `SMAppService`, and it runs the bundled Rust daemon without
+requiring a separate CLI installation. It remains running when the menu bar UI
+quits. Mode is the only service lifecycle control: selecting Remote unregisters
+and stops the local service, while selecting Local registers it again. Settings
+offers Restart Local Service only while Local is selected.
 
 Local mode also owns account setup. Settings can add, name, enable, disable,
 and remove accounts for Claude, ChatGPT, Grok, and Cursor. Browser and device

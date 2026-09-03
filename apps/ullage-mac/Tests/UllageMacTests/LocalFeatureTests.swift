@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 @testable import UllageKit
 @testable import UllageMac
 import XCTest
@@ -32,6 +33,78 @@ final class LocalFeatureTests: XCTestCase {
             defaults.set("local", forKey: "transportMode")
             XCTAssertEqual(AppSettings(defaults: defaults).transportMode, .local)
         }
+    }
+
+    @MainActor
+    func testTransportMigrationRemovesRetiredServiceFlags() {
+        withDefaults { defaults in
+            defaults.set(true, forKey: "localServiceChoiceMade")
+            defaults.set(false, forKey: "backgroundServiceEnabled")
+
+            _ = AppSettings(defaults: defaults)
+
+            XCTAssertNil(defaults.object(forKey: "localServiceChoiceMade"))
+            XCTAssertNil(defaults.object(forKey: "backgroundServiceEnabled"))
+        }
+    }
+
+    @MainActor
+    func testLocalTransportRegistersTheServiceAutomatically() async {
+        let defaults = temporaryDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsSuite(defaults)) }
+        let settings = AppSettings(defaults: defaults)
+        let registration = LocalServiceRegistrationFixture(status: .notRegistered)
+        let service = LocalServiceManager(
+            settings: settings,
+            service: registration,
+            applicationBundleURL: URL(fileURLWithPath: "/Applications/Ullage.app")
+        )
+
+        await service.reconcileWithTransportMode()
+
+        XCTAssertEqual(registration.registerCount, 1)
+        XCTAssertEqual(registration.unregisterCount, 0)
+        XCTAssertEqual(service.state, .enabled)
+    }
+
+    @MainActor
+    func testRemoteTransportUnregistersTheServiceAutomatically() async {
+        let defaults = temporaryDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsSuite(defaults)) }
+        let settings = AppSettings(defaults: defaults)
+        settings.transportMode = .remote
+        let registration = LocalServiceRegistrationFixture(status: .enabled)
+        let service = LocalServiceManager(
+            settings: settings,
+            service: registration,
+            applicationBundleURL: URL(fileURLWithPath: "/Applications/Ullage.app")
+        )
+
+        await service.reconcileWithTransportMode()
+
+        XCTAssertEqual(registration.registerCount, 0)
+        XCTAssertEqual(registration.unregisterCount, 1)
+        XCTAssertEqual(service.state, .disabled)
+    }
+
+    @MainActor
+    func testRestartCannotEnableTheServiceInRemoteMode() async {
+        let defaults = temporaryDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsSuite(defaults)) }
+        let settings = AppSettings(defaults: defaults)
+        settings.transportMode = .remote
+        let registration = LocalServiceRegistrationFixture(status: .notRegistered)
+        let service = LocalServiceManager(
+            settings: settings,
+            service: registration,
+            applicationBundleURL: URL(fileURLWithPath: "/Applications/Ullage.app")
+        )
+
+        await service.restart()
+
+        XCTAssertEqual(registration.registerCount, 0)
+        XCTAssertEqual(registration.unregisterCount, 0)
+        XCTAssertEqual(service.state, .disabled)
     }
 
     @MainActor
@@ -174,6 +247,27 @@ final class LocalFeatureTests: XCTestCase {
 
     private func defaultsSuite(_ defaults: UserDefaults) -> String {
         defaults.string(forKey: "testSuiteName")!
+    }
+}
+
+@MainActor
+private final class LocalServiceRegistrationFixture: LocalServiceRegistration {
+    var status: SMAppService.Status
+    private(set) var registerCount = 0
+    private(set) var unregisterCount = 0
+
+    init(status: SMAppService.Status) {
+        self.status = status
+    }
+
+    func register() throws {
+        registerCount += 1
+        status = .enabled
+    }
+
+    func unregister() async throws {
+        unregisterCount += 1
+        status = .notRegistered
     }
 }
 

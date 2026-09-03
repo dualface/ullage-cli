@@ -146,6 +146,6 @@ apps/ullage-mac/scripts/remote.sh notarize
 
 That operation signs all nested code, submits and staples `Ullage.app`, copies
 the runnable app to the remote Desktop, stops an older Ullage instance, and
-opens the new app. Verify Login Item registration from Settings, confirm the
-daemon survives quitting the UI, and check both Local and Remote transport
-selection without changing the service toggle.
+opens the new app. Verify automatic Login Item registration in Local mode,
+confirm the daemon survives quitting the UI, and check that selecting Remote
+unregisters the service while selecting Local registers it again.

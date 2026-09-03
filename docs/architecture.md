@@ -180,14 +180,17 @@ The native Xcode targets reproduce the same nested layout and sign from the insi
 tool, its Login Item helper, then the main app. The main app and helper share
 `group.com.ullage.mac`; all three are sandboxed, with the Rust tool inheriting the helper sandbox.
 
-Local is the default transport. After explicit consent, `SMAppService` registers
-`UllageDaemonHelper.app` from `Contents/Library/LoginItems`. The helper resolves the App Group,
+Local is the default transport and automatically registers
+`UllageDaemonHelper.app` from `Contents/Library/LoginItems` through `SMAppService`, without a
+separate in-app consent step. macOS may still show its own login-item notification. The helper
+resolves the App Group,
 creates current-user-only `data/` and `run/` directories, creates a default configuration with HTTP
 disabled, overlays the three path variables on the inherited environment without adding secrets,
 and replaces itself with the bundled Rust `ullage __daemon` process via `execv`. The Rust tool carries
 only the sandbox inheritance entitlements, so no separate supervisor or orphanable child remains.
-The service lifetime is independent from the menu bar UI and from the Local/Remote selection. Local
-data is new and isolated from the standalone daemon paths.
+The service lifetime is independent from the menu bar UI but is derived entirely from transport
+selection: Local registers the helper, while Remote unregisters and stops it. Local data is new and
+isolated from the standalone daemon paths.
 
 `LocalControlClient` talks to `run/control.sock` with protocol v9 newline-delimited JSON. Before and
 after connecting it verifies a current-user-owned `0600` Unix socket and stable inode; after connect

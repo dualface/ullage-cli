@@ -2,6 +2,15 @@ import Foundation
 import Observation
 import ServiceManagement
 
+@MainActor
+protocol LocalServiceRegistration: AnyObject {
+    var status: SMAppService.Status { get }
+    func register() throws
+    func unregister() async throws
+}
+
+extension SMAppService: LocalServiceRegistration {}
+
 enum LocalServiceState: Equatable {
     case unavailable
     case disabled
@@ -30,15 +39,18 @@ final class LocalServiceManager {
     static let helperIdentifier = "com.ullage.mac.daemon"
 
     private let settings: AppSettings
-    private let service: SMAppService
+    private let service: any LocalServiceRegistration
+    private let applicationBundleURL: URL
     private(set) var state: LocalServiceState = .disabled
 
     init(
         settings: AppSettings,
-        service: SMAppService = .loginItem(identifier: helperIdentifier)
+        service: any LocalServiceRegistration = SMAppService.loginItem(identifier: helperIdentifier),
+        applicationBundleURL: URL = Bundle.main.bundleURL
     ) {
         self.settings = settings
         self.service = service
+        self.applicationBundleURL = applicationBundleURL
         refresh()
     }
 
@@ -49,7 +61,7 @@ final class LocalServiceManager {
     }
 
     func refresh() {
-        guard isApplicationBundleURL(Bundle.main.bundleURL) else {
+        guard isApplicationBundleURL(applicationBundleURL) else {
             state = .unavailable
             return
         }
@@ -61,45 +73,74 @@ final class LocalServiceManager {
         }
     }
 
-    func setEnabled(_ enabled: Bool) async {
-        guard isApplicationBundleURL(Bundle.main.bundleURL) else {
+    /// Makes Login Item registration match the selected transport. This is the
+    /// only service enable/disable path: Local registers, Remote unregisters.
+    func reconcileWithTransportMode() async {
+        guard isApplicationBundleURL(applicationBundleURL) else {
+            state = .unavailable
+            return
+        }
+        let requestedMode = settings.transportMode
+        state = .updating
+        do {
+            switch requestedMode {
+            case .local:
+                switch service.status {
+                case .notRegistered, .notFound:
+                    try service.register()
+                case .enabled, .requiresApproval:
+                    break
+                @unknown default:
+                    break
+                }
+            case .remote:
+                switch service.status {
+                case .notRegistered, .notFound:
+                    break
+                case .enabled, .requiresApproval:
+                    try await service.unregister()
+                @unknown default:
+                    try await service.unregister()
+                }
+            }
+            if settings.transportMode != requestedMode {
+                await reconcileWithTransportMode()
+                return
+            }
+            refresh()
+        } catch {
+            if settings.transportMode != requestedMode {
+                await reconcileWithTransportMode()
+            } else {
+                state = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func restart() async {
+        guard settings.transportMode == .local else {
+            await reconcileWithTransportMode()
+            return
+        }
+        guard isApplicationBundleURL(applicationBundleURL) else {
             state = .unavailable
             return
         }
         state = .updating
         do {
-            if enabled {
-                try service.register()
-            } else if service.status != .notRegistered {
+            switch service.status {
+            case .notRegistered, .notFound:
+                break
+            case .enabled, .requiresApproval:
+                try await service.unregister()
+            @unknown default:
                 try await service.unregister()
             }
-            settings.recordLocalService(enabled: enabled)
-            refresh()
-        } catch {
-            state = .failed(error.localizedDescription)
-        }
-    }
-
-    func restoreEnabledServiceIfNeeded() async {
-        guard settings.backgroundServiceEnabled else { return }
-        switch service.status {
-        case .notRegistered, .notFound:
-            await setEnabled(true)
-        case .enabled, .requiresApproval:
-            refresh()
-        @unknown default:
-            refresh()
-        }
-    }
-
-    func restart() async {
-        state = .updating
-        do {
-            if service.status != .notRegistered {
-                try await service.unregister()
+            guard settings.transportMode == .local else {
+                await reconcileWithTransportMode()
+                return
             }
             try service.register()
-            settings.recordLocalService(enabled: true)
             refresh()
         } catch {
             state = .failed(error.localizedDescription)

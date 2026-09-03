@@ -710,10 +710,23 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(window.titleVisibility, .visible)
         XCTAssertTrue(window.titlebarAppearsTransparent)
         XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+        XCTAssertFalse(window.hidesOnDeactivate)
         XCTAssertGreaterThan(
             try XCTUnwrap(window.contentView).frame.height,
             window.contentLayoutRect.height
         )
+        let container = try XCTUnwrap(window.contentView)
+        container.layoutSubtreeIfNeeded()
+        let surface = try XCTUnwrap(container.subviews.first {
+            $0.identifier?.rawValue == "SettingsPanel.surface"
+        })
+        let content = try XCTUnwrap(container.subviews.first {
+            $0.identifier?.rawValue == "SettingsPanel.content"
+        })
+        XCTAssertEqual(surface.frame, container.bounds)
+        XCTAssertEqual(content.frame, container.convert(window.contentLayoutRect, from: nil))
+        XCTAssertLessThan(content.frame.maxY, surface.frame.maxY)
+        XCTAssertTrue(content.layer?.masksToBounds == true)
         XCTAssertNotNil(window.standardWindowButton(.closeButton))
     }
 

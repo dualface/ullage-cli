@@ -2,8 +2,50 @@ import AppKit
 import SwiftUI
 import UllageKit
 
+private let settingsSurfaceIdentifier = NSUserInterfaceItemIdentifier("SettingsPanel.surface")
+private let settingsContentIdentifier = NSUserInterfaceItemIdentifier("SettingsPanel.content")
+
+private final class SettingsPanelContainerView: NSView {
+    private let surfaceView: NSView
+    private let settingsView: NSView
+
+    init(surfaceView: NSView, settingsView: NSView) {
+        self.surfaceView = surfaceView
+        self.settingsView = settingsView
+        super.init(frame: .zero)
+        surfaceView.identifier = settingsSurfaceIdentifier
+        settingsView.identifier = settingsContentIdentifier
+        settingsView.wantsLayer = true
+        settingsView.layer?.masksToBounds = true
+        addSubview(surfaceView)
+        addSubview(settingsView)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        surfaceView.frame = bounds
+        settingsView.frame = window.map { convert($0.contentLayoutRect, from: nil) } ?? bounds
+    }
+}
+
+private struct SettingsPanelSurface: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Color.clear
+            .modifier(PopoverSurface(placement: .window))
+            .environment(\.usesLiquidGlass, liquidGlassIsEnabled(settings: settings))
+            .environment(\.appPalette, settings.iconPalette)
+    }
+}
+
 @MainActor
 final class SettingsPanelController: NSWindowController {
+    private let surfaceHostingController: NSHostingController<SettingsPanelSurface>
+    private let settingsHostingController: NSHostingController<SettingsView>
+
     init(
         settings: AppSettings,
         store: UsageStore,
@@ -21,23 +63,34 @@ final class SettingsPanelController: NSWindowController {
             onSaved: onSaved,
             onPaletteChanged: onPaletteChanged
         )
-        let hostingController = NSHostingController(rootView: view)
-        // Let the panel follow the view as the pairing section locks/unlocks.
-        hostingController.sizingOptions = [.preferredContentSize]
-        let panel = NSPanel(contentViewController: hostingController)
+        let surfaceHostingController = NSHostingController(
+            rootView: SettingsPanelSurface(settings: settings)
+        )
+        let settingsHostingController = NSHostingController(rootView: view)
+        let styleMask: NSWindow.StyleMask = [.titled, .closable, .fullSizeContentView]
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 560),
+            styleMask: styleMask,
+            backing: .buffered,
+            defer: false
+        )
         panel.title = "Ullage Settings"
-        // The content view carries the Settings surface through the transparent
-        // title bar. SwiftUI content still observes the title-bar safe area;
-        // only the surface background extends underneath it.
-        panel.styleMask = [.titled, .closable, .fullSizeContentView]
+        // Keep the surface full-size, but clip interactive content to AppKit's
+        // unobscured contentLayoutRect beneath the native title bar.
         panel.titlebarAppearsTransparent = true
         panel.titleVisibility = .visible
         panel.titlebarSeparatorStyle = .none
+        panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.isReleasedWhenClosed = false
+        panel.contentView = SettingsPanelContainerView(
+            surfaceView: surfaceHostingController.view,
+            settingsView: settingsHostingController.view
+        )
+        self.surfaceHostingController = surfaceHostingController
+        self.settingsHostingController = settingsHostingController
         super.init(window: panel)
-        panel.setContentSize(hostingController.view.fittingSize)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -197,28 +250,26 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 card { transportSection }
                 if settings.transportMode == .local {
-                    card { localServiceSection }
                     card { LocalAccountsSection(manager: accountManager) }
                 } else {
-                    card { connectionSection }
-                    card { pairingSection }
+                    card { remoteServiceSection }
                 }
-                card { statusSection }
                 card { menuBarSection }
                 card { appearanceSection }
             }
             .padding(12)
         }
         .frame(width: 420, height: 560)
-        // The same surface the popover wears, minus the pointer: this window
-        // has nothing to point at. The backdrop is held still here — the window
-        // outlives its own visibility, and a timeline behind a closed window
-        // would keep ticking.
-        .modifier(PopoverSurface(placement: .window))
         .environment(\.usesLiquidGlass, liquidGlassIsEnabled(settings: settings))
         .environment(\.appPalette, settings.iconPalette)
         .task(id: settings.transportMode) {
-            if settings.transportMode == .local { await accountManager.refresh() }
+            if case .daemon = mode {
+                await localService.reconcileWithTransportMode()
+            }
+            onSaved()
+            if case .daemon = mode, settings.transportMode == .local {
+                await accountManager.refresh(waitForService: localService.state == .enabled)
+            }
         }
     }
 
@@ -243,47 +294,37 @@ struct SettingsView: View {
                  : "Remote connects to an already paired Ullage daemon over HTTP.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    private var localServiceSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Local Service").font(.headline)
-            Toggle("Enable Local Service", isOn: Binding(
-                get: { settings.backgroundServiceEnabled },
-                set: { enabled in
-                    Task {
-                        await localService.setEnabled(enabled)
-                        onSaved()
-                        if enabled {
+            if settings.transportMode == .local {
+                Divider()
+                Text("Local Service")
+                    .font(.subheadline.weight(.semibold))
+                Text(localService.state.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Button("Restart Local Service") {
+                        Task {
+                            await localService.restart()
+                            onSaved()
                             await accountManager.refresh(
                                 waitForService: localService.state == .enabled
                             )
                         }
                     }
-                }
-            ))
-            .disabled(localService.state == .updating || localService.state == .unavailable)
-            Text(localService.state.detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if settings.backgroundServiceEnabled {
-                Button("Restart Local Service") {
-                    Task {
-                        await localService.restart()
-                        onSaved()
-                        await accountManager.refresh(
-                            waitForService: localService.state == .enabled
-                        )
+                    .disabled(localService.state == .updating || localService.state == .unavailable)
+                    Button("Test Connection") { testConnection() }
+                        .disabled(isTesting || localService.state == .updating)
+                    if isTesting {
+                        ProgressView().controlSize(.small)
                     }
+                    Text(message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                 }
-                .disabled(localService.state == .updating)
-            }
-            if !settings.localServiceChoiceMade {
-                Text("The service is never enabled until you turn on this switch.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -297,9 +338,9 @@ struct SettingsView: View {
             .glassPanel()
     }
 
-    private var connectionSection: some View {
+    private var remoteServiceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Connection")
+            Text("Remote Service")
                 .font(.headline)
             HStack(spacing: 8) {
                 TextField("Server URL", text: $serverURL)
@@ -324,13 +365,9 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var pairingSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+            Divider()
             Text("Pairing")
-                .font(.headline)
+                .font(.subheadline.weight(.semibold))
             if editingState != .locked {
                 HStack(spacing: 8) {
                     pairDigitGroup(indices: 0..<3)
@@ -357,6 +394,8 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Divider()
+            connectionTestControls
         }
     }
 
@@ -371,23 +410,19 @@ struct SettingsView: View {
         }
     }
 
-    private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Status")
-                .font(.headline)
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Button("Test connection") { testConnection() }
-                    .disabled(isTesting)
-                if isTesting {
-                    ProgressView().controlSize(.small)
-                }
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
+    private var connectionTestControls: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Button("Test Connection") { testConnection() }
+                .disabled(isTesting)
+            if isTesting {
+                ProgressView().controlSize(.small)
             }
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
     }
 

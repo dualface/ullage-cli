@@ -47,9 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             applicationIconController: iconController
         )
         statusItemController = controller
-        Task { await localService.restoreEnabledServiceIfNeeded() }
-        if mode == .daemon && !settings.localServiceChoiceMade {
-            controller.presentSettings()
+        if case .daemon = mode {
+            Task { await localService.reconcileWithTransportMode() }
         }
     }
 }
