@@ -189,7 +189,10 @@ fixtures. Daemon HTTP responses and the Mac client both use the version 9 result
 distinguish acknowledged and completed responses. The headless `--dump` path reuses the same summary projection as the menu
 bar UI, while `--render-iconset` reuses the executable's canonical mark geometry without entering
 the AppKit application loop. Runtime application-icon color follows the stored `iconPalette`
-preference (default Oxblood); Settings no longer exposes a palette picker.
+preference (default Oxblood). Settings Appearance exposes one picker for all six palettes without
+changing the preference key or raw values; a selection immediately updates the runtime icon and
+the shared flat Settings surface, and subsequent flat popovers use the same preference. Finder and
+Launchpad remain bound to the build-time `AppIcon.icns` palette.
 
 ## Dependency rules
 

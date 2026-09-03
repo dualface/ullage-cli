@@ -101,7 +101,10 @@ filled liquid level and has six built-in palettes shared with the flat popover
 and Settings surfaces: Amber,
 Oxblood, Propellant, Copper, Paper, and Plum; Oxblood is the default. At launch
 the app applies the stored `iconPalette` preference (or Oxblood when unset) to
-the icon used by the About panel and system dialogs. Finder and Launchpad use
+the icon used by the About panel and system dialogs. The Appearance section in
+Settings provides one picker for all six palettes; a selection immediately
+updates that runtime icon and the shared flat Settings surface, and subsequent
+flat popovers use the same stored preference. Finder and Launchpad use
 the signed `AppIcon.icns`, so that palette is selected at build time instead.
 During `bundle`, the executable renders the standard ten-file
 `build/AppIcon.iconset`, `iconutil` converts it to `AppIcon.icns`, and the
