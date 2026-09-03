@@ -7,13 +7,16 @@ final class SettingsPanelController: NSWindowController {
     init(
         settings: AppSettings,
         store: UsageStore,
+        localService: LocalServiceManager? = nil,
         mode: AppMode,
         onSaved: @escaping () -> Void,
         onPaletteChanged: @escaping (AppPalette) -> Void
     ) {
+        let localService = localService ?? LocalServiceManager(settings: settings)
         let view = SettingsView(
             settings: settings,
             store: store,
+            localService: localService,
             mode: mode,
             onSaved: onSaved,
             onPaletteChanged: onPaletteChanged
@@ -138,6 +141,7 @@ func connectionTestRequiresPairing(
 struct SettingsView: View {
     @Bindable var settings: AppSettings
     let store: UsageStore
+    @Bindable var localService: LocalServiceManager
     let mode: AppMode
     let onSaved: () -> Void
     let onPaletteChanged: (AppPalette) -> Void
@@ -147,22 +151,29 @@ struct SettingsView: View {
     @State private var message = ""
     @State private var isPairing = false
     @State private var isTesting = false
+    @State private var accountManager: LocalAccountManager
     /// Unlock lasts for this panel only; it is never persisted.
     @State private var isUnlocked = false
 
     init(
         settings: AppSettings,
         store: UsageStore,
+        localService: LocalServiceManager,
         mode: AppMode,
         onSaved: @escaping () -> Void,
         onPaletteChanged: @escaping (AppPalette) -> Void
     ) {
         self.settings = settings
         self.store = store
+        self.localService = localService
         self.mode = mode
         self.onSaved = onSaved
         self.onPaletteChanged = onPaletteChanged
         _serverURL = State(initialValue: settings.serverURL.absoluteString)
+        _accountManager = State(initialValue: LocalAccountManager(
+            localService: localService,
+            dataChanged: onSaved
+        ))
     }
 
     private var normalizedPairCode: String {
@@ -182,15 +193,23 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            card { connectionSection }
-            card { pairingSection }
-            card { statusSection }
-            card { menuBarSection }
-            card { appearanceSection }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                card { transportSection }
+                if settings.transportMode == .local {
+                    card { localServiceSection }
+                    card { LocalAccountsSection(manager: accountManager) }
+                } else {
+                    card { connectionSection }
+                    card { pairingSection }
+                }
+                card { statusSection }
+                card { menuBarSection }
+                card { appearanceSection }
+            }
+            .padding(12)
         }
-        .padding(12)
-        .frame(width: 420)
+        .frame(width: 420, height: 560)
         // The same surface the popover wears, minus the pointer: this window
         // has nothing to point at. The backdrop is held still here — the window
         // outlives its own visibility, and a timeline behind a closed window
@@ -198,6 +217,69 @@ struct SettingsView: View {
         .modifier(PopoverSurface(placement: .window))
         .environment(\.usesLiquidGlass, liquidGlassIsEnabled(settings: settings))
         .environment(\.appPalette, settings.iconPalette)
+        .task(id: settings.transportMode) {
+            if settings.transportMode == .local { await accountManager.refresh() }
+        }
+    }
+
+    private var transportSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Data Source").font(.headline)
+            Picker("Mode", selection: Binding(
+                get: { settings.transportMode },
+                set: { mode in
+                    settings.transportMode = mode
+                    message = ""
+                    onSaved()
+                }
+            )) {
+                ForEach(ConnectionTransport.allCases) { transport in
+                    Text(transport.title).tag(transport)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(settings.transportMode == .local
+                 ? "Local connects privately to the embedded service in this app."
+                 : "Remote connects to an already paired Ullage daemon over HTTP.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var localServiceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Local Service").font(.headline)
+            Toggle("Enable Local Service", isOn: Binding(
+                get: { settings.backgroundServiceEnabled },
+                set: { enabled in
+                    Task {
+                        await localService.setEnabled(enabled)
+                        onSaved()
+                        if enabled { await accountManager.refresh() }
+                    }
+                }
+            ))
+            .disabled(localService.state == .updating || localService.state == .unavailable)
+            Text(localService.state.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if settings.backgroundServiceEnabled {
+                Button("Restart Local Service") {
+                    Task {
+                        await localService.restart()
+                        onSaved()
+                        await accountManager.refresh()
+                    }
+                }
+                .disabled(localService.state == .updating)
+            }
+            if !settings.localServiceChoiceMade {
+                Text("The service is never enabled until you turn on this switch.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// One section, on the same frosted panel the popover's cards use.
@@ -532,6 +614,22 @@ struct SettingsView: View {
     }
 
     private func testConnection() {
+        if settings.transportMode == .local {
+            isTesting = true
+            Task {
+                defer { isTesting = false }
+                do {
+                    guard let socketURL = localService.socketURL else {
+                        throw LocalControlError.unavailable("App Group container is unavailable")
+                    }
+                    _ = try await LocalControlClient(socketURL: socketURL).status()
+                    message = ConnectionTestResult.connected.rawValue
+                } catch {
+                    message = ConnectionTestResult.unreachable.rawValue
+                }
+            }
+            return
+        }
         guard let url = AppSettings.validatedServerURL(serverURL) else {
             message = ConnectionTestResult.hostRejected.rawValue
             return

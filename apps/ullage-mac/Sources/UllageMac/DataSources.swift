@@ -9,6 +9,7 @@ protocol UsageDataSource: Sendable {
 }
 
 extension DaemonClient: UsageDataSource {}
+extension LocalControlClient: UsageDataSource {}
 
 enum DataSourceSetupError: Error {
     case deviceNotPaired

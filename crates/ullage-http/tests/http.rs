@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -242,7 +242,15 @@ fn exchange(addr: SocketAddr, request: &str) -> RawResponse {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
-    stream.write_all(request.as_bytes()).unwrap();
+    if let Err(error) = stream.write_all(request.as_bytes()) {
+        assert!(
+            matches!(
+                error.kind(),
+                ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
+            ),
+            "request write failed: {error}"
+        );
+    }
     let mut bytes = Vec::new();
     let mut buffer = [0; 8192];
     loop {
@@ -253,10 +261,10 @@ fn exchange(addr: SocketAddr, request: &str) -> RawResponse {
                 if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
                     if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
                         let headers = &bytes[..end];
-                        if let Some(length) = content_length(headers)
-                            && bytes.len() >= end + 4 + length
-                        {
-                            break;
+                        if let Some(length) = content_length(headers) {
+                            if bytes.len() >= end + 4 + length {
+                                break;
+                            }
                         }
                         if headers
                             .windows(19)

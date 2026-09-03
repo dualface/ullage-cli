@@ -392,14 +392,14 @@ async fn handle_request(
         }
     };
 
-    if let Route::Probe { id } = &route
-        && let Some(retry_after) = probe_retry_after(&state, id)
-    {
-        return finish(
-            rate_limited(retry_after),
-            origin.as_deref(),
-            &state.allowed_origins,
-        );
+    if let Route::Probe { id } = &route {
+        if let Some(retry_after) = probe_retry_after(&state, id) {
+            return finish(
+                rate_limited(retry_after),
+                origin.as_deref(),
+                &state.allowed_origins,
+            );
+        }
     }
 
     let command = route_command(route, &params);
@@ -711,11 +711,11 @@ fn probe_retry_after(state: &HttpState, account_id: &str) -> Option<u64> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let now = Instant::now();
-    if let Some(previous) = last_probe.get(account_id)
-        && now.saturating_duration_since(*previous) < state.probe_min_interval
-    {
-        let remaining = state.probe_min_interval - now.saturating_duration_since(*previous);
-        return Some(remaining.as_secs().max(1));
+    if let Some(previous) = last_probe.get(account_id) {
+        if now.saturating_duration_since(*previous) < state.probe_min_interval {
+            let remaining = state.probe_min_interval - now.saturating_duration_since(*previous);
+            return Some(remaining.as_secs().max(1));
+        }
     }
     last_probe.insert(account_id.to_owned(), now);
     None

@@ -945,10 +945,10 @@ fn choose(
         if answer.is_empty() {
             return Some(default_index);
         }
-        if let Ok(choice) = answer.parse::<usize>()
-            && (1..=options.len()).contains(&choice)
-        {
-            return Some(choice - 1);
+        if let Ok(choice) = answer.parse::<usize>() {
+            if (1..=options.len()).contains(&choice) {
+                return Some(choice - 1);
+            }
         }
         prompt.tell(&format!("Enter a number between 1 and {}.", options.len()));
     }

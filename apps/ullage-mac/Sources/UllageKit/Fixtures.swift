@@ -5,8 +5,8 @@ public enum UllageFixtures {
 
     public static func snapshot(named name: String) throws -> SnapshotPayload {
         guard names.contains(name),
-              let url = Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures")
-                ?? Bundle.module.url(forResource: name, withExtension: "json") else {
+              let url = resourceBundle.url(forResource: name, withExtension: "json", subdirectory: "Fixtures")
+                ?? resourceBundle.url(forResource: name, withExtension: "json") else {
             throw FixtureError.notFound(name)
         }
         return try UllageJSON.makeDecoder().decode(SnapshotPayload.self, from: Data(contentsOf: url))
@@ -15,7 +15,17 @@ public enum UllageFixtures {
     public static func snapshots() throws -> [SnapshotPayload] {
         try names.map(snapshot(named:))
     }
+
+    private static var resourceBundle: Bundle {
+        #if SWIFT_PACKAGE
+        Bundle.module
+        #else
+        Bundle(for: BundleToken.self)
+        #endif
+    }
 }
+
+private final class BundleToken {}
 
 public enum FixtureError: Error, Equatable {
     case notFound(String)

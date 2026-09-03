@@ -1096,7 +1096,7 @@ mod tests {
     fn service_files_accept_group_writable_ancestors() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "ullage-service-group-writable-{}",
             std::process::id()
         ));
@@ -1122,7 +1122,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn service_files_reject_symlink_ancestors() {
-        let root = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "ullage-service-symlink-ancestor-{}",
             std::process::id()
         ));
@@ -1143,8 +1143,10 @@ mod tests {
     fn group_writable_executable_passes_validation() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root =
-            std::env::temp_dir().join(format!("ullage-group-writable-exe-{}", std::process::id()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("ullage-group-writable-exe-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o775)).unwrap();
         let executable = root.join("ullage");
@@ -1164,7 +1166,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn service_executable_rejects_symbolic_links() {
-        let root = std::env::temp_dir().join(format!("ullage-exe-symlink-{}", std::process::id()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("ullage-exe-symlink-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("ullage");
         std::fs::write(&target, b"#!/bin/sh\n").unwrap();
@@ -1185,7 +1190,7 @@ mod tests {
     fn private_manifest_accepts_group_writable_mode() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "ullage-group-writable-manifest-{}",
             std::process::id()
         ));
@@ -1207,7 +1212,7 @@ mod tests {
     #[test]
     fn newly_created_service_directories_are_private() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "ullage-private-directories-test-{}",
             std::process::id()
         ));

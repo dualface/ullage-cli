@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let mode = AppMode.current
         let settings = AppSettings()
+        let localService = LocalServiceManager(settings: settings)
         let iconController = ApplicationIconController()
         do {
             try iconController.apply(palette: settings.iconPalette)
@@ -24,18 +25,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .mock:
                 return MockDataSource()
             case .daemon:
-                guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
-                    throw DataSourceSetupError.deviceNotPaired
+                switch settings.transportMode {
+                case .local:
+                    guard let socketURL = localService.socketURL else {
+                        throw LocalControlError.unavailable("App Group container is unavailable")
+                    }
+                    return LocalControlClient(socketURL: socketURL)
+                case .remote:
+                    guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
+                        throw DataSourceSetupError.deviceNotPaired
+                    }
+                    return DaemonClient(baseURL: settings.serverURL, token: token)
                 }
-                return DaemonClient(baseURL: settings.serverURL, token: token)
             }
         })
-        statusItemController = StatusItemController(
+        let controller = StatusItemController(
             store: store,
             settings: settings,
+            localService: localService,
             mode: mode,
             applicationIconController: iconController
         )
+        statusItemController = controller
+        Task { await localService.restoreEnabledServiceIfNeeded() }
+        if mode == .daemon && !settings.localServiceChoiceMade {
+            controller.presentSettings()
+        }
     }
 }
 

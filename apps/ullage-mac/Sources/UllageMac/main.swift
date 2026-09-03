@@ -9,6 +9,11 @@ if arguments.first == "--render-iconset" {
         exit(await DumpCommand.run())
     }
     dispatchMain()
+} else if arguments.first == "--local-service-test" {
+    Task { @MainActor in
+        exit(await LocalServiceCommand.run(arguments: Array(arguments.dropFirst())))
+    }
+    dispatchMain()
 } else {
     let application = NSApplication.shared
     let delegate = AppDelegate()

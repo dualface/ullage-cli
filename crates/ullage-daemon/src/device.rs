@@ -470,10 +470,10 @@ fn persist_state_with_current_seen(
         .iter()
         .map(|device| {
             let mut persisted = device.clone();
-            if !current_seen_ids.contains(&device.id)
-                && let Some(last_seen_at) = state.last_persisted_seen.get(&device.id)
-            {
-                persisted.last_seen_at = *last_seen_at;
+            if !current_seen_ids.contains(&device.id) {
+                if let Some(last_seen_at) = state.last_persisted_seen.get(&device.id) {
+                    persisted.last_seen_at = *last_seen_at;
+                }
             }
             persisted
         })

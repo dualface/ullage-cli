@@ -8,6 +8,16 @@ import XCTest
 import UllageKit
 
 final class UllageMacTests: XCTestCase {
+    func testCallbackOriginKeepsOnlyTheHTTPOrigin() {
+        XCTAssertEqual(
+            callbackOrigin("http://127.0.0.1:1455/callback?code=secret#fragment"),
+            "http://127.0.0.1:1455"
+        )
+        XCTAssertEqual(callbackOrigin("https://example.test/callback"), "https://example.test")
+        XCTAssertNil(callbackOrigin("not a callback URL"))
+        XCTAssertNil(callbackOrigin("file:///tmp/callback"))
+    }
+
     @MainActor
     func testPalettesExposeTheCanonicalColors() {
         let expected: [(AppPalette, UInt32, UInt32, UInt32, UInt32, UInt32)] = [

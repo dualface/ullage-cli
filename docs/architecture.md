@@ -57,9 +57,11 @@ clients obtain a per-device token only by exchanging a one-use pairing code.
 
 ## Ullage Mac
 
-`apps/ullage-mac` is a standalone Swift package and is not a member of the Cargo workspace.
-Its `UllageKit` target owns the daemon HTTP DTOs, transport client, decoding, ordering, and summary
-projection. The `UllageMac` executable target owns the `UsageDataSource` composition boundary and
+`apps/ullage-mac` is a standalone Swift package and is not a member of the Cargo workspace. A
+version-controlled Xcode project is the distribution and App Store archive entry point, while
+SwiftPM remains the unit-test and local bundle entry point. Its `UllageKit` target owns the daemon
+HTTP and local control DTOs, transport clients, decoding, ordering, and summary projection. The
+`UllageMac` executable target owns the `UsageDataSource` composition boundary and
 its daemon and mock adapters, as well as the AppKit application shell, SwiftUI views, refresh
 lifecycle, settings, and Keychain access. The application bundle copies the SwiftPM resource bundle
 into `Contents/Resources` so both tests and mock mode use the same canonical fixture files.
@@ -174,8 +176,28 @@ and a secure timestamp, then use the `notarize` target to submit, staple, and pa
 Remote distribution signing runs inside a user-provided tmux session created by the Mac GUI login
 session; the remote workflow passes only identity and Keychain profile names, never credentials.
 
-The client accesses daemon data only through HTTP; it does not read Rust state, credentials,
-snapshots, or the private control socket directly. Settings accepts the daemon's literal loopback,
+The native Xcode targets reproduce the same nested layout and sign from the inside out: the Rust
+tool, its Login Item helper, then the main app. The main app and helper share
+`group.com.ullage.mac`; all three are sandboxed, with the Rust tool inheriting the helper sandbox.
+
+Local is the default transport. After explicit consent, `SMAppService` registers
+`UllageDaemonHelper.app` from `Contents/Library/LoginItems`. The helper resolves the App Group,
+creates current-user-only `data/` and `run/` directories, creates a default configuration with HTTP
+disabled, sets only the three path environment variables, and starts the bundled Rust
+`ullage __daemon` process with sandbox inheritance. It supervises the child and forwards termination
+signals because Apple's sandbox inheritance contract requires `Process`/`posix_spawn`, rather than
+replacing the helper process with `exec`. The service lifetime is independent from the menu bar UI and from the
+Local/Remote selection. Local data is new and isolated from the standalone daemon paths.
+
+`LocalControlClient` talks to `run/control.sock` with protocol v9 newline-delimited JSON. Before and
+after connecting it verifies a current-user-owned `0600` Unix socket and stable inode; after connect
+it verifies the peer UID. It applies bounded connection and I/O waits, rejects multiple or missing
+newlines, limits responses to 1 MiB, and validates protocol version and request id. It exposes daemon
+status, provider and account management, authentication, logout, probes, and snapshots. Provider
+secrets occur only in the request body sent over this socket.
+
+Remote mode accesses daemon data only through HTTP; it does not expose account management or read
+Rust state, credentials, snapshots, or the private control socket directly. Settings accepts the daemon's literal loopback,
 tailnet, and private-LAN address classes and rejects domains and URL components that could redirect
 credentials. `UllageKit` sends the bearer-free pairing request, then the executable stores the returned
 per-device token as a generic password in the macOS Keychain with device-local, unlocked-only
@@ -185,8 +207,8 @@ characters before the request is sent. A successful pair makes a best-effort att
 Keychain entry without discarding the new credential when an old-item ACL denies deletion. Only the
 paired device name and local pairing time are kept in `UserDefaults` for display. Non-loopback access declares
 `NSLocalNetworkUsageDescription`, so macOS can request Local Network permission with an explanation.
-The executable-owned `UsageDataSource` boundary selects either the real `DaemonClient` or bundled mock
-fixtures. Daemon HTTP responses and the Mac client both use the version 9 result envelope. Probes
+The executable-owned `UsageDataSource` boundary selects `LocalControlClient`, the remote
+`DaemonClient`, or bundled mock fixtures. Both daemon transports use the version 9 result envelope. Probes
 distinguish acknowledged and completed responses. The headless `--dump` path reuses the same summary projection as the menu
 bar UI, while `--render-iconset` reuses the executable's canonical mark geometry without entering
 the AppKit application loop. Runtime application-icon color follows the stored `iconPalette`

@@ -783,7 +783,7 @@ async fn manual_rate_limit_moves_the_existing_periodic_deadline() {
     running.await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn manual_and_periodic_probes_share_one_flight_and_provider_limit() {
     let (provider, gate) = MockProvider::gated("limited");
     let mut registry = ProviderRegistry::default();
@@ -1597,17 +1597,6 @@ async fn control_service_supports_status_auth_probe_show_and_version_checks() {
         ControlResult::Probe(ref payload) if payload.account_id == "primary"
     ));
 
-    let triggered = service
-        .handle(ControlRequest::new(
-            "probe-no-wait",
-            ControlCommand::Probe {
-                account_id: "primary".into(),
-                wait: false,
-            },
-        ))
-        .await;
-    assert!(matches!(triggered.result, ControlResult::Ack));
-
     let missing_trigger = service
         .handle(ControlRequest::new(
             "probe-no-wait-missing",
@@ -1659,6 +1648,17 @@ async fn control_service_supports_status_auth_probe_show_and_version_checks() {
     let encoded_error = serde_json::to_string(&error_response).unwrap();
     assert!(encoded_error.contains("provider network request failed"));
     assert!(!encoded_error.contains("must-not-cross-control-boundary"));
+
+    let triggered = service
+        .handle(ControlRequest::new(
+            "probe-no-wait",
+            ControlCommand::Probe {
+                account_id: "primary".into(),
+                wait: false,
+            },
+        ))
+        .await;
+    assert!(matches!(triggered.result, ControlResult::Ack));
 
     let missing_selector = service
         .handle(ControlRequest::new(

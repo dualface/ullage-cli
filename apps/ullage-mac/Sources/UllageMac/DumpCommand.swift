@@ -13,10 +13,22 @@ enum DumpCommand {
                 visibility = dumpOverviewVisibility(mode: .mock, settings: nil)
             case .daemon:
                 let settings = AppSettings()
-                guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
-                    throw DataSourceSetupError.deviceNotPaired
+                switch settings.transportMode {
+                case .local:
+                    guard let container = FileManager.default.containerURL(
+                        forSecurityApplicationGroupIdentifier: LocalServiceManager.appGroupIdentifier
+                    ) else {
+                        throw LocalControlError.unavailable("App Group container is unavailable")
+                    }
+                    source = LocalControlClient(
+                        socketURL: container.appendingPathComponent("run/control.sock")
+                    )
+                case .remote:
+                    guard let token = try Keychain.loadDeviceToken(), !token.isEmpty else {
+                        throw DataSourceSetupError.deviceNotPaired
+                    }
+                    source = DaemonClient(baseURL: settings.serverURL, token: token)
                 }
-                source = DaemonClient(baseURL: settings.serverURL, token: token)
                 visibility = dumpOverviewVisibility(mode: .daemon, settings: settings)
             }
 

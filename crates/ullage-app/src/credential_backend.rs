@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn enabled_fallback_constructs_file_store_when_native_is_unavailable() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("credentials");
+        let root = directory.path().canonicalize().unwrap().join("credentials");
         let (store, backend) = assemble_credential_store_with(true, unavailable_native(), || {
             FileStore::new(FileFallbackOptions::new(&root).unwrap()).map_err(store_error)
         })

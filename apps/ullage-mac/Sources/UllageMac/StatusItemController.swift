@@ -9,6 +9,7 @@ final class StatusItemController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let store: UsageStore
     private let settings: AppSettings
+    private let localService: LocalServiceManager
     private let mode: AppMode
     private let applicationIconController: ApplicationIconController
     private var popoverController: PopoverController?
@@ -32,11 +33,13 @@ final class StatusItemController: NSObject {
     init(
         store: UsageStore,
         settings: AppSettings,
+        localService: LocalServiceManager,
         mode: AppMode,
         applicationIconController: ApplicationIconController
     ) {
         self.store = store
         self.settings = settings
+        self.localService = localService
         self.mode = mode
         self.applicationIconController = applicationIconController
         super.init()
@@ -341,6 +344,7 @@ final class StatusItemController: NSObject {
         let controller = settingsController ?? SettingsPanelController(
             settings: settings,
             store: store,
+            localService: localService,
             mode: mode,
             onSaved: { [weak self] in self?.store.invalidateDataSource() },
             onPaletteChanged: { [weak self] palette in
@@ -353,6 +357,10 @@ final class StatusItemController: NSObject {
         )
         settingsController = controller
         controller.show()
+    }
+
+    func presentSettings() {
+        showSettings()
     }
 
     @objc private func quit() {

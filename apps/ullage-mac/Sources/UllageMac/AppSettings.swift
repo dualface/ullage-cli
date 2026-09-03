@@ -16,11 +16,26 @@ final class AppSettings {
     private static let menuBarMetricIDKey = "menuBarMetricID"
     private static let hiddenOverviewItemIDsKey = "hiddenOverviewItemIDs"
     private static let shownOverviewItemIDsKey = "shownOverviewItemIDs"
+    private static let transportModeKey = "transportMode"
+    private static let localServiceChoiceMadeKey = "localServiceChoiceMade"
+    private static let backgroundServiceEnabledKey = "backgroundServiceEnabled"
     private let defaults: UserDefaults
     private let saveDeviceToken: (String) throws -> Void
 
     private(set) var pairedDeviceName: String?
     private(set) var pairedAt: Date?
+
+    var transportMode: ConnectionTransport {
+        didSet { defaults.set(transportMode.rawValue, forKey: Self.transportModeKey) }
+    }
+
+    private(set) var localServiceChoiceMade: Bool {
+        didSet { defaults.set(localServiceChoiceMade, forKey: Self.localServiceChoiceMadeKey) }
+    }
+
+    private(set) var backgroundServiceEnabled: Bool {
+        didSet { defaults.set(backgroundServiceEnabled, forKey: Self.backgroundServiceEnabledKey) }
+    }
 
     var iconPalette: AppPalette {
         didSet { defaults.set(iconPalette.rawValue, forKey: Self.iconPaletteKey) }
@@ -74,6 +89,10 @@ final class AppSettings {
         self.saveDeviceToken = saveDeviceToken
         pairedDeviceName = defaults.string(forKey: Self.pairedDeviceNameKey)
         pairedAt = defaults.object(forKey: Self.pairedAtKey) as? Date
+        transportMode = defaults.string(forKey: Self.transportModeKey)
+            .flatMap(ConnectionTransport.init(rawValue:)) ?? .local
+        localServiceChoiceMade = defaults.bool(forKey: Self.localServiceChoiceMadeKey)
+        backgroundServiceEnabled = defaults.bool(forKey: Self.backgroundServiceEnabledKey)
         iconPalette = defaults.string(forKey: Self.iconPaletteKey)
             .flatMap(AppPalette.init(rawValue:)) ?? .default
         animatesMenuBarLiquid = defaults.object(forKey: Self.animatesMenuBarLiquidKey) as? Bool ?? true
@@ -81,6 +100,11 @@ final class AppSettings {
         menuBarMetricID = defaults.string(forKey: Self.menuBarMetricIDKey).flatMap { $0.isEmpty ? nil : $0 }
         hiddenOverviewItemIDs = Set(defaults.stringArray(forKey: Self.hiddenOverviewItemIDsKey) ?? [])
         shownOverviewItemIDs = Set(defaults.stringArray(forKey: Self.shownOverviewItemIDsKey) ?? [])
+    }
+
+    func recordLocalService(enabled: Bool) {
+        localServiceChoiceMade = true
+        backgroundServiceEnabled = enabled
     }
 
     func setOverviewItemVisible(_ id: String, visible: Bool, catalogDefault: Bool = true) {
@@ -147,6 +171,14 @@ final class AppSettings {
               components.fragment == nil else { return nil }
         return components.url
     }
+}
+
+enum ConnectionTransport: String, CaseIterable, Identifiable {
+    case local
+    case remote
+
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
 }
 
 nonisolated func literalServerAddressIsAllowed(_ host: String) -> Bool {

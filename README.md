@@ -116,13 +116,25 @@ asset is required. Set the build palette with `ICON_PALETTE`, for example:
 make -C apps/ullage-mac bundle ICON_PALETTE=paper
 ```
 
-The client reads the server URL from its Settings panel and defaults to
-`http://127.0.0.1:7878`. Enable the daemon's HTTP interface as described under
-Configuration, create a one-use code with `ullage device pair`, and enter that
-code in Settings as six single-character fields (`XXX-XXX`). Paste accepts
-values with or without the hyphen, mixed case, and incidental whitespace; the
-client normalizes to six uppercase alphanumeric characters before pairing. The
-client sends its hostname, exchanges the code for a per-device token, and stores
+The client defaults to Local mode. On first launch, Settings explains that the
+embedded local service is disabled until the user selects **Enable Local
+Service**. The service is a nested Login Item registered with `SMAppService`;
+it runs the bundled Rust daemon without requiring a separate CLI installation.
+It remains running when the menu bar UI quits and can be disabled or restarted
+from Settings. Selecting Remote mode does not enable or disable the local
+service.
+
+Local mode also owns account setup. Settings can add, name, enable, disable,
+and remove accounts for Claude, ChatGPT, Grok, and Cursor. Browser and device
+authorization opens the provider page, callback values are pasted into the
+app when requested, and API tokens use a secure field. Failed or cancelled
+setup removes the temporary account. Removing an established account logs out
+first and keeps the account if logout fails.
+
+Remote mode retains the existing HTTP pairing flow. It defaults to
+`http://127.0.0.1:7878`; create a one-use code with `ullage device pair` on the
+daemon host and enter it in Settings as six single-character fields
+(`XXX-XXX`). The client exchanges the code for a per-device token and stores
 the token in the macOS Keychain rather than `UserDefaults`.
 
 `Launch at Login` is available from the status-item menu when Ullage is running
@@ -143,7 +155,9 @@ hardened-runtime bundle signed for distribution, pass the Developer ID identity:
 
 ```sh
 make -C apps/ullage-mac bundle \
-  SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)"
+  SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)" \
+  APP_PROFILE=/path/to/Ullage_Developer_ID.provisionprofile \
+  HELPER_PROFILE=/path/to/Ullage_Daemon_Developer_ID.provisionprofile
 ```
 
 To sign, submit the bundle to Apple's notary service, staple the ticket, and
@@ -153,8 +167,22 @@ with `xcrun notarytool store-credentials`:
 ```sh
 make -C apps/ullage-mac notarize \
   SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)" \
+  APP_PROFILE=/path/to/Ullage_Developer_ID.provisionprofile \
+  HELPER_PROFILE=/path/to/Ullage_Daemon_Developer_ID.provisionprofile \
   NOTARY_PROFILE=ullage-notary
 ```
+
+Mac App Store builds use the version-controlled Xcode project. With the team
+account and matching App Store profiles installed in Xcode, these commands
+produce an archive and export without uploading either artifact:
+
+```sh
+make -C apps/ullage-mac archive DEVELOPMENT_TEAM=<TEAMID>
+make -C apps/ullage-mac export-app-store DEVELOPMENT_TEAM=<TEAMID>
+```
+
+The Xcode and Developer ID paths serve different signing systems. A successful
+App Store archive does not replace the notarized Developer ID QA build.
 
 The same operations can run on the configured remote Mac. Signing credentials
 never cross SSH: create a long-lived tmux session once from Terminal in the Mac
@@ -167,20 +195,44 @@ tmux new-session -d -s <gui-session> -n _hold -- sleep 2147483647
 
 export ULLAGE_MAC_GUI_TMUX_SESSION=<gui-session>
 export ULLAGE_MAC_SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)"
+export ULLAGE_MAC_APP_PROFILE="$HOME/Library/MobileDevice/Provisioning Profiles/ullage.provisionprofile"
+export ULLAGE_MAC_HELPER_PROFILE="$HOME/Library/MobileDevice/Provisioning Profiles/ullage-daemon.provisionprofile"
 export ULLAGE_MAC_NOTARY_PROFILE=ullage-notary
 apps/ullage-mac/scripts/remote.sh sign
 apps/ullage-mac/scripts/remote.sh notarize
 ```
 
-`remote.sh` requires `ULLAGE_MAC_SSH` as before. It synchronizes the package,
-runs signing in a temporary window of the GUI-created session, waits up to 30
-minutes by default, and copies the notarized zip back into the local `build/`
-directory. Set `ULLAGE_MAC_SIGN_TIMEOUT` to a positive number of seconds to
-change that limit. A session created over SSH does not inherit the GUI login
-security context and therefore cannot reliably access the unlocked login
-Keychain or the notarytool profile.
+`remote.sh` requires `ULLAGE_MAC_SSH` as before. It synchronizes the repository
+under `~/ullage-build/`, installs the pinned Rust toolchain when necessary,
+runs signing in a temporary window of the GUI-created session, and waits up to
+30 minutes by default. After notarization it copies the zip back into the local
+`build/` directory, installs the stapled app on the remote Desktop, stops an
+older instance, and opens the new app. Set `ULLAGE_MAC_SIGN_TIMEOUT` to a
+positive number of seconds to change that limit. A session created over SSH
+does not inherit the GUI login security context and therefore cannot reliably
+access the unlocked login Keychain or the notarytool profile.
+
+Both provisioning profiles must authorize `group.com.ullage.mac` for their
+respective explicit App IDs (`com.ullage.mac` and `com.ullage.mac.daemon`).
+This is required for unattended App Group container access on macOS 15 and
+later, including Developer ID QA builds. The build validates and embeds both
+profiles before signing.
 
 ### Connecting to the daemon
+
+No terminal setup is needed for the default Local mode. Its helper creates new
+private storage inside the `group.com.ullage.mac` App Group:
+
+| Data | App Group relative path | Permissions |
+|---|---|---|
+| Configuration | `data/config.json` | `0600` |
+| State | `data/state.json` | private file created by the daemon |
+| Control socket | `run/control.sock` | `0600`, inside a `0700` directory |
+
+The embedded configuration disables HTTP. Local mode never reads or migrates
+the standalone daemon data under `~/Library/Application Support/Ullage`.
+
+The following steps apply only to the optional Remote mode.
 
 Set `http.enabled` to `true` in the daemon configuration, restart the daemon,
 and create a short-lived pairing code over the private control channel:

@@ -785,7 +785,7 @@ fn concurrent_replacements_across_store_handles_have_one_winner() {
 #[test]
 fn file_fallback_is_explicit_private_and_strictly_parsed() {
     let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("vault");
+    let root = temporary.path().canonicalize().unwrap().join("vault");
     assert!(matches!(
         FileFallbackOptions::new("relative/path"),
         Err(CredentialError::UnsafeFallbackPath)
@@ -835,8 +835,8 @@ fn file_fallback_is_explicit_private_and_strictly_parsed() {
 #[test]
 fn file_fallback_supports_maximum_length_key_components() {
     let temporary = tempfile::tempdir().unwrap();
-    let backend =
-        FileStore::new(FileFallbackOptions::new(temporary.path().join("vault")).unwrap()).unwrap();
+    let root = temporary.path().canonicalize().unwrap().join("vault");
+    let backend = FileStore::new(FileFallbackOptions::new(root).unwrap()).unwrap();
     let store = CredentialStore::new(backend);
     let key = CredentialKey::new("p".repeat(255), "a".repeat(255)).unwrap();
     store.set(&key, credential(b"long-key-secret")).unwrap();
@@ -856,8 +856,9 @@ fn file_fallback_supports_maximum_length_key_components() {
 #[test]
 fn equivalent_file_vault_paths_share_coordination() {
     let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("vault");
-    let alias = PathBuf::from(format!("{}//vault", temporary.path().display()));
+    let temporary_root = temporary.path().canonicalize().unwrap();
+    let root = temporary_root.join("vault");
+    let alias = PathBuf::from(format!("{}//vault", temporary_root.display()));
     let first_backend = FileStore::new(FileFallbackOptions::new(&root).unwrap()).unwrap();
     let second_backend = FileStore::new(FileFallbackOptions::new(alias).unwrap()).unwrap();
     assert_eq!(
@@ -954,9 +955,10 @@ fn file_fallback_rejects_symlinked_directory() {
     use std::os::unix::fs::symlink;
 
     let temporary = tempfile::tempdir().unwrap();
-    let real = temporary.path().join("real");
+    let temporary_root = temporary.path().canonicalize().unwrap();
+    let real = temporary_root.join("real");
     std::fs::create_dir(&real).unwrap();
-    let link = temporary.path().join("link");
+    let link = temporary_root.join("link");
     symlink(real, &link).unwrap();
     let error = FileStore::new(FileFallbackOptions::new(link).unwrap()).unwrap_err();
     assert_eq!(error, CredentialError::UnsafeFallbackPath);
@@ -968,8 +970,9 @@ fn file_fallback_rejects_leaf_symlink_creation_race() {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("raced-vault");
-    let target = temporary.path().join("unrelated");
+    let temporary_root = temporary.path().canonicalize().unwrap();
+    let root = temporary_root.join("raced-vault");
+    let target = temporary_root.join("unrelated");
     std::fs::create_dir(&target).unwrap();
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
     let entered = Arc::new(ThreadBarrier::new(2));
@@ -983,7 +986,7 @@ fn file_fallback_rejects_leaf_symlink_creation_race() {
     let constructor =
         std::thread::spawn(move || FileStore::new(FileFallbackOptions::new(root).unwrap()));
     entered.wait();
-    symlink(&target, temporary.path().join("raced-vault")).unwrap();
+    symlink(&target, temporary_root.join("raced-vault")).unwrap();
     release.wait();
     let error = constructor.join().unwrap().unwrap_err();
     crate::file_store::set_directory_create_hook(None);
@@ -1001,9 +1004,10 @@ fn file_fallback_stays_on_open_directory_after_path_switch() {
     use std::os::unix::fs::symlink;
 
     let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("vault");
-    let moved = temporary.path().join("moved-vault");
-    let attacker = temporary.path().join("attacker");
+    let temporary_root = temporary.path().canonicalize().unwrap();
+    let root = temporary_root.join("vault");
+    let moved = temporary_root.join("moved-vault");
+    let attacker = temporary_root.join("attacker");
     let store =
         CredentialStore::new(FileStore::new(FileFallbackOptions::new(&root).unwrap()).unwrap());
     std::fs::create_dir(&attacker).unwrap();
