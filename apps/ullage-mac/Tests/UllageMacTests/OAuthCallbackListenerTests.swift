@@ -215,6 +215,30 @@ final class OAuthCallbackListenerTests: XCTestCase {
         try await rebind(port: port)
     }
 
+    /// Exercises replying into a connection the peer has already reset. The
+    /// endpoint has to survive it and stay usable; without `SO_NOSIGPIPE` such a
+    /// write raises `SIGPIPE`, which by default kills the whole process (the
+    /// disposition stays `SIG_DFL` in an AppKit app). The race is timing
+    /// dependent, so this guards the behavior rather than proving the option.
+    func testAPeerThatResetsBeforeTheReplyDoesNotKillTheProcess() async throws {
+        let (listener, port) = try makeListener()
+        defer { listener.close() }
+        let deadline = Date().addingTimeInterval(10)
+        let waiting = Task { try await listener.waitForCallback(state: "s", deadline: deadline) }
+        try await settle()
+
+        for _ in 0..<32 {
+            try sendAndReset(host: "127.0.0.1", port: port, raw: get("/auth/callback?state=x"))
+        }
+
+        _ = try request(host: "127.0.0.1", port: port, raw: get("/auth/callback?code=c&state=s"))
+        let outcome = try await waiting.value
+        XCTAssertEqual(
+            outcome,
+            .authorized(callbackURL: "http://localhost:\(port)/auth/callback?code=c&state=s")
+        )
+    }
+
     func testRequestLineParsingKeepsTheQueryVerbatim() {
         let request = OAuthCallbackRequest(
             requestLine: "GET /auth/callback?code=a%2Fb&state=s HTTP/1.1"
@@ -302,8 +326,60 @@ final class OAuthCallbackListenerTests: XCTestCase {
         """
     }
 
+    /// Sends one raw request and immediately resets the connection, so the reply
+    /// is written to a stream the peer has already torn down.
+    private func sendAndReset(host: String, port: Int, raw: String) throws {
+        let descriptor = try connect(host: host, port: port)
+        var linger = linger(l_onoff: 1, l_linger: 0)
+        setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_LINGER,
+            &linger,
+            socklen_t(MemoryLayout<linger>.size)
+        )
+        try writeAll(raw, to: descriptor)
+        Darwin.close(descriptor)
+    }
+
     /// Sends one raw request and returns everything the endpoint wrote back.
     private func request(host: String, port: Int, raw: String) throws -> String {
+        let descriptor = try connect(host: host, port: port)
+        defer { Darwin.close(descriptor) }
+        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            &timeout,
+            socklen_t(MemoryLayout<timeval>.size)
+        )
+        try writeAll(raw, to: descriptor)
+        var response = [UInt8]()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            guard count > 0 else { break }
+            response.append(contentsOf: buffer[..<count])
+        }
+        return String(decoding: response, as: UTF8.self)
+    }
+
+    private func writeAll(_ raw: String, to descriptor: Int32) throws {
+        let payload = Array(raw.utf8)
+        var offset = 0
+        while offset < payload.count {
+            let written = payload[offset...].withUnsafeBytes {
+                Darwin.write(descriptor, $0.baseAddress, $0.count)
+            }
+            guard written > 0 else {
+                throw OAuthCallbackError.bindFailed(String(cString: strerror(errno)))
+            }
+            offset += written
+        }
+    }
+
+    private func connect(host: String, port: Int) throws -> Int32 {
         var hints = addrinfo()
         hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV
         hints.ai_family = AF_UNSPEC
@@ -322,37 +398,11 @@ final class OAuthCallbackListenerTests: XCTestCase {
         guard descriptor >= 0 else {
             throw OAuthCallbackError.bindFailed(String(cString: strerror(errno)))
         }
-        defer { Darwin.close(descriptor) }
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
-        setsockopt(
-            descriptor,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            &timeout,
-            socklen_t(MemoryLayout<timeval>.size)
-        )
         guard Darwin.connect(descriptor, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0
         else {
+            Darwin.close(descriptor)
             throw OAuthCallbackError.bindFailed(String(cString: strerror(errno)))
         }
-        let payload = Array(raw.utf8)
-        var offset = 0
-        while offset < payload.count {
-            let written = payload[offset...].withUnsafeBytes {
-                Darwin.write(descriptor, $0.baseAddress, $0.count)
-            }
-            guard written > 0 else {
-                throw OAuthCallbackError.bindFailed(String(cString: strerror(errno)))
-            }
-            offset += written
-        }
-        var response = [UInt8]()
-        var buffer = [UInt8](repeating: 0, count: 4_096)
-        while true {
-            let count = Darwin.read(descriptor, &buffer, buffer.count)
-            guard count > 0 else { break }
-            response.append(contentsOf: buffer[..<count])
-        }
-        return String(decoding: response, as: UTF8.self)
+        return descriptor
     }
 }

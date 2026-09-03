@@ -222,6 +222,17 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
     ) -> OAuthCallbackOutcome? {
         let flags = fcntl(connection, F_GETFL)
         guard flags >= 0, fcntl(connection, F_SETFL, flags | O_NONBLOCK) == 0 else { return nil }
+        // Without this, replying to a peer that already reset the connection
+        // raises SIGPIPE, whose default disposition terminates the app. Any
+        // local process can force that timing, so it is required, not advisory.
+        var suppressSignal: Int32 = 1
+        guard setsockopt(
+            connection,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &suppressSignal,
+            socklen_t(MemoryLayout<Int32>.size)
+        ) == 0 else { return nil }
         guard let requestLine = readHead(connection: connection, deadline: deadline) else {
             respond(connection, "400 Bad Request", Self.rejectedBody, deadline)
             return nil
@@ -313,6 +324,8 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
             }
             if written < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                // EPIPE or ECONNRESET here just means the peer went away; the
+                // flow is unaffected because the reply carries nothing.
                 return
             }
             guard written > 0 else { return }
