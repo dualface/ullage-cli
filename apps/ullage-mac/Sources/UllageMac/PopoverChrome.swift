@@ -191,34 +191,41 @@ struct PopoverSurface: ViewModifier {
     @Environment(\.usesLiquidGlass) private var usesLiquidGlass
 
     func body(content: Content) -> some View {
-        if usesLiquidGlass, #available(macOS 26.0, *) {
+        if placement == .window {
+            if usesLiquidGlass, #available(macOS 26.0, *) {
+                content
+                    .background {
+                        Color.clear
+                            .glassEffect(.clear, in: Rectangle())
+                            .ignoresSafeArea()
+                    }
+            } else {
+                content
+                    .background {
+                        AtmosphereBackground(animates: animatesBackdrop)
+                            .ignoresSafeArea()
+                    }
+            }
+        } else if usesLiquidGlass, #available(macOS 26.0, *) {
             let shape = PopoverBubble(
                 pointerOffset: pointerOffset,
-                hasPointer: placement == .popover
+                hasPointer: true
             )
             content
-                .padding(.top, placement == .popover ? PopoverBubble.pointerHeight : 0)
+                .padding(.top, PopoverBubble.pointerHeight)
                 .clipShape(shape)
                 .glassEffect(.clear, in: shape)
         } else {
             content
                 .background { AtmosphereBackground(animates: animatesBackdrop) }
-                // In a window the backdrop is the window, so it rounds its own
-                // corners; inside an `NSPopover` the frame has already done it,
-                // and clipping again would pull the tint off the edge. A zero
-                // radius leaves the popover exactly as it was.
-                .clipShape(RoundedRectangle(
-                    cornerRadius: placement == .window ? PopoverBubble.defaultCornerRadius : 0,
-                    style: .continuous
-                ))
         }
     }
 }
 
-/// What the surface is filling, which decides the two things a window needs and
-/// a popover does not: its own rounded edge, and no pointer, since a window of
-/// its own is not hanging off the status item.
-enum SurfacePlacement {
+/// What the surface is filling. A popover owns its custom outline and pointer;
+/// a window lets AppKit own the outer corners while its background extends
+/// beneath the transparent title bar.
+enum SurfacePlacement: Equatable {
     case popover
     case window
 }

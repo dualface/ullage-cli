@@ -23,7 +23,13 @@ final class SettingsPanelController: NSWindowController {
         hostingController.sizingOptions = [.preferredContentSize]
         let panel = NSPanel(contentViewController: hostingController)
         panel.title = "Ullage Settings"
-        panel.styleMask = [.titled, .closable]
+        // The content view carries the Settings surface through the transparent
+        // title bar. SwiftUI content still observes the title-bar safe area;
+        // only the surface background extends underneath it.
+        panel.styleMask = [.titled, .closable, .fullSizeContentView]
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .visible
+        panel.titlebarSeparatorStyle = .none
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.isReleasedWhenClosed = false

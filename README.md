@@ -55,9 +55,10 @@ anything appearing to move. It runs only while the popover is open and stops
 under the same conditions that hold the menu bar liquid still. On macOS 26 the "Liquid Glass" switch in Settings
 chooses between the two: off gives that same standard popover, backdrop and
 all, and it takes effect the next time the popover opens. Below macOS 26 the
-switch is not shown, since the flat presentation is the only one. Settings keeps the same content
-surface inside a standard titled window: whichever surface the popover is wearing, with each
-section on its own frosted panel. Its header
+switch is not shown, since the flat presentation is the only one. Settings keeps the same surface
+across its content and transparent title bar: whichever surface the popover is wearing extends
+behind the visible title and native window controls without an internal edge or rounded seam, while
+the content stays inside the title-bar safe area. Each section remains on its own frosted panel. Its header
 repeats what the menu bar mark is tracking, as a filled vessel beside the
 percentage (its surface wobbles while the popover is open, at a fixed level,
 under the same conditions that let the menu bar liquid move), the account it came from, that account's soonest reset, and the

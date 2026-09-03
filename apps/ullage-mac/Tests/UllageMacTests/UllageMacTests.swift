@@ -690,7 +690,7 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
-    func testSettingsPanelUsesStandardTitleBar() throws {
+    func testSettingsPanelUsesOneSurfaceThroughTheTitleBar() throws {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -706,10 +706,14 @@ final class UllageMacTests: XCTestCase {
         XCTAssertEqual(window.title, "Ullage Settings")
         XCTAssertTrue(window.styleMask.contains(.titled))
         XCTAssertTrue(window.styleMask.contains(.closable))
-        XCTAssertFalse(window.styleMask.contains(.fullSizeContentView))
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
         XCTAssertEqual(window.titleVisibility, .visible)
-        XCTAssertFalse(window.titlebarAppearsTransparent)
-        XCTAssertGreaterThan(window.frame.height, window.contentLayoutRect.height)
+        XCTAssertTrue(window.titlebarAppearsTransparent)
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(window.contentView).frame.height,
+            window.contentLayoutRect.height
+        )
         XCTAssertNotNil(window.standardWindowButton(.closeButton))
     }
 
