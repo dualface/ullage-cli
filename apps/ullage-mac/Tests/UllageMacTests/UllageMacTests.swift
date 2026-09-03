@@ -611,6 +611,29 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsPanelUsesStandardTitleBar() throws {
+        let suiteName = "UllageMacTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let controller = SettingsPanelController(
+            settings: AppSettings(defaults: defaults),
+            store: UsageStore(dataSourceFactory: { MockDataSource() }),
+            mode: .mock,
+            onSaved: {}
+        )
+        let window = try XCTUnwrap(controller.window)
+
+        XCTAssertEqual(window.title, "Ullage Settings")
+        XCTAssertTrue(window.styleMask.contains(.titled))
+        XCTAssertTrue(window.styleMask.contains(.closable))
+        XCTAssertFalse(window.styleMask.contains(.fullSizeContentView))
+        XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertFalse(window.titlebarAppearsTransparent)
+        XCTAssertGreaterThan(window.frame.height, window.contentLayoutRect.height)
+        XCTAssertNotNil(window.standardWindowButton(.closeButton))
+    }
+
+    @MainActor
     func testProgressColorsUseSemanticTierColors() {
         XCTAssertEqual(progressColor(for: .healthy), .systemGreen)
         XCTAssertEqual(progressColor(for: .caution), .systemYellow)

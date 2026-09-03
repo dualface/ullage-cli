@@ -21,15 +21,9 @@ final class SettingsPanelController: NSWindowController {
         hostingController.sizingOptions = [.preferredContentSize]
         let panel = NSPanel(contentViewController: hostingController)
         panel.title = "Ullage Settings"
-        // Transparent and full-height, so the view's own surface — glass or the
-        // tinted backdrop — is the window, the way the popover is. The window
-        // buttons stay: they are the only way to close this one.
-        panel.styleMask = [.titled, .closable, .fullSizeContentView]
-        panel.titlebarAppearsTransparent = true
-        panel.titleVisibility = .hidden
+        panel.styleMask = [.titled, .closable]
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
         panel.setContentSize(hostingController.view.fittingSize)
@@ -189,9 +183,6 @@ private struct SettingsView: View {
             }
         }
         .padding(12)
-        // Clear of the window buttons, which float over the surface because the
-        // title bar is transparent and the content runs the full height.
-        .padding(.top, 18)
         .frame(width: 420)
         // The same surface the popover wears, minus the pointer: this window
         // has nothing to point at. The backdrop is held still here — the window

@@ -79,12 +79,13 @@ Reduce Motion is enabled, or when the "Animate liquid" setting (`animatesMenuBar
 is off, the liquid holds still at the floor with a flat surface and the cycle is parked at its
 trough so resuming rises out of the frozen level. `UsageStore` starts polling at launch on a
 30-second cadence and keeps polling while the popover is closed; it stops only at quit.
-Settings wears the same surface in a window of its own: a transparent, titleless `NSPanel` whose
-content is `PopoverSurface` in its `window` placement, with each section on the popover's frosted
-panel. The placement is what the surface needs to know to fill a window rather than hang off the
-status item — no pointer, and the flat backdrop rounds its own corners, which inside an `NSPopover`
-the frame already does. The window's backdrop is held still: the panel outlives its own visibility,
-and a timeline behind a closed window would keep ticking.
+Settings wears the same surface in a standard titled `NSPanel` whose content is `PopoverSurface`
+in its `window` placement, with each section on the popover's frosted panel. The standard title bar
+owns the window controls and keeps the content below them. The placement is what the surface needs
+to know to fill the content area rather than hang off the status item — no pointer, and the flat
+backdrop rounds its own corners, which inside an `NSPopover` the frame already does. The window's
+backdrop is held still: the panel outlives its own visibility, and a timeline behind a closed window
+would keep ticking.
 
 `PopoverController` presents the content two ways, chosen by `liquidGlassIsEnabled(settings:)`:
 macOS 26 has to offer Liquid Glass and the `usesLiquidGlass` setting has to want it. Every surface
