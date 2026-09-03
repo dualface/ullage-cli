@@ -85,6 +85,8 @@ assert_value "$(entitlement_value "$app_entitlements" com.apple.security.app-san
     "main app sandbox"
 assert_value "$(entitlement_value "$app_entitlements" com.apple.security.network.client)" true \
     "main app outbound network"
+assert_value "$(entitlement_value "$app_entitlements" com.apple.security.network.server)" true \
+    "main app inbound network"
 assert_group "$app_entitlements" "main app"
 
 assert_value "$(entitlement_value "$helper_entitlements" com.apple.security.app-sandbox)" true \
@@ -102,7 +104,7 @@ assert_value "$(entitlement_value "$tool_entitlements" com.apple.security.inheri
 assert_entitlement_keys "$tool_entitlements" 2 "tool"
 
 if [[ "$sign_identity" == "-" ]]; then
-    assert_entitlement_keys "$app_entitlements" 3 "main app"
+    assert_entitlement_keys "$app_entitlements" 4 "main app"
     assert_entitlement_keys "$helper_entitlements" 4 "helper"
 else
     [[ -f "$app/Contents/embedded.provisionprofile" ]] \
@@ -127,7 +129,7 @@ else
         "$expected_team" "main app entitlement team"
     assert_value "$(entitlement_value "$helper_entitlements" com.apple.developer.team-identifier)" \
         "$expected_team" "helper entitlement team"
-    assert_entitlement_keys "$app_entitlements" 5 "main app"
+    assert_entitlement_keys "$app_entitlements" 6 "main app"
     assert_entitlement_keys "$helper_entitlements" 6 "helper"
 fi
 

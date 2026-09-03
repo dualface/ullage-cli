@@ -106,15 +106,13 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
             for family in families {
                 do {
                     bound.append(try Self.bindLoopback(family: family, port: UInt16(port)))
-                } catch {
+                } catch let failure as BindFailure {
                     // A host without IPv6 support is not a squatted port: keep
                     // the IPv4 endpoint rather than dropping to manual paste.
                     guard family == AF_INET6,
-                        !bound.isEmpty,
-                        case OAuthCallbackError.bindFailed(let reason) = error,
-                        reason == Self.reason(EAFNOSUPPORT) || reason == Self.reason(EADDRNOTAVAIL)
-                    else {
-                        throw error
+                          !bound.isEmpty,
+                          failure.code == EAFNOSUPPORT || failure.code == EADDRNOTAVAIL else {
+                        throw failure.reported
                     }
                 }
             }
@@ -225,28 +223,28 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
         let flags = fcntl(connection, F_GETFL)
         guard flags >= 0, fcntl(connection, F_SETFL, flags | O_NONBLOCK) == 0 else { return nil }
         guard let requestLine = readHead(connection: connection, deadline: deadline) else {
-            respond(connection: connection, status: "400 Bad Request", body: Self.rejectedBody)
+            respond(connection, "400 Bad Request", Self.rejectedBody, deadline)
             return nil
         }
         guard let request = OAuthCallbackRequest(requestLine: requestLine),
               request.method == "GET",
               request.path == path else {
-            respond(connection: connection, status: "404 Not Found", body: Self.notFoundBody)
+            respond(connection, "404 Not Found", Self.notFoundBody, deadline)
             return nil
         }
         guard let carried = request.value(of: "state"), carried == state else {
-            respond(connection: connection, status: "400 Bad Request", body: Self.rejectedBody)
+            respond(connection, "400 Bad Request", Self.rejectedBody, deadline)
             return nil
         }
         if let failure = request.value(of: "error") {
-            respond(connection: connection, status: "200 OK", body: Self.declinedBody)
+            respond(connection, "200 OK", Self.declinedBody, deadline)
             return .declined(reason: Self.readableReason(failure))
         }
         guard request.value(of: "code")?.isEmpty == false else {
-            respond(connection: connection, status: "400 Bad Request", body: Self.rejectedBody)
+            respond(connection, "400 Bad Request", Self.rejectedBody, deadline)
             return nil
         }
-        respond(connection: connection, status: "200 OK", body: Self.successBody)
+        respond(connection, "200 OK", Self.successBody, deadline)
         return .authorized(callbackURL: redirectURI + "?" + request.query)
     }
 
@@ -290,7 +288,9 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
         return false
     }
 
-    private func respond(connection: Int32, status: String, body: String) {
+    /// Writes one response within the connection's own budget, so a peer that
+    /// stops reading cannot hold the endpoint past the flow's deadline.
+    private func respond(_ connection: Int32, _ status: String, _ body: String, _ deadline: Date) {
         let payload = Array(body.utf8)
         let head = """
         HTTP/1.1 \(status)\r
@@ -303,7 +303,6 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
         """
         var response = Array(head.utf8)
         response.append(contentsOf: payload)
-        let deadline = Date().addingTimeInterval(Self.connectionTimeout)
         var offset = 0
         while offset < response.count {
             guard wait(descriptor: connection, events: Int16(POLLOUT), deadline: deadline) else {
@@ -353,12 +352,19 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
         }
     }
 
+    /// A failed bind together with the `errno` that caused it, so the caller can
+    /// tell "this host has no IPv6" from "somebody else holds this port".
+    private struct BindFailure: Error {
+        let code: Int32
+        var reported: OAuthCallbackError { .bindFailed(reason(code)) }
+    }
+
     /// Binds one loopback address literally, never a wildcard, so the added
     /// `com.apple.security.network.server` entitlement cannot reach the network.
     private static func bindLoopback(family: Int32, port: UInt16) throws -> Int32 {
         let descriptor = Darwin.socket(family, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { throw OAuthCallbackError.bindFailed(reason(errno)) }
-        var failure: OAuthCallbackError?
+        guard descriptor >= 0 else { throw BindFailure(code: errno) }
+        var failure: BindFailure?
         // A previous flow leaves the port in TIME_WAIT; without this a second
         // login within a couple of minutes would drop to manual paste. It never
         // lets a second listener take this exact address and port.
@@ -370,7 +376,7 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
             &enabled,
             socklen_t(MemoryLayout<Int32>.size)
         ) != 0 {
-            failure = .bindFailed(reason(errno))
+            failure = BindFailure(code: errno)
         }
         if failure == nil, family == AF_INET6 {
             var only: Int32 = 1
@@ -381,13 +387,13 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
                 &only,
                 socklen_t(MemoryLayout<Int32>.size)
             ) != 0 {
-                failure = .bindFailed(reason(errno))
+                failure = BindFailure(code: errno)
             }
         }
         if failure == nil {
             let flags = fcntl(descriptor, F_GETFL)
             if flags < 0 || fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) != 0 {
-                failure = .bindFailed(reason(errno))
+                failure = BindFailure(code: errno)
             }
         }
         if failure == nil {
@@ -415,10 +421,10 @@ final class OAuthCallbackListener: OAuthCallbackListening, @unchecked Sendable {
                     }
                 }
             }
-            if bound != 0 { failure = .bindFailed(reason(errno)) }
+            if bound != 0 { failure = BindFailure(code: errno) }
         }
         if failure == nil, Darwin.listen(descriptor, 8) != 0 {
-            failure = .bindFailed(reason(errno))
+            failure = BindFailure(code: errno)
         }
         if let failure {
             Darwin.close(descriptor)

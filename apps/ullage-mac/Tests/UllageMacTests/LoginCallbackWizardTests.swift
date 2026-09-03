@@ -79,7 +79,52 @@ final class LoginCallbackWizardTests: XCTestCase {
     }
 
     @MainActor
-    func testADeviceCodeProviderKeepsPollingAndReleasesTheEndpoint() async throws {
+    func testATimedOutCallbackPointsAtRetryRatherThanAPaste() async throws {
+        let recorder = ControlRecorder()
+        let listener = CallbackListenerFixture(
+            redirectURI: redirectURI,
+            outcome: .failure(OAuthCallbackError.timedOut)
+        )
+        let model = try makeModel(recorder: recorder) { _ in listener }
+        model.provider = "chatgpt"
+
+        await model.begin()
+        try await waitUntil { !model.message.isEmpty }
+
+        XCTAssertEqual(
+            model.message,
+            "\(OAuthCallbackError.timedOut.localizedDescription). Retry to start again."
+        )
+    }
+
+    /// Retry has to wait for the previous endpoint to actually let go of the
+    /// port; closing it only asks the accept loop to stop.
+    @MainActor
+    func testRetryOnlyRebindsAfterThePreviousEndpointHasFinished() async throws {
+        let recorder = ControlRecorder()
+        let first = CallbackListenerFixture(redirectURI: redirectURI, outcome: nil)
+        let second = CallbackListenerFixture(redirectURI: redirectURI, outcome: nil)
+        var finishedWhenRebound: Bool?
+        var created = 0
+        let model = try makeModel(recorder: recorder) { _ in
+            created += 1
+            if created == 1 { return first }
+            finishedWhenRebound = first.hasFinished
+            return second
+        }
+        model.provider = "chatgpt"
+
+        await model.begin()
+        try await waitUntil { first.observedStates == ["flow-1"] }
+        await model.retry()
+
+        XCTAssertEqual(created, 2)
+        XCTAssertEqual(finishedWhenRebound, true)
+        await model.cancel()
+    }
+
+    @MainActor
+    func testADeviceCodeChallengeReleasesTheEndpoint() async throws {
         let recorder = ControlRecorder()
         let listener = CallbackListenerFixture(redirectURI: redirectURI, outcome: nil)
         let model = try makeModel(
@@ -157,9 +202,13 @@ private final class CallbackListenerFixture: OAuthCallbackListening, @unchecked 
     private let lock = NSLock()
     private var states: [String] = []
     private var closes = 0
+    private var finished = false
 
     var observedStates: [String] { lock.withLock { states } }
     var closeCount: Int { lock.withLock { closes } }
+    /// True once the wait has actually returned, which is when a real endpoint
+    /// would have released its port.
+    var hasFinished: Bool { lock.withLock { finished } }
 
     init(redirectURI: String, outcome: Result<OAuthCallbackOutcome, Error>?) {
         self.redirectURI = redirectURI
@@ -168,6 +217,7 @@ private final class CallbackListenerFixture: OAuthCallbackListening, @unchecked 
 
     func waitForCallback(state: String, deadline: Date) async throws -> OAuthCallbackOutcome {
         lock.withLock { states.append(state) }
+        defer { lock.withLock { finished = true } }
         guard let outcome else {
             try await Task.sleep(for: .seconds(60))
             throw OAuthCallbackError.timedOut

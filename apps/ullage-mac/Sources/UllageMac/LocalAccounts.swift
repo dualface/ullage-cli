@@ -196,7 +196,7 @@ final class LoginWizardModel {
         on client: LocalControlClient,
         for account: Account
     ) async throws {
-        closeCallbackListener()
+        await releaseCallbackListener()
         var listener: OAuthCallbackListening?
         var listenerFailure: String?
         if let redirectURI = registeredLoopbackRedirectURI(forProvider: account.provider) {
@@ -255,10 +255,18 @@ final class LoginWizardModel {
             } catch {
                 guard let self, !Task.isCancelled else { return }
                 self.callbackListener = nil
-                if case OAuthCallbackError.cancelled = error { return }
-                self.message = """
-                \(error.localizedDescription). Paste the callback URL from your browser here.
-                """
+                switch error {
+                case OAuthCallbackError.cancelled:
+                    return
+                // The endpoint's deadline is the flow's own expiry, so pasting
+                // the callback URL by hand would only be rejected as expired.
+                case OAuthCallbackError.timedOut:
+                    self.message = "\(error.localizedDescription). Retry to start again."
+                default:
+                    self.message = """
+                    \(error.localizedDescription). Paste the callback URL from your browser here.
+                    """
+                }
                 return
             }
             guard let self, !Task.isCancelled else { return }
@@ -342,6 +350,17 @@ final class LoginWizardModel {
         callbackTask = nil
         callbackListener?.close()
         callbackListener = nil
+    }
+
+    /// Closes the endpoint and waits until it has actually let go of the port.
+    /// The listening sockets outlive `close()` by however long the accept loop
+    /// takes to wake, so rebinding the same port has to await that task.
+    /// Only callers that rebind need this; it is never reached from inside the
+    /// callback task itself.
+    private func releaseCallbackListener() async {
+        let inFlight = callbackTask
+        closeCallbackListener()
+        await inFlight?.value
     }
 
     private func startPolling() {
