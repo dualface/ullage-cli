@@ -215,11 +215,11 @@ remote_repository_dir="$remote_home/$remote_dir"
 remote_package_dir="$remote_repository_dir/apps/ullage-mac"
 
 if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
-    if ! remote_exec /usr/bin/test -f "$ULLAGE_MAC_APP_PROFILE"; then
+    if ! remote_exec /bin/test -f "$ULLAGE_MAC_APP_PROFILE"; then
         echo "remote main app provisioning profile does not exist: $ULLAGE_MAC_APP_PROFILE" >&2
         exit 2
     fi
-    if ! remote_exec /usr/bin/test -f "$ULLAGE_MAC_HELPER_PROFILE"; then
+    if ! remote_exec /bin/test -f "$ULLAGE_MAC_HELPER_PROFILE"; then
         echo "remote Login Item provisioning profile does not exist: $ULLAGE_MAC_HELPER_PROFILE" >&2
         exit 2
     fi

@@ -151,7 +151,8 @@ export-app-store: archive
 	} > build/ExportOptions.plist
 	rm -rf "$(APP_STORE_EXPORT)"
 	xcodebuild -exportArchive -archivePath "$(ARCHIVE)" \
-		-exportPath "$(APP_STORE_EXPORT)" -exportOptionsPlist build/ExportOptions.plist
+		-exportPath "$(APP_STORE_EXPORT)" -exportOptionsPlist build/ExportOptions.plist \
+		-allowProvisioningUpdates
 
 print-version:
 	@printf '%s\n' "$${ULLAGE_MAKE_VERSION}"

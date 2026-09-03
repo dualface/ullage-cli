@@ -22,7 +22,7 @@ fail() {
 metadata_value() {
     local path="$1" key="$2"
     codesign -dv --verbose=4 "$path" 2>&1 \
-        | awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }'
+        | awk -F= -v key="$key" '$1 == key && !found { sub(/^[^=]*=/, ""); print; found = 1 }'
 }
 
 extract_entitlements() {
@@ -60,7 +60,7 @@ assert_requirement() {
     grep -Fq "identifier \"$identifier\"" <<<"$requirement" \
         || fail "$identifier designated requirement does not bind its identifier"
     if [[ "$sign_identity" != "-" ]]; then
-        grep -Fq "certificate leaf[subject.OU] = $expected_team" <<<"$requirement" \
+        grep -Fq "certificate leaf[subject.OU] = \"$expected_team\"" <<<"$requirement" \
             || fail "$identifier designated requirement does not bind team $expected_team"
     fi
 }
@@ -112,7 +112,8 @@ else
     for path in "$app" "$helper" "$tool"; do
         assert_value "$(metadata_value "$path" TeamIdentifier)" "$expected_team" \
             "$(metadata_value "$path" Identifier) team"
-        metadata_value "$path" Authority | grep -Fq 'Developer ID Application:' \
+        authority="$(metadata_value "$path" Authority)"
+        [[ "$authority" == 'Developer ID Application:'* ]] \
             || fail "$(metadata_value "$path" Identifier) is not Developer ID signed"
     done
     assert_requirement "$app" com.ullage.mac
