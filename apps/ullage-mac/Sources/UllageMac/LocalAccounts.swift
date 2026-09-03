@@ -8,7 +8,9 @@ import UllageKit
 @Observable
 final class LocalAccountManager {
     private let dataChanged: () -> Void
-    private let clientFactory: () throws -> LocalControlClient
+    private let clientFactory: (TimeInterval) throws -> LocalControlClient
+    private let readinessWindow: Duration
+    private let readinessRetryDelay: Duration
     private(set) var providers: [ProviderDescriptor] = []
     private(set) var accounts: [Account] = []
     private(set) var isLoading = false
@@ -17,28 +19,40 @@ final class LocalAccountManager {
     init(
         localService: LocalServiceManager,
         dataChanged: @escaping () -> Void,
-        clientFactory: (() throws -> LocalControlClient)? = nil
+        clientFactory: ((TimeInterval) throws -> LocalControlClient)? = nil,
+        readinessWindow: Duration = .seconds(5),
+        readinessRetryDelay: Duration = .milliseconds(200)
     ) {
         self.dataChanged = dataChanged
-        self.clientFactory = clientFactory ?? {
+        self.readinessWindow = readinessWindow
+        self.readinessRetryDelay = readinessRetryDelay
+        self.clientFactory = clientFactory ?? { timeout in
             guard let socketURL = localService.socketURL else {
                 throw LocalControlError.unavailable("App Group container is unavailable")
             }
-            return LocalControlClient(socketURL: socketURL)
+            return LocalControlClient(socketURL: socketURL, timeout: timeout)
         }
     }
 
-    func client() throws -> LocalControlClient {
-        try clientFactory()
+    func client(timeout: TimeInterval = 10) throws -> LocalControlClient {
+        try clientFactory(timeout)
     }
 
     func refresh(waitForService: Bool = false) async {
         isLoading = true
         defer { isLoading = false }
-        let attempts = waitForService ? 26 : 1
-        for attempt in 0..<attempts {
+        let clock = ContinuousClock()
+        let deadline = waitForService ? clock.now.advanced(by: readinessWindow) : nil
+        var lastStartingError: Error?
+        while true {
+            if let deadline, clock.now >= deadline, let lastStartingError {
+                message = lastStartingError.localizedDescription
+                return
+            }
             do {
-                let client = try client()
+                let client = try client(timeout: deadline.map {
+                    max(0.001, durationSeconds(clock.now.duration(to: $0)))
+                } ?? 10)
                 async let availableProviders = client.providers()
                 async let configuredAccounts = client.accounts()
                 providers = try await availableProviders
@@ -48,11 +62,19 @@ final class LocalAccountManager {
             } catch is CancellationError {
                 return
             } catch {
-                guard waitForService, attempt + 1 < attempts, isServiceStarting(error) else {
+                guard let deadline,
+                      isServiceStarting(error),
+                      clock.now < deadline else {
                     message = error.localizedDescription
                     return
                 }
-                try? await Task.sleep(for: .milliseconds(200))
+                lastStartingError = error
+                let remaining = clock.now.duration(to: deadline)
+                do {
+                    try await Task.sleep(for: min(readinessRetryDelay, remaining))
+                } catch {
+                    return
+                }
             }
         }
     }
@@ -100,6 +122,12 @@ final class LocalAccountManager {
         case .unavailable, .timeout: true
         default: false
         }
+    }
+
+    private func durationSeconds(_ duration: Duration) -> TimeInterval {
+        let components = duration.components
+        return Double(components.seconds)
+            + Double(components.attoseconds) / 1_000_000_000_000_000_000
     }
 }
 

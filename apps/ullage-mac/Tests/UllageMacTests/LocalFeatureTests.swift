@@ -65,7 +65,7 @@ final class LocalFeatureTests: XCTestCase {
         let manager = LocalAccountManager(
             localService: service,
             dataChanged: {},
-            clientFactory: { client }
+            clientFactory: { _ in client }
         )
         let model = LoginWizardModel(manager: manager)
         model.provider = "cursor"
@@ -80,6 +80,35 @@ final class LocalFeatureTests: XCTestCase {
         await model.cancel()
         XCTAssertFalse(recorder.values.contains("logout"))
         XCTAssertFalse(recorder.values.contains("remove_account"))
+    }
+
+    @MainActor
+    func testReadinessRetryUsesAnAbsoluteDeadlineAndCapsClientTimeouts() async {
+        let suite = "LocalFeatureTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        let service = LocalServiceManager(settings: settings)
+        var timeouts: [TimeInterval] = []
+        let manager = LocalAccountManager(
+            localService: service,
+            dataChanged: {},
+            clientFactory: { timeout in
+                timeouts.append(timeout)
+                throw LocalControlError.timeout
+            },
+            readinessWindow: .milliseconds(30),
+            readinessRetryDelay: .milliseconds(5)
+        )
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await manager.refresh(waitForService: true)
+
+        XCTAssertFalse(timeouts.isEmpty)
+        XCTAssertTrue(timeouts.allSatisfy { $0 > 0 && $0 <= 0.03 })
+        XCTAssertLessThan(start.duration(to: clock.now), .seconds(1))
+        XCTAssertEqual(manager.message, LocalControlError.timeout.localizedDescription)
     }
 
     private func withDefaults(_ body: (UserDefaults) -> Void) {
