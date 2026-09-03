@@ -87,10 +87,18 @@ final class AppSettings {
     ) {
         self.defaults = defaults
         self.saveDeviceToken = saveDeviceToken
-        pairedDeviceName = defaults.string(forKey: Self.pairedDeviceNameKey)
-        pairedAt = defaults.object(forKey: Self.pairedAtKey) as? Date
-        transportMode = defaults.string(forKey: Self.transportModeKey)
-            .flatMap(ConnectionTransport.init(rawValue:)) ?? .local
+        let storedDeviceName = defaults.string(forKey: Self.pairedDeviceNameKey)
+        let storedPairedAt = defaults.object(forKey: Self.pairedAtKey) as? Date
+        pairedDeviceName = storedDeviceName
+        pairedAt = storedPairedAt
+        let storedTransport = defaults.string(forKey: Self.transportModeKey)
+            .flatMap(ConnectionTransport.init(rawValue:))
+        let initialTransport = storedTransport
+            ?? (storedDeviceName != nil && storedPairedAt != nil ? .remote : .local)
+        transportMode = initialTransport
+        if storedTransport == nil {
+            defaults.set(initialTransport.rawValue, forKey: Self.transportModeKey)
+        }
         localServiceChoiceMade = defaults.bool(forKey: Self.localServiceChoiceMadeKey)
         backgroundServiceEnabled = defaults.bool(forKey: Self.backgroundServiceEnabledKey)
         iconPalette = defaults.string(forKey: Self.iconPaletteKey)

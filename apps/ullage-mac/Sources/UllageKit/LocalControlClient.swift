@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public enum LocalControlError: Error, Equatable, Sendable, CustomStringConvertible {
+public enum LocalControlError: Error, Equatable, Sendable, CustomStringConvertible, LocalizedError {
     case unavailable(String)
     case invalidSocket
     case socketOwner(expected: uid_t, actual: uid_t)
@@ -34,6 +34,8 @@ public enum LocalControlError: Error, Equatable, Sendable, CustomStringConvertib
         case .decoding: "local service response decoding failed"
         }
     }
+
+    public var errorDescription: String? { description }
 }
 
 public struct ProviderDescriptor: Codable, Equatable, Sendable, Identifiable {
@@ -416,6 +418,11 @@ public final class LocalControlClient: @unchecked Sendable {
             throw LocalControlError.decoding
         }
         guard let versionNumber = object["version"] as? NSNumber,
+              CFGetTypeID(versionNumber) != CFBooleanGetTypeID(),
+              versionNumber.doubleValue.isFinite,
+              versionNumber.doubleValue.rounded(.towardZero) == versionNumber.doubleValue,
+              versionNumber.doubleValue >= 0,
+              versionNumber.doubleValue <= Double(UInt16.max),
               let requestID = object["request_id"] as? String,
               let resultObject = object["result"] as? [String: Any],
               let result = resultObject["result"] as? String else {

@@ -183,11 +183,11 @@ tool, its Login Item helper, then the main app. The main app and helper share
 Local is the default transport. After explicit consent, `SMAppService` registers
 `UllageDaemonHelper.app` from `Contents/Library/LoginItems`. The helper resolves the App Group,
 creates current-user-only `data/` and `run/` directories, creates a default configuration with HTTP
-disabled, sets only the three path environment variables, and starts the bundled Rust
-`ullage __daemon` process with sandbox inheritance. It supervises the child and forwards termination
-signals because Apple's sandbox inheritance contract requires `Process`/`posix_spawn`, rather than
-replacing the helper process with `exec`. The service lifetime is independent from the menu bar UI and from the
-Local/Remote selection. Local data is new and isolated from the standalone daemon paths.
+disabled, overlays the three path variables on the inherited environment without adding secrets,
+and replaces itself with the bundled Rust `ullage __daemon` process via `execv`. The Rust tool carries
+only the sandbox inheritance entitlements, so no separate supervisor or orphanable child remains.
+The service lifetime is independent from the menu bar UI and from the Local/Remote selection. Local
+data is new and isolated from the standalone daemon paths.
 
 `LocalControlClient` talks to `run/control.sock` with protocol v9 newline-delimited JSON. Before and
 after connecting it verifies a current-user-owned `0600` Unix socket and stable inode; after connect

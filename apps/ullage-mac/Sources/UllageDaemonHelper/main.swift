@@ -1,5 +1,4 @@
 import Darwin
-import Dispatch
 import Foundation
 
 private let appGroupIdentifier = "group.com.ullage.mac"
@@ -92,28 +91,18 @@ let environment = [
     "ULLAGE_STATE_FILE": dataDirectory.appendingPathComponent("state.json").path,
     "ULLAGE_CONTROL_SOCKET": runDirectory.appendingPathComponent("control.sock").path,
 ]
-let daemon = Process()
-daemon.executableURL = daemonURL
-daemon.arguments = ["__daemon"]
-daemon.environment = ProcessInfo.processInfo.environment.merging(environment) { _, path in path }
-
-let forwardedSignals = [SIGTERM, SIGINT, SIGHUP]
-let signalSources = forwardedSignals.map { number in
-    signal(number, SIG_IGN)
-    let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
-    source.setEventHandler {
-        let processIdentifier = daemon.processIdentifier
-        if processIdentifier > 0 { kill(processIdentifier, number) }
-    }
-    source.resume()
-    return source
+for (name, value) in environment {
+    guard setenv(name, value, 1) == 0 else { fail("could not configure embedded daemon") }
 }
 
-do {
-    try daemon.run()
-} catch {
-    fail("could not launch embedded daemon")
+let daemonPath = daemonURL.path
+guard let executableArgument = strdup(daemonPath), let modeArgument = strdup("__daemon") else {
+    fail("could not prepare embedded daemon arguments")
 }
-daemon.waitUntilExit()
-signalSources.forEach { $0.cancel() }
-exit(daemon.terminationStatus)
+var arguments: [UnsafeMutablePointer<CChar>?] = [executableArgument, modeArgument, nil]
+defer {
+    free(executableArgument)
+    free(modeArgument)
+}
+execv(daemonPath, &arguments)
+fail("could not launch embedded daemon")

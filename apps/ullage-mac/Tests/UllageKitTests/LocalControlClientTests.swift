@@ -96,6 +96,19 @@ struct LocalControlClientTests {
                 Data(repeating: 0x20, count: LocalControlClient.maximumResponseBytes + 1)
             )
         }
+        for invalidVersion in ["-1", "9.5", "65545", "true"] {
+            let response = Data(
+                "{\"version\":\(invalidVersion),\"request_id\":\"id\",\"result\":{\"result\":\"ack\"}}\n".utf8
+            )
+            #expect(throws: LocalControlError.decoding) {
+                _ = try LocalControlClient.parseResponse(response)
+            }
+        }
+    }
+
+    @Test func exposesActionableLocalizedErrors() {
+        let error = LocalControlError.socketMode(0o666)
+        #expect(error.localizedDescription == error.description)
     }
 
     @Test func rejectsProtocolAndRequestIDMismatchesAndMapsServerErrors() async throws {

@@ -123,10 +123,12 @@ struct RootView: View {
             ))
         case .unreachable:
             return AnyView(EmptyStateView(
-                title: "Daemon unreachable",
-                detail: "Run ullage daemon start and set http.enabled = true.",
-                actionTitle: "Retry",
-                action: store.refresh
+                title: settings.transportMode == .local ? "Local service unavailable" : "Daemon unreachable",
+                detail: settings.transportMode == .local
+                    ? "Enable or restart Local Service in Settings."
+                    : "Run ullage daemon start and set http.enabled = true.",
+                actionTitle: settings.transportMode == .local ? "Open Settings" : "Retry",
+                action: settings.transportMode == .local ? openSettings : store.refresh
             ))
         case .unauthorized:
             return AnyView(EmptyStateView(
@@ -145,16 +147,20 @@ struct RootView: View {
         case .noAccounts:
             return AnyView(EmptyStateView(
                 title: "No accounts",
-                detail: "Run ullage auth login to add an account.",
-                actionTitle: "Retry",
-                action: store.refresh
+                detail: settings.transportMode == .local
+                    ? "Add and authorize an account in Settings."
+                    : "Run ullage auth login on the daemon host to add an account.",
+                actionTitle: settings.transportMode == .local ? "Open Settings" : "Retry",
+                action: settings.transportMode == .local ? openSettings : store.refresh
             ))
         case .protocolMismatch(let client, let server):
             return AnyView(EmptyStateView(
                 title: "Protocol version mismatch",
-                detail: "App protocol \(client), daemon protocol \(server).",
-                actionTitle: nil,
-                action: nil
+                detail: settings.transportMode == .local
+                    ? "App protocol \(client), local service protocol \(server). Restart Local Service in Settings."
+                    : "App protocol \(client), daemon protocol \(server).",
+                actionTitle: settings.transportMode == .local ? "Open Settings" : nil,
+                action: settings.transportMode == .local ? openSettings : nil
             ))
         default:
             return nil

@@ -100,10 +100,8 @@ bundle: build rust-build
 	@$(MAKE) --no-print-directory verify-signatures
 
 verify-signatures:
-	codesign --verify --deep --strict "$(APP)"
-	codesign -d --entitlements :- "$(APP)" >/dev/null
-	codesign -d --entitlements :- "$(HELPER)" >/dev/null
-	codesign -d --entitlements :- "$(HELPER_CONTENTS)/Resources/ullage-daemon" >/dev/null
+	./scripts/verify-signatures.sh "$(APP)" "$(DEVELOPMENT_TEAM)" \
+		"$${ULLAGE_MAKE_SIGN_IDENTITY}"
 
 check-notarize-config:
 	@if [ -z "$${ULLAGE_MAKE_SIGN_IDENTITY}" ] || [ "$${ULLAGE_MAKE_SIGN_IDENTITY}" = "-" ]; then \

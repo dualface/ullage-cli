@@ -192,6 +192,9 @@ final class UsageStore {
 
     private static func connectionState(for error: Error) -> ConnectionState {
         if error is DataSourceSetupError { return .deviceNotPaired }
+        if case let LocalControlError.protocolMismatch(client, server) = error {
+            return .protocolMismatch(client: String(client), server: String(server))
+        }
         guard let error = error as? DaemonError else { return .unreachable }
         return switch error {
         case .unauthorized, .authenticationInvalid: .unauthorized

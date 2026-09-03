@@ -121,6 +121,10 @@ if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
         echo "provisioning profile paths must not contain newlines" >&2
         exit 2
     fi
+    if [[ "$ULLAGE_MAC_APP_PROFILE" != /* || "$ULLAGE_MAC_HELPER_PROFILE" != /* ]]; then
+        echo "provisioning profile paths must be absolute paths on the remote Mac" >&2
+        exit 2
+    fi
     if [[ "${ULLAGE_MAC_NOTARY_PROFILE:-}" == *$'\n'* || "${ULLAGE_MAC_NOTARY_PROFILE:-}" == *$'\r'* ]]; then
         echo "ULLAGE_MAC_NOTARY_PROFILE must not contain newlines" >&2
         exit 2
@@ -315,24 +319,50 @@ if [[ "$action" == "sign" || "$action" == "notarize" ]]; then
         rsync -a "$ULLAGE_MAC_SSH:$remote_package_dir/build/Ullage-$version.zip" "$package_dir/build/"
         remote_exec /bin/bash --norc -c '
 old_ui="$1/Contents/MacOS/UllageMac"
+old_helper="$1/Contents/Library/LoginItems/UllageDaemonHelper.app/Contents/MacOS/UllageDaemonHelper"
+old_daemon="$1/Contents/Library/LoginItems/UllageDaemonHelper.app/Contents/Resources/ullage-daemon __daemon"
 if [[ -x "$old_ui" ]]; then
     "$old_ui" --local-service-test unregister >/dev/null 2>&1 &
     cleanup_pid=$!
+    cleanup_done=false
     for _ in {1..50}; do
         if ! kill -0 "$cleanup_pid" >/dev/null 2>&1; then
-            wait "$cleanup_pid" 2>/dev/null || true
-            exit 0
+            if ! wait "$cleanup_pid"; then
+                echo "the old local service could not be unregistered" >&2
+                exit 1
+            fi
+            cleanup_done=true
+            break
         fi
         sleep 0.1
     done
-    kill -TERM "$cleanup_pid" >/dev/null 2>&1 || true
-    wait "$cleanup_pid" 2>/dev/null || true
+    if [[ "$cleanup_done" != true ]]; then
+        kill -TERM "$cleanup_pid" >/dev/null 2>&1 || true
+        wait "$cleanup_pid" 2>/dev/null || true
+        echo "timed out unregistering the old local service" >&2
+        exit 1
+    fi
 fi
+terminate_exact() {
+    local target="$1" pid command
+    while read -r pid command; do
+        [[ "$command" == "$target" ]] || continue
+        kill -TERM "$pid" >/dev/null 2>&1 || true
+        for _ in {1..20}; do
+            kill -0 "$pid" >/dev/null 2>&1 || break
+            sleep 0.1
+        done
+        if kill -0 "$pid" >/dev/null 2>&1; then
+            kill -KILL "$pid" >/dev/null 2>&1 || true
+        fi
+    done < <(/bin/ps -axo pid=,command=)
+}
+terminate_exact "$old_daemon"
+terminate_exact "$old_helper"
+terminate_exact "$old_ui"
 ' cleanup "$remote_home/Desktop/Ullage.app"
         remote_exec /usr/bin/ditto "$remote_package_dir/build/Ullage.app" \
             "$remote_home/Desktop/Ullage.app"
-        remote_exec /usr/bin/pkill -x Ullage >/dev/null 2>&1 || true
-        remote_exec /usr/bin/pkill -x UllageMac >/dev/null 2>&1 || true
         remote_exec /usr/bin/open "$remote_home/Desktop/Ullage.app"
         echo "archive: $package_dir/build/Ullage-$version.zip"
         echo "application: $remote_home/Desktop/Ullage.app"

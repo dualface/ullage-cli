@@ -255,7 +255,11 @@ struct SettingsView: View {
                     Task {
                         await localService.setEnabled(enabled)
                         onSaved()
-                        if enabled { await accountManager.refresh() }
+                        if enabled {
+                            await accountManager.refresh(
+                                waitForService: localService.state == .enabled
+                            )
+                        }
                     }
                 }
             ))
@@ -269,7 +273,9 @@ struct SettingsView: View {
                     Task {
                         await localService.restart()
                         onSaved()
-                        await accountManager.refresh()
+                        await accountManager.refresh(
+                            waitForService: localService.state == .enabled
+                        )
                     }
                 }
                 .disabled(localService.state == .updating)
@@ -624,8 +630,14 @@ struct SettingsView: View {
                     }
                     _ = try await LocalControlClient(socketURL: socketURL).status()
                     message = ConnectionTestResult.connected.rawValue
+                } catch let error as LocalControlError {
+                    message = switch error {
+                    case .protocolMismatch(let client, let server):
+                        "protocol mismatch (app \(client), local service \(server)); restart Local Service"
+                    default: error.localizedDescription
+                    }
                 } catch {
-                    message = ConnectionTestResult.unreachable.rawValue
+                    message = error.localizedDescription
                 }
             }
             return

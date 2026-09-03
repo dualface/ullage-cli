@@ -7,37 +7,53 @@ import UllageKit
 @MainActor
 @Observable
 final class LocalAccountManager {
-    private let localService: LocalServiceManager
     private let dataChanged: () -> Void
+    private let clientFactory: () throws -> LocalControlClient
     private(set) var providers: [ProviderDescriptor] = []
     private(set) var accounts: [Account] = []
     private(set) var isLoading = false
     private(set) var message = ""
 
-    init(localService: LocalServiceManager, dataChanged: @escaping () -> Void) {
-        self.localService = localService
+    init(
+        localService: LocalServiceManager,
+        dataChanged: @escaping () -> Void,
+        clientFactory: (() throws -> LocalControlClient)? = nil
+    ) {
         self.dataChanged = dataChanged
+        self.clientFactory = clientFactory ?? {
+            guard let socketURL = localService.socketURL else {
+                throw LocalControlError.unavailable("App Group container is unavailable")
+            }
+            return LocalControlClient(socketURL: socketURL)
+        }
     }
 
     func client() throws -> LocalControlClient {
-        guard let socketURL = localService.socketURL else {
-            throw LocalControlError.unavailable("App Group container is unavailable")
-        }
-        return LocalControlClient(socketURL: socketURL)
+        try clientFactory()
     }
 
-    func refresh() async {
+    func refresh(waitForService: Bool = false) async {
         isLoading = true
         defer { isLoading = false }
-        do {
-            let client = try client()
-            async let availableProviders = client.providers()
-            async let configuredAccounts = client.accounts()
-            providers = try await availableProviders
-            accounts = try await configuredAccounts
-            message = ""
-        } catch {
-            message = error.localizedDescription
+        let attempts = waitForService ? 26 : 1
+        for attempt in 0..<attempts {
+            do {
+                let client = try client()
+                async let availableProviders = client.providers()
+                async let configuredAccounts = client.accounts()
+                providers = try await availableProviders
+                accounts = try await configuredAccounts
+                message = ""
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                guard waitForService, attempt + 1 < attempts, isServiceStarting(error) else {
+                    message = error.localizedDescription
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
         }
     }
 
@@ -52,24 +68,38 @@ final class LocalAccountManager {
     }
 
     func delete(_ account: Account) async {
+        let client: LocalControlClient
         do {
-            let client = try client()
+            client = try self.client()
             try await client.logout(
                 provider: account.provider,
                 account: account.id,
                 accountLabel: account.label
             )
+        } catch {
+            message = "Account was kept because logout failed: \(error.localizedDescription)"
+            return
+        }
+        do {
             try await client.removeAccount(account.id)
             await refresh()
             dataChanged()
         } catch {
-            message = "Account was kept because logout failed: \(error.localizedDescription)"
+            message = "Signed out, but the account could not be removed: \(error.localizedDescription)"
         }
     }
 
     func didCompleteLogin() async {
         await refresh()
         dataChanged()
+    }
+
+    private func isServiceStarting(_ error: Error) -> Bool {
+        guard let error = error as? LocalControlError else { return false }
+        return switch error {
+        case .unavailable, .timeout: true
+        default: false
+        }
     }
 }
 
@@ -80,9 +110,11 @@ final class LoginWizardModel {
     private(set) var account: Account?
     private(set) var challenge: AuthenticationChallenge?
     private(set) var authenticated = false
+    private(set) var setupCompleted = false
     private(set) var busy = false
     private(set) var message = ""
     private var pollingTask: Task<Void, Never>?
+    private var authenticatedAccountLabel: String?
 
     var provider = ""
     var label = ""
@@ -119,7 +151,7 @@ final class LoginWizardModel {
                 startPolling()
             }
         } catch {
-            message = error.localizedDescription
+            message = setupErrorMessage(error)
             await rollbackTemporaryAccount()
         }
     }
@@ -138,7 +170,7 @@ final class LoginWizardModel {
             )
             try await handle(state)
         } catch {
-            message = error.localizedDescription
+            message = setupErrorMessage(error)
         }
     }
 
@@ -198,7 +230,7 @@ final class LoginWizardModel {
                         return
                     }
                 } catch {
-                    if !Task.isCancelled { self.message = error.localizedDescription }
+                    if !Task.isCancelled { self.message = self.setupErrorMessage(error) }
                 }
             }
         }
@@ -209,15 +241,10 @@ final class LoginWizardModel {
         case .authenticated(let accountLabel, _):
             guard let account else { return }
             pollingTask?.cancel()
-            if label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               let accountLabel,
-               !accountLabel.isEmpty {
-                _ = try await manager.client().setAccountLabel(account.id, label: accountLabel)
-            }
-            _ = try await manager.client().probe(accountId: account.id, wait: true)
             authenticated = true
-            message = "Account connected."
+            authenticatedAccountLabel = accountLabel
             await manager.didCompleteLogin()
+            try await finishAuthenticatedSetup(for: account)
         case .pending:
             message = "Waiting for authorization…"
         case .notAuthenticated:
@@ -225,6 +252,44 @@ final class LoginWizardModel {
         case .invalid(let reason):
             message = reason
         }
+    }
+
+    func retryAuthenticatedSetup() async {
+        guard authenticated, let account else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            try await finishAuthenticatedSetup(for: account)
+        } catch {
+            message = setupErrorMessage(error)
+        }
+    }
+
+    private func finishAuthenticatedSetup(for account: Account) async throws {
+        let client = try manager.client()
+        let verified = try await client.authenticationStatus(
+            provider: account.provider,
+            account: account.id
+        )
+        guard case .authenticated(let verifiedLabel, _) = verified else {
+            throw LocalControlError.server("authentication verification did not succeed")
+        }
+        let discoveredLabel = authenticatedAccountLabel ?? verifiedLabel
+        if label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let discoveredLabel,
+           !discoveredLabel.isEmpty {
+            _ = try await client.setAccountLabel(account.id, label: discoveredLabel)
+        }
+        _ = try await client.probe(accountId: account.id, wait: true)
+        setupCompleted = true
+        message = "Account connected."
+        await manager.didCompleteLogin()
+    }
+
+    private func setupErrorMessage(_ error: Error) -> String {
+        authenticated
+            ? "Signed in, but setup is incomplete: \(error.localizedDescription)"
+            : error.localizedDescription
     }
 
     private func rollbackTemporaryAccount() async {
@@ -287,6 +352,11 @@ struct LocalAccountsSection: View {
             if !manager.message.isEmpty {
                 Text(manager.message).font(.caption).foregroundStyle(.secondary)
             }
+            if manager.providers.isEmpty, !manager.isLoading {
+                Button("Retry Local Service") {
+                    Task { await manager.refresh(waitForService: true) }
+                }
+            }
         }
         .sheet(isPresented: $showsWizard, onDismiss: { Task { await manager.refresh() } }) {
             LoginWizardView(manager: manager)
@@ -322,21 +392,26 @@ struct LoginWizardView: View {
                 Text(model.message).font(.callout).foregroundStyle(.secondary)
             }
             HStack {
-                Button("Cancel") {
+                Button(model.authenticated ? "Close" : "Cancel") {
                     Task { await model.cancel(); dismiss() }
                 }
                 Spacer()
-                if model.authenticated {
+                if model.setupCompleted {
                     Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                } else if model.authenticated {
+                    Button("Retry Setup") { Task { await model.retryAuthenticatedSetup() } }
+                        .disabled(model.busy)
                 } else if model.account == nil {
                     Button("Continue") { Task { await model.begin() } }
                         .disabled(model.busy || model.provider.isEmpty)
                         .keyboardShortcut(.defaultAction)
-                } else if model.challenge?.method != .deviceCode {
+                } else {
                     Button("Retry") { Task { await model.retry() } }.disabled(model.busy)
-                    Button("Connect") { Task { await model.submit() } }
-                        .disabled(model.busy || (model.challenge?.input != nil && model.input.isEmpty))
-                        .keyboardShortcut(.defaultAction)
+                    if model.challenge?.method != .deviceCode {
+                        Button("Connect") { Task { await model.submit() } }
+                            .disabled(model.busy || (model.challenge?.input != nil && model.input.isEmpty))
+                            .keyboardShortcut(.defaultAction)
+                    }
                 }
                 if model.busy { ProgressView().controlSize(.small) }
             }
