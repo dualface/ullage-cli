@@ -21,7 +21,15 @@ final class SettingsPanelController: NSWindowController {
         hostingController.sizingOptions = [.preferredContentSize]
         let panel = NSPanel(contentViewController: hostingController)
         panel.title = "Ullage Settings"
-        panel.styleMask = [.titled, .closable]
+        // Transparent and full-height, so the view's own surface — glass or the
+        // tinted backdrop — is the window, the way the popover is. The window
+        // buttons stay: they are the only way to close this one.
+        panel.styleMask = [.titled, .closable, .fullSizeContentView]
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
         panel.setContentSize(hostingController.view.fittingSize)
@@ -169,24 +177,37 @@ private struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            connectionSection
-            Divider()
-            pairingSection
-            Divider()
-            statusSection
-            Divider()
-            menuBarSection
+        VStack(alignment: .leading, spacing: 8) {
+            card { connectionSection }
+            card { pairingSection }
+            card { statusSection }
+            card { menuBarSection }
             // Only where there is glass to turn off. Below macOS 26 the flat
             // presentation is the only one, so the switch would do nothing.
             if #available(macOS 26.0, *) {
-                Divider()
-                appearanceSection
+                card { appearanceSection }
             }
         }
-        .padding(20)
+        .padding(12)
+        // Clear of the window buttons, which float over the surface because the
+        // title bar is transparent and the content runs the full height.
+        .padding(.top, 18)
         .frame(width: 420)
-        .background(.regularMaterial)
+        // The same surface the popover wears, minus the pointer: this window
+        // has nothing to point at. The backdrop is held still here — the window
+        // outlives its own visibility, and a timeline behind a closed window
+        // would keep ticking.
+        .modifier(PopoverSurface(placement: .window))
+        .environment(\.usesLiquidGlass, liquidGlassIsEnabled(settings: settings))
+    }
+
+    /// One section, on the same frosted panel the popover's cards use.
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .glassPanel()
     }
 
     private var connectionSection: some View {
@@ -199,10 +220,15 @@ private struct SettingsView: View {
                     .disabled(isPairing || editingState == .locked)
                 switch editingState {
                 case .locked:
+                    // No focus ring: the button takes first responder as the
+                    // window opens, and a ring around it reads as a warning
+                    // rather than as a place the keyboard happens to be.
                     Button("Unlock") { unlock() }
+                        .focusEffectDisabled()
                 case .unlockedForRepair:
                     Button("Lock") { lock() }
                         .disabled(isPairing)
+                        .focusEffectDisabled()
                 case .unpaired:
                     EmptyView()
                 }

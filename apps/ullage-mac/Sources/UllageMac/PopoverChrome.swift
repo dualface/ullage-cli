@@ -176,6 +176,7 @@ struct PopoverSurface: ViewModifier {
     /// centre of the panel. Unused without glass, where `NSPopover` draws its
     /// own arrow outside the content.
     var pointerOffset: CGFloat = 0
+    var placement: SurfacePlacement = .popover
     /// Whether the flat presentation's backdrop drifts. Unused with glass,
     /// which has no backdrop of its own to move.
     var animatesBackdrop = false
@@ -183,15 +184,35 @@ struct PopoverSurface: ViewModifier {
 
     func body(content: Content) -> some View {
         if usesLiquidGlass, #available(macOS 26.0, *) {
-            let shape = PopoverBubble(pointerOffset: pointerOffset)
+            let shape = PopoverBubble(
+                pointerOffset: pointerOffset,
+                hasPointer: placement == .popover
+            )
             content
-                .padding(.top, PopoverBubble.pointerHeight)
+                .padding(.top, placement == .popover ? PopoverBubble.pointerHeight : 0)
                 .clipShape(shape)
                 .glassEffect(.clear, in: shape)
         } else {
-            content.background { AtmosphereBackground(animates: animatesBackdrop) }
+            content
+                .background { AtmosphereBackground(animates: animatesBackdrop) }
+                // In a window the backdrop is the window, so it rounds its own
+                // corners; inside an `NSPopover` the frame has already done it,
+                // and clipping again would pull the tint off the edge. A zero
+                // radius leaves the popover exactly as it was.
+                .clipShape(RoundedRectangle(
+                    cornerRadius: placement == .window ? PopoverBubble.defaultCornerRadius : 0,
+                    style: .continuous
+                ))
         }
     }
+}
+
+/// What the surface is filling, which decides the two things a window needs and
+/// a popover does not: its own rounded edge, and no pointer, since a window of
+/// its own is not hanging off the status item.
+enum SurfacePlacement {
+    case popover
+    case window
 }
 
 /// The slab's outline: a rounded rectangle with a pointer rising from its top
@@ -211,16 +232,19 @@ struct PopoverBubble: Shape {
 
     var cornerRadius: CGFloat = PopoverBubble.defaultCornerRadius
     var pointerOffset: CGFloat = 0
+    var hasPointer = true
 
     func path(in rect: CGRect) -> Path {
+        let rise = hasPointer ? Self.pointerHeight : 0
         let body = CGRect(
             x: rect.minX,
-            y: rect.minY + Self.pointerHeight,
+            y: rect.minY + rise,
             width: rect.width,
-            height: max(0, rect.height - Self.pointerHeight)
+            height: max(0, rect.height - rise)
         )
         // Continuous corners, to match the panels the slab carries.
         let slab = Path(roundedRect: body, cornerSize: CGSize(width: cornerRadius, height: cornerRadius), style: .continuous)
+        guard hasPointer else { return slab }
         // Keep the pointer on the straight part of the top edge; past the
         // corner curve it would grow out of the side instead of the top.
         let limit = max(0, rect.width / 2 - cornerRadius - Self.pointerWidth / 2)
