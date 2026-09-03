@@ -297,10 +297,15 @@ public final class LocalControlClient: @unchecked Sendable {
     public func startAuthentication(
         provider: String,
         account: String,
-        method: AuthenticationMethod? = nil
+        method: AuthenticationMethod? = nil,
+        redirectURI: String? = nil
     ) async throws -> AuthenticationChallenge {
         let methodValue: Any = method.map { $0.snakeCaseValue as Any } ?? NSNull()
-        let request: [String: Any] = ["method": methodValue]
+        let redirectValue: Any = redirectURI.map { $0 as Any } ?? NSNull()
+        let request: [String: Any] = [
+            "method": methodValue,
+            "redirect_uri": redirectValue,
+        ]
         let command: [String: Any] = [
             "command": "start_auth",
             "provider": provider,

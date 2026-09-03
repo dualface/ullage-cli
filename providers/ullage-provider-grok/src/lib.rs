@@ -45,6 +45,7 @@ struct Session {
 enum PendingAuthorization {
     Browser {
         flow_id: String,
+        redirect_uri: String,
         expires_at: Option<chrono::DateTime<Utc>>,
     },
     Device {
@@ -345,15 +346,20 @@ where
                 (challenge, pending)
             }
             AuthMethod::BrowserOAuth => {
+                let redirect_uri = request
+                    .redirect_uri
+                    .clone()
+                    .unwrap_or_else(|| self.transport.browser_redirect_uri().to_owned());
                 let authorization = self
                     .transport
-                    .start_browser_authorization()
+                    .start_browser_authorization(&redirect_uri)
                     .await
                     .map_err(ProviderError::from)?;
                 authorization.validate()?;
                 let challenge = authorization.challenge();
                 let pending = PendingAuthorization::Browser {
                     flow_id: authorization.flow_id,
+                    redirect_uri,
                     expires_at: authorization.expires_at,
                 };
                 (challenge, pending)
@@ -382,29 +388,45 @@ where
             Device { device_code: String },
         }
 
-        let (generation, completion) =
-            {
-                let session = self.lock_session()?;
-                let pending = session.pending.as_ref().ok_or_else(|| {
-                    ProviderError::AuthenticationInvalid {
+        let (generation, completion) = {
+            let session = self.lock_session()?;
+            let pending =
+                session
+                    .pending
+                    .as_ref()
+                    .ok_or_else(|| ProviderError::AuthenticationInvalid {
                         message: "no Grok authorization is pending".into(),
+                    })?;
+            if pending.flow_id() != request.flow_id {
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "Grok OAuth flow identifier does not match".into(),
+                });
+            }
+            if pending
+                .expires_at()
+                .is_some_and(|expiry| expiry <= Utc::now())
+            {
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "Grok OAuth flow expired".into(),
+                });
+            }
+            let completion = match pending {
+                PendingAuthorization::Browser {
+                    redirect_uri: expected_redirect_uri,
+                    ..
+                } => {
+                    let redirect_uri = request.redirect_uri.ok_or_else(|| {
+                        ProviderError::AuthenticationInvalid {
+                            message: "Grok browser redirect URI is missing".into(),
+                        }
+                    })?;
+                    if redirect_uri != *expected_redirect_uri {
+                        return Err(ProviderError::AuthenticationInvalid {
+                            message: "Grok OAuth redirect URI does not match the initiated flow"
+                                .into(),
+                        });
                     }
-                })?;
-                if pending.flow_id() != request.flow_id {
-                    return Err(ProviderError::AuthenticationInvalid {
-                        message: "Grok OAuth flow identifier does not match".into(),
-                    });
-                }
-                if pending
-                    .expires_at()
-                    .is_some_and(|expiry| expiry <= Utc::now())
-                {
-                    return Err(ProviderError::AuthenticationInvalid {
-                        message: "Grok OAuth flow expired".into(),
-                    });
-                }
-                let completion = match pending {
-                    PendingAuthorization::Browser { .. } => Completion::Browser {
+                    Completion::Browser {
                         code: browser_authorization_code(
                             request.authorization_code.as_deref().ok_or_else(|| {
                                 ProviderError::AuthenticationInvalid {
@@ -413,18 +435,15 @@ where
                             })?,
                             &request.flow_id,
                         )?,
-                        redirect_uri: request.redirect_uri.ok_or_else(|| {
-                            ProviderError::AuthenticationInvalid {
-                                message: "Grok browser redirect URI is missing".into(),
-                            }
-                        })?,
-                    },
-                    PendingAuthorization::Device { device_code, .. } => Completion::Device {
-                        device_code: device_code.clone(),
-                    },
-                };
-                (session.generation, completion)
+                        redirect_uri,
+                    }
+                }
+                PendingAuthorization::Device { device_code, .. } => Completion::Device {
+                    device_code: device_code.clone(),
+                },
             };
+            (session.generation, completion)
+        };
 
         match completion {
             Completion::Browser { code, redirect_uri } => {

@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use serde::Deserialize;
+use ullage_auth::{AuthStartRequest, validate_loopback_http_redirect_uri};
 use ullage_core::{RegisteredProvider, SubscriptionUsage, UsageQuery};
 use ullage_protocol::{
     Account, AccountError, AccountId as ProtocolAccountId, AccountStatusPayload,
@@ -21,6 +22,37 @@ use crate::{DeviceCredential, DeviceStore, PairDeviceError};
 const CONTROL_ACCOUNT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const CONTROL_ACCOUNT_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTROL_ACCOUNT_JITTER: Duration = Duration::from_secs(5);
+
+/// Where a control request entered the daemon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlTransport {
+    /// Local Unix socket or Windows named pipe with peer identity checks.
+    Local,
+    /// Paired-device HTTP API.
+    RemoteHttp,
+}
+
+fn prepare_auth_start_request(
+    mut request: AuthStartRequest,
+    transport: ControlTransport,
+) -> Result<AuthStartRequest, ControlError> {
+    match transport {
+        ControlTransport::RemoteHttp => {
+            request.redirect_uri = None;
+            Ok(request)
+        }
+        ControlTransport::Local => {
+            if let Some(redirect_uri) = request.redirect_uri.as_deref() {
+                validate_loopback_http_redirect_uri(redirect_uri).map_err(|reason| {
+                    ControlError::Provider(ullage_core::ProviderError::AuthenticationInvalid {
+                        message: reason.into(),
+                    })
+                })?;
+            }
+            Ok(request)
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ControlService {
@@ -136,6 +168,15 @@ impl ControlService {
     }
 
     pub async fn handle(&self, request: ControlRequest) -> ControlResponse {
+        self.handle_with_transport(request, ControlTransport::Local)
+            .await
+    }
+
+    pub async fn handle_with_transport(
+        &self,
+        request: ControlRequest,
+        transport: ControlTransport,
+    ) -> ControlResponse {
         let request_id = request.request_id;
         let diagnostics = request.diagnostics;
         let mut diagnostic = None;
@@ -246,13 +287,16 @@ impl ControlService {
                 provider,
                 account,
                 request,
-            } => match self.provider_for_account(&provider, &account).await {
-                Ok(provider) => match provider.start_auth(request).await {
-                    Ok(challenge) => ControlResult::AuthChallenge(challenge),
-                    Err(error) => {
-                        diagnostic = provider_error_diagnostic(diagnostics, &error);
-                        ControlResult::Error(sanitize_provider_error(error).into())
-                    }
+            } => match prepare_auth_start_request(request, transport) {
+                Ok(request) => match self.provider_for_account(&provider, &account).await {
+                    Ok(provider) => match provider.start_auth(request).await {
+                        Ok(challenge) => ControlResult::AuthChallenge(challenge),
+                        Err(error) => {
+                            diagnostic = provider_error_diagnostic(diagnostics, &error);
+                            ControlResult::Error(sanitize_provider_error(error).into())
+                        }
+                    },
+                    Err(error) => ControlResult::Error(error),
                 },
                 Err(error) => ControlResult::Error(error),
             },

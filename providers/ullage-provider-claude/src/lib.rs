@@ -93,6 +93,7 @@ pub struct ClaudeUsage {
 struct PendingAuth {
     flow_id: String,
     verifier: String,
+    redirect_uri: String,
     expires_at: DateTime<Utc>,
 }
 
@@ -230,10 +231,20 @@ impl Provider for ClaudeProvider {
         let flow_id = random_url_token()?;
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let expires_at = Utc::now() + Duration::minutes(AUTH_FLOW_LIFETIME_MINUTES);
-        let authorization_url = authorization_url(&flow_id, &challenge)?;
+        let redirect_uri = match request.redirect_uri {
+            None => REDIRECT_URI.to_owned(),
+            Some(uri) if uri == REDIRECT_URI => uri,
+            Some(_) => {
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "Claude OAuth only supports the registered remote callback".into(),
+                });
+            }
+        };
+        let authorization_url = authorization_url(&redirect_uri, &flow_id, &challenge)?;
         *lock(&self.pending_auth)? = Some(PendingAuth {
             flow_id: flow_id.clone(),
             verifier,
+            redirect_uri,
             expires_at,
         });
 
@@ -270,10 +281,10 @@ impl Provider for ClaudeProvider {
         if request
             .redirect_uri
             .as_deref()
-            .is_some_and(|redirect| redirect != REDIRECT_URI)
+            .is_some_and(|redirect| redirect != pending.redirect_uri)
         {
             return Err(ProviderError::AuthenticationInvalid {
-                message: "Claude OAuth redirect URI does not match the fixed callback".into(),
+                message: "Claude OAuth redirect URI does not match the initiated flow".into(),
             });
         }
         let input = request.authorization_code.as_deref().ok_or_else(|| {
@@ -281,7 +292,7 @@ impl Provider for ClaudeProvider {
                 message: "Claude OAuth authorization code is missing".into(),
             }
         })?;
-        let (code, supplied_state) = parse_authorization_input(input)?;
+        let (code, supplied_state) = parse_authorization_input(input, &pending.redirect_uri)?;
         let supplied_state =
             supplied_state.ok_or_else(|| ProviderError::AuthenticationInvalid {
                 message: "Claude OAuth callback omitted the state".into(),
@@ -297,7 +308,7 @@ impl Provider for ClaudeProvider {
             .exchange_code(AuthorizationCodeExchange {
                 code,
                 state: pending.flow_id.clone(),
-                redirect_uri: REDIRECT_URI.into(),
+                redirect_uri: pending.redirect_uri.clone(),
                 code_verifier: pending.verifier,
             })
             .await?;
@@ -651,7 +662,7 @@ fn authenticated_state(credential: &ClaudeCredential, account_label: Option<Stri
     }
 }
 
-fn authorization_url(state: &str, challenge: &str) -> ProviderResult<String> {
+fn authorization_url(redirect_uri: &str, state: &str, challenge: &str) -> ProviderResult<String> {
     let mut url =
         Url::parse(AUTHORIZE_ENDPOINT).map_err(|_| ProviderError::ProtocolIncompatible {
             message: "built-in Claude authorization endpoint is invalid".into(),
@@ -660,7 +671,7 @@ fn authorization_url(state: &str, challenge: &str) -> ProviderResult<String> {
         .append_pair("code", "true")
         .append_pair("client_id", CLAUDE_CLIENT_ID)
         .append_pair("response_type", "code")
-        .append_pair("redirect_uri", REDIRECT_URI)
+        .append_pair("redirect_uri", redirect_uri)
         .append_pair("scope", OAUTH_SCOPES)
         .append_pair("code_challenge", challenge)
         .append_pair("code_challenge_method", "S256")
@@ -668,7 +679,10 @@ fn authorization_url(state: &str, challenge: &str) -> ProviderResult<String> {
     Ok(url.into())
 }
 
-fn parse_authorization_input(input: &str) -> ProviderResult<(String, Option<String>)> {
+fn parse_authorization_input(
+    input: &str,
+    expected_redirect_uri: &str,
+) -> ProviderResult<(String, Option<String>)> {
     let input = input.trim();
     if input.is_empty() || input.len() > 8192 {
         return Err(ProviderError::AuthenticationInvalid {
@@ -679,7 +693,10 @@ fn parse_authorization_input(input: &str) -> ProviderResult<(String, Option<Stri
         let url = Url::parse(input).map_err(|_| ProviderError::AuthenticationInvalid {
             message: "Claude OAuth callback URL is invalid".into(),
         })?;
-        let expected = Url::parse(REDIRECT_URI).expect("fixed redirect URI is valid");
+        let expected =
+            Url::parse(expected_redirect_uri).map_err(|_| ProviderError::ProtocolIncompatible {
+                message: "Claude OAuth expected redirect URI is invalid".into(),
+            })?;
         if url.scheme() != expected.scheme()
             || url.host_str() != expected.host_str()
             || url.port_or_known_default() != expected.port_or_known_default()
@@ -862,6 +879,7 @@ mod tests {
         );
         let challenge = run_ready(provider.start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         }))
         .unwrap();
         assert!(
@@ -909,7 +927,11 @@ mod tests {
             store,
         );
 
-        let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+        let challenge = run_ready(provider.start_auth(AuthStartRequest {
+            method: None,
+            redirect_uri: None,
+        }))
+        .unwrap();
         assert!(matches!(
             run_ready(provider.auth_status()).unwrap(),
             AuthState::Pending { flow_id, .. } if flow_id == challenge.flow_id
@@ -926,7 +948,11 @@ mod tests {
             },
             store,
         );
-        let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+        let challenge = run_ready(provider.start_auth(AuthStartRequest {
+            method: None,
+            redirect_uri: None,
+        }))
+        .unwrap();
         let error = run_ready(provider.complete_auth(AuthCompleteRequest {
             flow_id: challenge.flow_id.clone(),
             authorization_code: Some(format!("code#{}-attacker", challenge.flow_id)),
@@ -1332,7 +1358,10 @@ mod tests {
             store.clone(),
         ));
         let challenge = provider
-            .start_auth(AuthStartRequest { method: None })
+            .start_auth(AuthStartRequest {
+                method: None,
+                redirect_uri: None,
+            })
             .await
             .unwrap();
         let flow_id = challenge.flow_id;

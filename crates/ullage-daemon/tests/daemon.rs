@@ -18,12 +18,13 @@ use ullage_core::{
 #[cfg(unix)]
 use ullage_daemon::UnixControlServer;
 use ullage_daemon::{
-    AccountConfig, AccountId, BackoffConfig, Clock, ControlService, DaemonConfig, DaemonEngine,
-    DaemonError, JsonSnapshotStore, MemorySnapshotStore, PersistedState, ProbeError, ProbeTrigger,
-    ProviderLimit, SanitizedError, SnapshotRecord,
+    AccountConfig, AccountId, BackoffConfig, Clock, ControlService, ControlTransport, DaemonConfig,
+    DaemonEngine, DaemonError, JsonSnapshotStore, MemorySnapshotStore, PersistedState, ProbeError,
+    ProbeTrigger, ProviderLimit, SanitizedError, SnapshotRecord,
 };
 use ullage_protocol::{
-    AccountError, CONTROL_PROTOCOL_VERSION, ControlCommand, ControlRequest, ControlResult,
+    AccountError, CONTROL_PROTOCOL_VERSION, ControlCommand, ControlError, ControlRequest,
+    ControlResult,
 };
 
 #[derive(Clone)]
@@ -1130,7 +1131,10 @@ async fn diagnostics_are_opt_in_for_auth_and_probe() {
     let start = ControlCommand::StartAuth {
         provider: ProviderId::new("diag"),
         account: ullage_protocol::AccountId::new("primary"),
-        request: AuthStartRequest { method: None },
+        request: AuthStartRequest {
+            method: None,
+            redirect_uri: None,
+        },
     };
     let hidden = service
         .handle(ControlRequest::new("auth-hidden", start.clone()))
@@ -1190,6 +1194,147 @@ async fn diagnostics_are_opt_in_for_auth_and_probe() {
     assert_eq!(query.diagnostic, None);
     let encoded_query = serde_json::to_string(&query).unwrap();
     assert!(!encoded_query.contains("must-not-cross-control-boundary"));
+}
+
+struct RecordingAuthProvider {
+    id: ProviderId,
+    last_start: Arc<Mutex<Option<AuthStartRequest>>>,
+}
+
+#[async_trait]
+impl Provider for RecordingAuthProvider {
+    type VendorUsage = SubscriptionUsage;
+
+    fn descriptor(&self) -> ProviderDescriptor {
+        ProviderDescriptor {
+            id: self.id.clone(),
+            display_name: "recording auth".into(),
+            capabilities: vec![Capability::Authentication],
+        }
+    }
+
+    async fn start_auth(&self, request: AuthStartRequest) -> ProviderResult<AuthChallenge> {
+        *self.last_start.lock().unwrap() = Some(request);
+        Ok(AuthChallenge {
+            flow_id: "recorded-flow".into(),
+            method: AuthMethod::BrowserOAuth,
+            verification_uri: Some("https://example.test/authorize".into()),
+            user_code: None,
+            expires_at: None,
+            input: None,
+        })
+    }
+
+    async fn complete_auth(&self, _: AuthCompleteRequest) -> ProviderResult<AuthState> {
+        Ok(AuthState::NotAuthenticated)
+    }
+
+    async fn auth_status(&self) -> ProviderResult<AuthState> {
+        Ok(AuthState::NotAuthenticated)
+    }
+
+    async fn logout(&self, _: LogoutRequest) -> ProviderResult<()> {
+        Ok(())
+    }
+
+    async fn query(&self, _: UsageQuery) -> ProviderResult<QueryOutcome<Self::VendorUsage>> {
+        Err(ProviderError::UnsupportedCapability {
+            capability: "usage".into(),
+        })
+    }
+
+    fn normalize(&self, usage: Self::VendorUsage) -> ProviderResult<SubscriptionUsage> {
+        Ok(usage)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_start_redirect_uri_is_local_only() {
+    let last_start = Arc::new(Mutex::new(None));
+    let provider = RecordingAuthProvider {
+        id: ProviderId::new("redirect"),
+        last_start: Arc::clone(&last_start),
+    };
+    let mut registry = ProviderRegistry::default();
+    registry.register(provider).unwrap();
+    let engine = engine_with(
+        Arc::new(registry),
+        Arc::new(ManualClock::new()),
+        Arc::new(MemorySnapshotStore::default()),
+        DaemonConfig::default(),
+    )
+    .await;
+    engine
+        .add_account(account("primary", "redirect", Duration::from_secs(60)))
+        .await
+        .unwrap();
+    let service = ControlService::new(engine);
+
+    let rejected = service
+        .handle_with_transport(
+            ControlRequest::new(
+                "redirect-reject",
+                ControlCommand::StartAuth {
+                    provider: ProviderId::new("redirect"),
+                    account: ullage_protocol::AccountId::new("primary"),
+                    request: AuthStartRequest {
+                        method: Some(AuthMethod::BrowserOAuth),
+                        redirect_uri: Some("https://attacker.invalid/callback".into()),
+                    },
+                },
+            ),
+            ControlTransport::Local,
+        )
+        .await;
+    assert!(matches!(
+        rejected.result,
+        ControlResult::Error(ControlError::Provider(
+            ProviderError::AuthenticationInvalid { .. }
+        ))
+    ));
+    assert!(last_start.lock().unwrap().is_none());
+
+    let start = ControlCommand::StartAuth {
+        provider: ProviderId::new("redirect"),
+        account: ullage_protocol::AccountId::new("primary"),
+        request: AuthStartRequest {
+            method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: Some("http://127.0.0.1:54321/auth/callback".into()),
+        },
+    };
+
+    let accepted = service
+        .handle_with_transport(
+            ControlRequest::new("redirect-local", start.clone()),
+            ControlTransport::Local,
+        )
+        .await;
+    assert!(matches!(accepted.result, ControlResult::AuthChallenge(_)));
+    assert_eq!(
+        last_start
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|request| request.redirect_uri.as_deref()),
+        Some("http://127.0.0.1:54321/auth/callback")
+    );
+
+    *last_start.lock().unwrap() = None;
+    let remote = service
+        .handle_with_transport(
+            ControlRequest::new("redirect-remote", start),
+            ControlTransport::RemoteHttp,
+        )
+        .await;
+    assert!(matches!(remote.result, ControlResult::AuthChallenge(_)));
+    assert_eq!(
+        last_start
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|request| request.redirect_uri.as_deref()),
+        None
+    );
 }
 
 struct InvalidAuthProvider {
@@ -1702,7 +1847,10 @@ async fn control_service_supports_status_auth_probe_show_and_version_checks() {
             ControlCommand::StartAuth {
                 provider: ProviderId::new("control"),
                 account: ullage_protocol::AccountId::new("primary"),
-                request: AuthStartRequest { method: None },
+                request: AuthStartRequest {
+                    method: None,
+                    redirect_uri: None,
+                },
             },
         ))
         .await;
@@ -3121,7 +3269,10 @@ async fn unix_control_socket_is_private_framed_and_cleaned_up() {
             ControlCommand::StartAuth {
                 provider: ProviderId::new("socket"),
                 account: ullage_protocol::AccountId::new("socket"),
-                request: AuthStartRequest { method: None },
+                request: AuthStartRequest {
+                    method: None,
+                    redirect_uri: None,
+                },
             },
         ),
     )

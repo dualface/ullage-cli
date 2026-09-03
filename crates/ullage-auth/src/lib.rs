@@ -3,6 +3,7 @@
 mod credential;
 mod file_store;
 mod native_store;
+mod redirect;
 mod store;
 #[cfg(any(windows, test))]
 mod windows_identity;
@@ -14,6 +15,7 @@ pub use file_store::{
     create_private_windows_directory, create_private_windows_file, windows_handle_acl_is_private,
 };
 pub use native_store::NativeStore;
+pub use redirect::validate_loopback_http_redirect_uri;
 pub use store::{
     Availability, BackendKind, BackendScope, CredentialBackend, CredentialError, CredentialStore,
     RefreshError, RefreshFailure, RefreshFailureKind, ReplaceOutcome,
@@ -37,9 +39,14 @@ pub enum AuthMethod {
     Other(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthStartRequest {
     pub method: Option<AuthMethod>,
+    /// Loopback HTTP callback chosen by the local client for this flow.
+    ///
+    /// Omitted on older clients and ignored on the remote HTTP transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
 }
 
 /// Value the user must hand back to finish a flow, described by the provider so

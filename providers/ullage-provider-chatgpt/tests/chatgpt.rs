@@ -16,6 +16,7 @@ use ullage_provider_chatgpt::{
 #[derive(Default)]
 struct ApiCalls {
     exchanges: usize,
+    exchange_redirect_uris: Vec<String>,
     refreshes: usize,
     queries: Vec<String>,
     revocations: usize,
@@ -50,8 +51,9 @@ impl ChatGptApi for FakeApi {
     ) -> Result<OAuthTokenSet, ChatGptApiError> {
         assert_eq!(authorization_code, "authorization-code");
         assert!(pkce_verifier.len() >= 43);
-        assert_eq!(redirect_uri, "http://127.0.0.1:1455/callback");
-        self.calls.lock().unwrap().exchanges += 1;
+        let mut calls = self.calls.lock().unwrap();
+        calls.exchanges += 1;
+        calls.exchange_redirect_uris.push(redirect_uri.to_owned());
         Ok(self.issued_tokens.lock().unwrap().clone())
     }
 
@@ -178,6 +180,7 @@ fn provider(
 fn complete_auth(provider: &ChatGptProvider<FakeApi, MemorySessionStore>) -> AuthState {
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: None,
     }))
     .unwrap();
     let uri = challenge.verification_uri.as_ref().unwrap();
@@ -190,6 +193,31 @@ fn complete_auth(provider: &ChatGptProvider<FakeApi, MemorySessionStore>) -> Aut
         redirect_uri: Some("http://127.0.0.1:1455/callback".into()),
     }))
     .unwrap()
+}
+
+#[test]
+fn browser_oauth_uses_per_flow_redirect_uri() {
+    let (provider, api) = provider(
+        vec![workspace("ws-one", "Personal")],
+        fixture("single"),
+        Some(Utc::now() + Duration::hours(1)),
+    );
+    let custom = "http://127.0.0.1:54321/auth/callback";
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: Some(custom.into()),
+    }))
+    .unwrap();
+    let uri = challenge.verification_uri.as_ref().unwrap();
+    assert!(uri.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A54321%2Fauth%2Fcallback"));
+    run_ready(provider.complete_auth(AuthCompleteRequest {
+        flow_id: challenge.flow_id,
+        authorization_code: Some("authorization-code".into()),
+        redirect_uri: Some(custom.into()),
+    }))
+    .unwrap();
+    assert_eq!(api.calls.lock().unwrap().exchange_redirect_uris.len(), 1);
+    assert_eq!(api.calls.lock().unwrap().exchange_redirect_uris[0], custom);
 }
 
 fn workspace(id: &str, label: &str) -> ChatGptWorkspace {
@@ -206,7 +234,11 @@ fn oauth_is_single_use_and_persists_single_workspace() {
         fixture("single"),
         Some(Utc::now() + Duration::hours(1)),
     );
-    let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     let request = AuthCompleteRequest {
         flow_id: challenge.flow_id,
         authorization_code: Some("authorization-code".into()),
@@ -231,12 +263,20 @@ fn reports_the_single_pending_oauth_flow() {
         fixture("single"),
         Some(Utc::now() + Duration::hours(1)),
     );
-    let first = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let first = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     assert!(matches!(
         run_ready(provider.auth_status()).unwrap(),
         AuthState::Pending { flow_id, .. } if flow_id == first.flow_id
     ));
-    let second = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let second = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     assert!(matches!(
         run_ready(provider.auth_status()).unwrap(),
         AuthState::Pending { flow_id, .. } if flow_id == second.flow_id
@@ -255,7 +295,11 @@ fn reports_the_single_pending_oauth_flow() {
         redirect_uri: None,
     }))
     .unwrap();
-    let relogin = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let relogin = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     assert!(matches!(
         run_ready(provider.auth_status()).unwrap(),
         AuthState::Pending { flow_id, .. } if flow_id == relogin.flow_id
@@ -282,7 +326,11 @@ fn rejects_mismatched_callback_redirect_before_exchange() {
         fixture("single"),
         Some(Utc::now() + Duration::hours(1)),
     );
-    let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     let result = run_ready(provider.complete_auth(AuthCompleteRequest {
         flow_id: challenge.flow_id,
         authorization_code: Some("authorization-code".into()),
@@ -302,7 +350,11 @@ fn revokes_new_token_when_workspace_initialization_fails() {
         fixture("single"),
         Some(Utc::now() + Duration::hours(1)),
     );
-    let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     api.workspace_errors
         .lock()
         .unwrap()
@@ -332,7 +384,10 @@ async fn cancelled_workspace_initialization_revokes_the_new_token() {
         Some(Utc::now() + Duration::hours(1)),
     );
     let challenge = provider
-        .start_auth(AuthStartRequest { method: None })
+        .start_auth(AuthStartRequest {
+            method: None,
+            redirect_uri: None,
+        })
         .await
         .unwrap();
     let provider = Arc::new(provider);
@@ -555,7 +610,10 @@ async fn new_login_cannot_be_overwritten_by_an_in_flight_refresh() {
     let (provider, api) = provider(vec![workspace("ws-old", "Old")], fixture("single"), None);
     complete_auth(&provider);
     let challenge = provider
-        .start_auth(AuthStartRequest { method: None })
+        .start_auth(AuthStartRequest {
+            method: None,
+            redirect_uri: None,
+        })
         .await
         .unwrap();
     let provider = Arc::new(provider);
@@ -759,7 +817,11 @@ fn logout_cancels_pending_oauth_callback() {
         fixture("single"),
         Some(Utc::now() + Duration::hours(1)),
     );
-    let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     run_ready(provider.logout(LogoutRequest::default())).unwrap();
     assert!(matches!(
         run_ready(provider.complete_auth(AuthCompleteRequest {
@@ -886,7 +948,11 @@ fn accepts_a_pasted_callback_url() {
         fixture("single"),
         Some(Utc::now() + Duration::hours(1)),
     );
-    let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     let callback = format!(
         "http://127.0.0.1:1455/callback?code=authorization-code&state={}",
         challenge.flow_id
@@ -908,7 +974,11 @@ fn rejects_a_callback_url_whose_state_does_not_match() {
         fixture("single"),
         Some(Utc::now() + Duration::hours(1)),
     );
-    let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     let callback = format!(
         "http://127.0.0.1:1455/callback?code=authorization-code&state={}-attacker",
         challenge.flow_id
@@ -931,7 +1001,11 @@ fn rejects_a_callback_url_without_an_authorization_code() {
         fixture("single"),
         Some(Utc::now() + Duration::hours(1)),
     );
-    let challenge = run_ready(provider.start_auth(AuthStartRequest { method: None })).unwrap();
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
     let callback = format!(
         "http://127.0.0.1:1455/callback?error=access_denied&state={}",
         challenge.flow_id

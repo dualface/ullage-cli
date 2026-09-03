@@ -1530,6 +1530,7 @@ fn to_control_command(command: &Command) -> ControlCommand {
                 account: AccountId::new(account),
                 request: AuthStartRequest {
                     method: method.map(Into::into),
+                    redirect_uri: None,
                 },
             },
             // `execute_with` routes a login without an account to the

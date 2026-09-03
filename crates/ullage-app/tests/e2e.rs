@@ -473,7 +473,10 @@ async fn four_mock_providers_auth_probe_persist_and_show() {
             ControlCommand::StartAuth {
                 provider: provider.clone(),
                 account: account.clone(),
-                request: AuthStartRequest { method: None },
+                request: AuthStartRequest {
+                    method: None,
+                    redirect_uri: None,
+                },
             },
         )
         .await;
@@ -583,7 +586,10 @@ async fn same_provider_accounts_keep_credentials_isolated_under_concurrent_probe
             ControlCommand::StartAuth {
                 provider: ProviderId::new("claude"),
                 account: ullage_protocol::AccountId::new(account_id),
-                request: AuthStartRequest { method: None },
+                request: AuthStartRequest {
+                    method: None,
+                    redirect_uri: None,
+                },
             },
         )
         .await;
@@ -1051,7 +1057,10 @@ async fn unix_socket_carries_auth_probe_persist_and_show() {
             ControlCommand::StartAuth {
                 provider: ProviderId::new("claude"),
                 account: ullage_protocol::AccountId::new("claude-a"),
-                request: AuthStartRequest { method: None },
+                request: AuthStartRequest {
+                    method: None,
+                    redirect_uri: None,
+                },
             },
         ),
     )

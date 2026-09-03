@@ -407,7 +407,10 @@ async fn handle_request(
     let request_id = next_request_id();
     let response = state
         .service
-        .handle(ControlRequest::new(request_id, command).with_diagnostics(params.diagnose))
+        .handle_with_transport(
+            ControlRequest::new(request_id, command).with_diagnostics(params.diagnose),
+            ullage_daemon::ControlTransport::RemoteHttp,
+        )
         .await;
     finish(
         map_control_response(response, params.diagnose),

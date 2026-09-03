@@ -188,6 +188,7 @@ impl ChatGptSessionStore for MemorySessionStore {
 
 struct PendingOAuth {
     pkce_verifier: String,
+    redirect_uri: String,
     expires_at: DateTime<Utc>,
 }
 
@@ -469,7 +470,12 @@ where
         let pkce_verifier = random_url_safe(64)?;
         let pkce_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(pkce_verifier.as_bytes()));
         let expires_at = Utc::now() + Duration::minutes(OAUTH_FLOW_LIFETIME_MINUTES);
-        let authorization_url = oauth_authorization_url(&self.config, &flow_id, &pkce_challenge);
+        let redirect_uri = request
+            .redirect_uri
+            .clone()
+            .unwrap_or_else(|| self.config.redirect_uri.clone());
+        let authorization_url =
+            oauth_authorization_url(&self.config, &redirect_uri, &flow_id, &pkce_challenge);
         let _session_guard = self.session_gate.lock().await;
         let mut pending = self
             .pending
@@ -482,6 +488,7 @@ where
             flow_id.clone(),
             PendingOAuth {
                 pkce_verifier,
+                redirect_uri,
                 expires_at,
             },
         );
@@ -517,7 +524,7 @@ where
         if request
             .redirect_uri
             .as_deref()
-            .is_some_and(|redirect_uri| redirect_uri != self.config.redirect_uri)
+            .is_some_and(|redirect_uri| redirect_uri != pending.redirect_uri)
         {
             return Err(ProviderError::AuthenticationInvalid {
                 message: "OAuth redirect URI does not match the initiated flow".into(),
@@ -536,7 +543,7 @@ where
         let code = browser_authorization_code(input, &request.flow_id)?;
         let tokens = self
             .api
-            .exchange_code(&code, &pending.pkce_verifier, &self.config.redirect_uri)
+            .exchange_code(&code, &pending.pkce_verifier, &pending.redirect_uri)
             .await
             .map_err(ProviderError::from)?;
         let mut grant = OAuthGrantGuard::new(self.api.clone(), tokens);
@@ -876,7 +883,12 @@ fn session_store_poisoned() -> ChatGptApiError {
     )
 }
 
-fn oauth_authorization_url(config: &ChatGptConfig, state: &str, challenge: &str) -> String {
+fn oauth_authorization_url(
+    config: &ChatGptConfig,
+    redirect_uri: &str,
+    state: &str,
+    challenge: &str,
+) -> String {
     let separator = if config.authorization_endpoint.contains('?') {
         '&'
     } else {
@@ -885,7 +897,7 @@ fn oauth_authorization_url(config: &ChatGptConfig, state: &str, challenge: &str)
     let parameters = [
         ("response_type", "code".to_owned()),
         ("client_id", config.client_id.clone()),
-        ("redirect_uri", config.redirect_uri.clone()),
+        ("redirect_uri", redirect_uri.to_owned()),
         ("scope", config.scopes.join(" ")),
         ("state", state.to_owned()),
         ("code_challenge", challenge.to_owned()),

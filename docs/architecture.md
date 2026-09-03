@@ -329,7 +329,13 @@ stay out of process arguments. Provider error text stays sanitized on the contro
 the client opts in with `--diagnose` / `ULLAGE_DIAGNOSE=1`. That flag shows
 sanitized partial-failure scope and category on `show` and `probe`, and
 attaches the provider's own error text only on authentication and probe
-failures. Control protocol version 9 adds device pairing and revocation. Version 8 added
+failures. `AuthStartRequest` accepts an optional `redirect_uri` for browser OAuth
+on the local control channel only; the daemon validates loopback HTTP and rejects
+everything else, while the HTTP transport strips the field before calling
+providers. Older clients omit the field and providers keep their registered
+defaults (`http://localhost:1455/auth/callback` for ChatGPT,
+`http://127.0.0.1:1456/auth/callback` for Grok, and Anthropic's remote callback
+page for Claude). Control protocol version 9 adds device pairing and revocation. Version 8 added
 `credential_backend` on daemon status. Version 7 added the diagnostics opt-in
 (`diagnostics` / `diagnostic`) and `SetAccountLabel`.
 

@@ -8,11 +8,11 @@ mod engine;
 mod model;
 mod store;
 
-pub use control::ControlService;
 #[cfg(unix)]
 pub use control::UnixControlServer;
 #[cfg(windows)]
 pub use control::WindowsControlServer;
+pub use control::{ControlService, ControlTransport};
 pub use device::{
     DeviceCredential, DeviceStore, PairDeviceError, constant_time_eq, generate_device_token,
 };

@@ -259,10 +259,16 @@ pub trait GrokTransport: Send + Sync {
     /// Drops transport-private state for a pending flow that was superseded or cancelled.
     fn cancel_authorization(&self, _flow_id: &str) {}
 
+    /// Default browser OAuth redirect URI when the caller omits one.
+    fn browser_redirect_uri(&self) -> &str;
+
     async fn start_device_authorization(&self) -> Result<DeviceAuthorization, GrokApiError>;
     async fn poll_device_authorization(&self, device_code: &str)
     -> Result<OAuthPoll, GrokApiError>;
-    async fn start_browser_authorization(&self) -> Result<BrowserAuthorization, GrokApiError>;
+    async fn start_browser_authorization(
+        &self,
+        redirect_uri: &str,
+    ) -> Result<BrowserAuthorization, GrokApiError>;
     async fn complete_browser_authorization(
         &self,
         flow_id: &str,
@@ -301,6 +307,7 @@ pub struct HttpGrokTransport {
 #[derive(Clone)]
 struct BrowserFlow {
     verifier: String,
+    redirect_uri: String,
     expires_at: DateTime<Utc>,
 }
 
@@ -361,6 +368,10 @@ impl HttpGrokTransport {
 
 #[async_trait]
 impl GrokTransport for HttpGrokTransport {
+    fn browser_redirect_uri(&self) -> &str {
+        &self.config.redirect_uri
+    }
+
     fn cancel_authorization(&self, flow_id: &str) {
         match self.browser_flows.lock() {
             Ok(mut flows) => {
@@ -433,7 +444,18 @@ impl GrokTransport for HttpGrokTransport {
         parse_token(value).map(OAuthPoll::Authorized)
     }
 
-    async fn start_browser_authorization(&self) -> Result<BrowserAuthorization, GrokApiError> {
+    async fn start_browser_authorization(
+        &self,
+        redirect_uri: &str,
+    ) -> Result<BrowserAuthorization, GrokApiError> {
+        let redirect = Url::parse(redirect_uri).map_err(|_| {
+            GrokApiError::AuthenticationInvalid("Grok OAuth redirect URI is invalid".into())
+        })?;
+        if !is_secure_or_loopback(&redirect) {
+            return Err(GrokApiError::AuthenticationInvalid(
+                "Grok OAuth redirect URI must use HTTPS or loopback HTTP".into(),
+            ));
+        }
         let state = random_secret()?;
         let verifier = random_secret()?;
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -442,7 +464,7 @@ impl GrokTransport for HttpGrokTransport {
         url.query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("client_id", &self.config.client_id)
-            .append_pair("redirect_uri", &self.config.redirect_uri)
+            .append_pair("redirect_uri", redirect_uri)
             .append_pair("scope", &self.config.scope)
             .append_pair("state", &state)
             .append_pair("code_challenge", &challenge)
@@ -454,6 +476,7 @@ impl GrokTransport for HttpGrokTransport {
             state.clone(),
             BrowserFlow {
                 verifier,
+                redirect_uri: redirect_uri.to_owned(),
                 expires_at,
             },
         );
@@ -471,14 +494,14 @@ impl GrokTransport for HttpGrokTransport {
         authorization_code: &str,
         redirect_uri: &str,
     ) -> Result<OAuthToken, GrokApiError> {
-        if redirect_uri != self.config.redirect_uri {
+        let flow = self.lock_flows()?.get(flow_id).cloned().ok_or_else(|| {
+            GrokApiError::AuthenticationInvalid("unknown Grok OAuth state".into())
+        })?;
+        if redirect_uri != flow.redirect_uri {
             return Err(GrokApiError::AuthenticationInvalid(
                 "Grok OAuth redirect URI does not match".into(),
             ));
         }
-        let flow = self.lock_flows()?.get(flow_id).cloned().ok_or_else(|| {
-            GrokApiError::AuthenticationInvalid("unknown Grok OAuth state".into())
-        })?;
         if flow.expires_at <= Utc::now() {
             self.cancel_authorization(flow_id);
             return Err(GrokApiError::AuthenticationInvalid(

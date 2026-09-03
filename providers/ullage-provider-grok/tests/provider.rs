@@ -105,6 +105,10 @@ fn token(label: &str) -> OAuthToken {
 
 #[async_trait]
 impl GrokTransport for MockTransport {
+    fn browser_redirect_uri(&self) -> &str {
+        "http://127.0.0.1/callback"
+    }
+
     async fn start_device_authorization(&self) -> Result<DeviceAuthorization, GrokApiError> {
         Ok(DeviceAuthorization {
             flow_id: "device-flow".into(),
@@ -129,7 +133,10 @@ impl GrokTransport for MockTransport {
         }
     }
 
-    async fn start_browser_authorization(&self) -> Result<BrowserAuthorization, GrokApiError> {
+    async fn start_browser_authorization(
+        &self,
+        _: &str,
+    ) -> Result<BrowserAuthorization, GrokApiError> {
         Ok(BrowserAuthorization {
             flow_id: "browser-state".into(),
             authorization_uri: "https://accounts.example.invalid/oauth?state=browser-state".into(),
@@ -206,6 +213,7 @@ async fn persistent_credentials_restore_and_logout_through_the_shared_store() {
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -321,6 +329,7 @@ async fn expired_persisted_token_refreshes_through_the_normal_query_path() {
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -374,6 +383,7 @@ async fn auth_status_refreshes_an_expired_persisted_token() {
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -409,6 +419,7 @@ async fn failed_credential_delete_keeps_logout_retryable_and_restart_stays_clear
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -449,6 +460,7 @@ fn device_flow_polls_refreshes_and_logs_out() {
     let provider = GrokProvider::new(MockTransport::default());
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::DeviceCode),
+        redirect_uri: None,
     }))
     .unwrap();
     assert_eq!(challenge.flow_id, "device-flow");
@@ -483,6 +495,7 @@ fn browser_flow_rejects_state_confusion_then_completes() {
     let provider = GrokProvider::new(MockTransport::default());
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: None,
     }))
     .unwrap();
     let mismatch = run_ready(provider.complete_auth(AuthCompleteRequest {
@@ -506,11 +519,39 @@ fn browser_flow_rejects_state_confusion_then_completes() {
 }
 
 #[test]
+fn browser_flow_uses_per_flow_redirect_uri() {
+    let provider = GrokProvider::new(MockTransport::default());
+    let custom = "http://127.0.0.1:54321/auth/callback";
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: Some(custom.into()),
+    }))
+    .unwrap();
+    let mismatch = run_ready(provider.complete_auth(AuthCompleteRequest {
+        flow_id: challenge.flow_id.clone(),
+        authorization_code: Some("code".into()),
+        redirect_uri: Some("http://127.0.0.1/callback".into()),
+    }))
+    .unwrap_err();
+    assert!(matches!(
+        mismatch,
+        ProviderError::AuthenticationInvalid { .. }
+    ));
+    run_ready(provider.complete_auth(AuthCompleteRequest {
+        flow_id: challenge.flow_id,
+        authorization_code: Some("code".into()),
+        redirect_uri: Some(custom.into()),
+    }))
+    .unwrap();
+}
+
+#[test]
 fn browser_flow_extracts_the_code_from_a_callback_url() {
     let transport = Arc::new(MockTransport::default());
     let provider = GrokProvider::with_transport(transport.clone());
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: None,
     }))
     .unwrap();
     let callback = format!(
@@ -530,6 +571,7 @@ fn browser_flow_extracts_the_code_from_a_callback_url() {
 
     let mismatched = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: None,
     }))
     .unwrap();
     let mismatch = run_ready(provider.complete_auth(AuthCompleteRequest {
@@ -545,6 +587,7 @@ fn browser_flow_extracts_the_code_from_a_callback_url() {
 
     let missing_state = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: None,
     }))
     .unwrap();
     let omitted = run_ready(provider.complete_auth(AuthCompleteRequest {
@@ -567,6 +610,7 @@ fn refresh_and_logout_remain_bound_to_the_authenticated_account() {
     });
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: None,
     }))
     .unwrap();
     run_ready(provider.complete_auth(AuthCompleteRequest {
@@ -598,6 +642,7 @@ async fn query_succeeds_when_local_account_label_differs_from_token_label() {
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -634,6 +679,7 @@ async fn query_with_settings(
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -781,6 +827,7 @@ async fn hanging_settings_degrades_to_partial_without_failing_the_query() {
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -823,6 +870,7 @@ async fn slow_billing_with_hung_settings_returns_partial_before_daemon_budget() 
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -904,6 +952,7 @@ fn failed_revocation_retains_the_token_for_logout_retry() {
     });
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: None,
     }))
     .unwrap();
     run_ready(provider.complete_auth(AuthCompleteRequest {
@@ -935,6 +984,10 @@ struct SlowRefreshTransport {
 
 #[async_trait]
 impl GrokTransport for SlowRefreshTransport {
+    fn browser_redirect_uri(&self) -> &str {
+        "http://127.0.0.1/callback"
+    }
+
     async fn start_device_authorization(&self) -> Result<DeviceAuthorization, GrokApiError> {
         unreachable!()
     }
@@ -943,7 +996,10 @@ impl GrokTransport for SlowRefreshTransport {
         unreachable!()
     }
 
-    async fn start_browser_authorization(&self) -> Result<BrowserAuthorization, GrokApiError> {
+    async fn start_browser_authorization(
+        &self,
+        _: &str,
+    ) -> Result<BrowserAuthorization, GrokApiError> {
         Ok(BrowserAuthorization {
             flow_id: "slow-refresh-flow".into(),
             authorization_uri: "https://accounts.example.invalid/authorize".into(),
@@ -1004,6 +1060,7 @@ async fn logout_waits_for_automatic_refresh_and_clears_the_rotated_token() {
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -1062,6 +1119,10 @@ struct SlowStartTransport {
 
 #[async_trait]
 impl GrokTransport for SlowStartTransport {
+    fn browser_redirect_uri(&self) -> &str {
+        "http://127.0.0.1/callback"
+    }
+
     async fn start_device_authorization(&self) -> Result<DeviceAuthorization, GrokApiError> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
@@ -1081,7 +1142,10 @@ impl GrokTransport for SlowStartTransport {
         Ok(OAuthPoll::Pending)
     }
 
-    async fn start_browser_authorization(&self) -> Result<BrowserAuthorization, GrokApiError> {
+    async fn start_browser_authorization(
+        &self,
+        _: &str,
+    ) -> Result<BrowserAuthorization, GrokApiError> {
         unreachable!()
     }
 
@@ -1125,6 +1189,7 @@ async fn concurrent_oauth_starts_serialize_and_publish_the_latest_flow() {
         older_provider
             .start_auth(AuthStartRequest {
                 method: Some(AuthMethod::DeviceCode),
+                redirect_uri: None,
             })
             .await
     });
@@ -1134,6 +1199,7 @@ async fn concurrent_oauth_starts_serialize_and_publish_the_latest_flow() {
         newer_provider
             .start_auth(AuthStartRequest {
                 method: Some(AuthMethod::DeviceCode),
+                redirect_uri: None,
             })
             .await
     });
@@ -1153,6 +1219,10 @@ struct SlowBillingTransport {
 
 #[async_trait]
 impl GrokTransport for SlowBillingTransport {
+    fn browser_redirect_uri(&self) -> &str {
+        "http://127.0.0.1/callback"
+    }
+
     async fn start_device_authorization(&self) -> Result<DeviceAuthorization, GrokApiError> {
         unreachable!()
     }
@@ -1161,7 +1231,10 @@ impl GrokTransport for SlowBillingTransport {
         unreachable!()
     }
 
-    async fn start_browser_authorization(&self) -> Result<BrowserAuthorization, GrokApiError> {
+    async fn start_browser_authorization(
+        &self,
+        _: &str,
+    ) -> Result<BrowserAuthorization, GrokApiError> {
         Ok(BrowserAuthorization {
             flow_id: "billing-flow".into(),
             authorization_uri: "https://accounts.example.invalid/authorize".into(),
@@ -1211,6 +1284,7 @@ async fn usage_query_discards_results_after_logout() {
     let challenge = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -2621,6 +2695,7 @@ async fn concrete_http_transport_runs_oauth_billing_refresh_and_revoke() {
     let device = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -2643,6 +2718,7 @@ async fn concrete_http_transport_runs_oauth_billing_refresh_and_revoke() {
     let browser = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();
@@ -2703,12 +2779,14 @@ async fn superseded_browser_flow_removes_its_pkce_verifier() {
     let first = provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();
     provider
         .start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: None,
         })
         .await
         .unwrap();

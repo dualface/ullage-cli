@@ -394,6 +394,7 @@ fn fake_api(periods: Vec<Result<CurrentPeriodUsage, ApiFailure>>) -> Arc<FakeApi
 fn authenticate(provider: &CursorProvider) {
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
+        redirect_uri: None,
     }))
     .unwrap();
     assert_eq!(challenge.method, AuthMethod::ApiToken);
@@ -537,6 +538,7 @@ fn stale_persisted_credentials_do_not_block_reauthentication_or_local_logout() {
     assert!(
         run_ready(replacement.start_auth(AuthStartRequest {
             method: Some(AuthMethod::ApiToken),
+            redirect_uri: None,
         }))
         .is_ok()
     );
@@ -694,6 +696,7 @@ fn classifies_invalid_api_key_and_rejects_stale_flow() {
 
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::ApiToken),
+        redirect_uri: None,
     }))
     .unwrap();
     let error = run_ready(provider.complete_auth(AuthCompleteRequest {
@@ -718,6 +721,7 @@ fn logout_supersedes_an_in_flight_exchange() {
     }));
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::ApiToken),
+        redirect_uri: None,
     }))
     .unwrap();
     let mut completion = Box::pin(provider.complete_auth(AuthCompleteRequest {
@@ -753,6 +757,7 @@ fn logout_supersedes_an_in_flight_authentication_exchange_failure() {
     }));
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::ApiToken),
+        redirect_uri: None,
     }))
     .unwrap();
     let mut completion = Box::pin(provider.complete_auth(AuthCompleteRequest {
@@ -818,6 +823,7 @@ fn replacement_flow_supersedes_an_in_flight_refresh_failure() {
     assert!(matches!(refresh.as_mut().poll(&mut context), Poll::Pending));
     run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::ApiToken),
+        redirect_uri: None,
     }))
     .unwrap();
     release_failure.store(true, Ordering::SeqCst);
@@ -914,6 +920,7 @@ fn pending_replacement_flow_rejects_old_session_refresh_without_cancelling_the_f
     authenticate(&provider);
     let replacement = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::ApiToken),
+        redirect_uri: None,
     }))
     .unwrap();
 
@@ -946,6 +953,7 @@ fn account_switch_supersedes_an_in_flight_usage_query() {
 
     let replacement = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::ApiToken),
+        redirect_uri: None,
     }))
     .unwrap();
     run_ready(provider.complete_auth(AuthCompleteRequest {

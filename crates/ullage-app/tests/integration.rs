@@ -190,7 +190,10 @@ async fn four_mock_provider_servers_cover_control_and_multi_account_isolation() 
                 ControlCommand::StartAuth {
                     provider: provider.clone(),
                     account: account.clone(),
-                    request: AuthStartRequest { method: None },
+                    request: AuthStartRequest {
+                        method: None,
+                        redirect_uri: None,
+                    },
                 },
             ))
             .await;
