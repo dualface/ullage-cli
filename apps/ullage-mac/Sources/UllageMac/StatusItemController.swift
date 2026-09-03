@@ -10,6 +10,7 @@ final class StatusItemController: NSObject {
     private let store: UsageStore
     private let settings: AppSettings
     private let mode: AppMode
+    private let applicationIconController: ApplicationIconController
     private var popoverController: PopoverController?
     private var settingsController: SettingsPanelController?
     private var menuBarMode = MenuBarPresentation.initial
@@ -31,11 +32,13 @@ final class StatusItemController: NSObject {
     init(
         store: UsageStore,
         settings: AppSettings,
-        mode: AppMode
+        mode: AppMode,
+        applicationIconController: ApplicationIconController
     ) {
         self.store = store
         self.settings = settings
         self.mode = mode
+        self.applicationIconController = applicationIconController
         super.init()
         guard let button = statusItem.button else { return }
         button.image = UllageMark.menuBarImage()
@@ -339,7 +342,14 @@ final class StatusItemController: NSObject {
             settings: settings,
             store: store,
             mode: mode,
-            onSaved: { [weak self] in self?.store.invalidateDataSource() }
+            onSaved: { [weak self] in self?.store.invalidateDataSource() },
+            onPaletteChanged: { [weak self] palette in
+                do {
+                    try self?.applicationIconController.apply(palette: palette)
+                } catch {
+                    NSLog("Could not set the application icon: \(error.localizedDescription)")
+                }
+            }
         )
         settingsController = controller
         controller.show()

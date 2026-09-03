@@ -600,7 +600,7 @@ final class UllageMacTests: XCTestCase {
     }
 
     @MainActor
-    func testIconPaletteDefaultsRejectsInvalidValuesAndRoundTrips() {
+    func testIconPaletteDefaultsRejectsInvalidValuesAndAllChoicesRoundTrip() {
         let suiteName = "UllageMacTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -609,24 +609,50 @@ final class UllageMacTests: XCTestCase {
         defaults.set("bogus", forKey: "iconPalette")
         XCTAssertEqual(AppSettings(defaults: defaults).iconPalette, .oxblood)
 
+        var callbacks: [AppPalette] = []
         let settings = AppSettings(defaults: defaults)
-        settings.iconPalette = .plum
-        XCTAssertEqual(AppSettings(defaults: defaults).iconPalette, .plum)
+        for palette in AppPalette.allCases {
+            selectIconPalette(
+                palette,
+                settings: settings,
+                onPaletteChanged: { callbacks.append($0) }
+            )
+            XCTAssertEqual(defaults.string(forKey: "iconPalette"), palette.rawValue)
+            XCTAssertEqual(AppSettings(defaults: defaults).iconPalette, palette)
+        }
+        XCTAssertEqual(callbacks, AppPalette.allCases)
     }
 
     @MainActor
-    func testApplicationIconSetterReceivesPaletteChanges() throws {
+    func testApplicationIconSetterReceivesAllPaletteChanges() throws {
         var images: [NSImage] = []
         let controller = ApplicationIconController { images.append($0) }
-        try controller.apply(palette: .oxblood)
-        try controller.apply(palette: .paper)
+        for palette in AppPalette.allCases {
+            try controller.apply(palette: palette)
+        }
 
-        XCTAssertEqual(images.count, 2)
+        XCTAssertEqual(images.count, AppPalette.allCases.count)
         let pngs = try images.map { image -> Data in
             let representation = try XCTUnwrap(image.representations.first as? NSBitmapImageRep)
             return try XCTUnwrap(representation.representation(using: .png, properties: [:]))
         }
-        XCTAssertNotEqual(pngs[0], pngs[1])
+        XCTAssertEqual(Set(pngs).count, AppPalette.allCases.count)
+    }
+
+    @MainActor
+    func testSettingsIconPreviewsCoverAllPaletteChoices() throws {
+        let previews = try AppPalette.allCases.map { palette in
+            try applicationIconImage(palette: palette, pixelSize: 128, pointSize: 56)
+        }
+        XCTAssertEqual(
+            previews.map(\.size),
+            Array(repeating: NSSize(width: 56, height: 56), count: AppPalette.allCases.count)
+        )
+        let pngs = try previews.map { image -> Data in
+            let representation = try XCTUnwrap(image.representations.first as? NSBitmapImageRep)
+            return try XCTUnwrap(representation.representation(using: .png, properties: [:]))
+        }
+        XCTAssertEqual(Set(pngs).count, AppPalette.allCases.count)
     }
 
     func testNormalizePairCodeInputStripsSeparatorsAndUppercases() {
@@ -654,7 +680,8 @@ final class UllageMacTests: XCTestCase {
             settings: settings,
             store: UsageStore(dataSourceFactory: { MockDataSource() }),
             mode: .mock,
-            onSaved: {}
+            onSaved: {},
+            onPaletteChanged: { _ in }
         )
         let height = controller.window?.contentRect(forFrameRect: controller.window!.frame).height
             ?? 0
@@ -671,7 +698,8 @@ final class UllageMacTests: XCTestCase {
             settings: AppSettings(defaults: defaults),
             store: UsageStore(dataSourceFactory: { MockDataSource() }),
             mode: .mock,
-            onSaved: {}
+            onSaved: {},
+            onPaletteChanged: { _ in }
         )
         let window = try XCTUnwrap(controller.window)
 

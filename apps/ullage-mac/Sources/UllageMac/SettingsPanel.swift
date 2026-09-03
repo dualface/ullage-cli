@@ -8,13 +8,15 @@ final class SettingsPanelController: NSWindowController {
         settings: AppSettings,
         store: UsageStore,
         mode: AppMode,
-        onSaved: @escaping () -> Void
+        onSaved: @escaping () -> Void,
+        onPaletteChanged: @escaping (AppPalette) -> Void
     ) {
         let view = SettingsView(
             settings: settings,
             store: store,
             mode: mode,
-            onSaved: onSaved
+            onSaved: onSaved,
+            onPaletteChanged: onPaletteChanged
         )
         let hostingController = NSHostingController(rootView: view)
         // Let the panel follow the view as the pairing section locks/unlocks.
@@ -127,11 +129,12 @@ func connectionTestRequiresPairing(
     mode == .daemon && settings.pairedServerURL(matching: serverURL) == nil
 }
 
-private struct SettingsView: View {
+struct SettingsView: View {
     @Bindable var settings: AppSettings
     let store: UsageStore
     let mode: AppMode
     let onSaved: () -> Void
+    let onPaletteChanged: (AppPalette) -> Void
     @State private var serverURL: String
     @State private var digits = Array(repeating: "", count: 6)
     @FocusState private var focusedDigit: Int?
@@ -145,12 +148,14 @@ private struct SettingsView: View {
         settings: AppSettings,
         store: UsageStore,
         mode: AppMode,
-        onSaved: @escaping () -> Void
+        onSaved: @escaping () -> Void,
+        onPaletteChanged: @escaping (AppPalette) -> Void
     ) {
         self.settings = settings
         self.store = store
         self.mode = mode
         self.onSaved = onSaved
+        self.onPaletteChanged = onPaletteChanged
         _serverURL = State(initialValue: settings.serverURL.absoluteString)
     }
 
@@ -176,11 +181,7 @@ private struct SettingsView: View {
             card { pairingSection }
             card { statusSection }
             card { menuBarSection }
-            // Only where there is glass to turn off. Below macOS 26 the flat
-            // presentation is the only one, so the switch would do nothing.
-            if #available(macOS 26.0, *) {
-                card { appearanceSection }
-            }
+            card { appearanceSection }
         }
         .padding(12)
         .frame(width: 420)
@@ -300,12 +301,49 @@ private struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Appearance")
                 .font(.headline)
-            Toggle("Liquid Glass", isOn: $settings.usesLiquidGlass)
-            Text("Off restores the plain popover macOS 14 and 15 draw, from the next time it opens.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker("Icon palette", selection: iconPaletteSelection) {
+                        ForEach(AppPalette.allCases) { palette in
+                            Text(palette.displayName).tag(palette)
+                        }
+                    }
+                    if #available(macOS 26.0, *) {
+                        Toggle("Liquid Glass", isOn: $settings.usesLiquidGlass)
+                        Text("Off uses the flat palette surface the next time the popover opens.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+                if let preview = try? applicationIconImage(
+                    palette: settings.iconPalette,
+                    pixelSize: 128,
+                    pointSize: 56
+                ) {
+                    Image(nsImage: preview)
+                        .resizable()
+                        .frame(width: 56, height: 56)
+                        .accessibilityLabel(
+                            "\(settings.iconPalette.displayName) icon preview"
+                        )
+                }
+            }
         }
+    }
+
+    private var iconPaletteSelection: Binding<AppPalette> {
+        Binding(
+            get: { settings.iconPalette },
+            set: { palette in
+                selectIconPalette(
+                    palette,
+                    settings: settings,
+                    onPaletteChanged: onPaletteChanged
+                )
+            }
+        )
     }
 
     private var menuBarSection: some View {
@@ -525,4 +563,14 @@ private struct SettingsView: View {
             }
         }
     }
+}
+
+@MainActor
+func selectIconPalette(
+    _ palette: AppPalette,
+    settings: AppSettings,
+    onPaletteChanged: (AppPalette) -> Void
+) {
+    settings.iconPalette = palette
+    onPaletteChanged(palette)
 }
