@@ -90,17 +90,12 @@ fn help_covers_exit_codes_examples_and_value_names() {
         "authorization_code_env",
         "ENV_VAR",
     );
-    assert_value_name(
-        &command,
-        &["workspace", "select"],
-        "workspace_id",
-        "WORKSPACE_ID",
-    );
     assert_value_name(&command, &["probe"], "account", "ACCOUNT_ID");
     assert_value_name(&command, &["show"], "account", "ACCOUNT_ID");
     assert_value_name(&command, &["device", "revoke"], "device_id", "DEVICE_ID");
 
     assert!(command.find_subcommand("http").is_none());
+    assert!(command.find_subcommand("workspace").is_none());
 }
 
 fn collect_missing_about(command: &Command, path: &str, missing: &mut Vec<String>) {

@@ -327,8 +327,8 @@ POST /v1/accounts/{id}/probe?wait=false
 
 `/v1/usage` reads cached snapshots and does not contact providers. Probe
 requests for the same account within `http.probe_min_interval_seconds`
-(default 60) return `429` with `Retry-After`. Authentication, account
-mutation, and workspace commands stay on the private control socket.
+(default 60) return `429` with `Retry-After`. Authentication, account mutation,
+and workspace control messages stay on the private control socket.
 
 Every route except `POST /v1/pair` and `OPTIONS` requires `Authorization:
 Bearer <device_token>`. Pairing accepts JSON such as
@@ -475,13 +475,6 @@ and category on `show` and `probe`. On authentication and probe command
 failures it also asks the daemon to attach the provider's own error text.
 Default error output is still a stable kind. Without that opt-in, a diagnostic
 on the daemon response is rejected as invalid.
-
-ChatGPT workspace selection:
-
-```sh
-ullage workspace list chatgpt --account <account-id>
-ullage workspace select chatgpt --account <account-id> <workspace-id>
-```
 
 ## Probe and show
 

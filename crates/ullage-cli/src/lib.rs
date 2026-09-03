@@ -237,12 +237,6 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
-    /// List and select provider workspaces.
-    #[command(arg_required_else_help = true)]
-    Workspace {
-        #[command(subcommand)]
-        command: WorkspaceCommand,
-    },
     /// Query a provider now and persist a usage snapshot.
     ///
     /// Contacts the provider for one account id and stores a snapshot. By default
@@ -460,31 +454,6 @@ pub enum AuthCommand {
         /// providers ignore it.
         #[arg(long, value_name = "ACCOUNT_LABEL")]
         account_label: Option<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum WorkspaceCommand {
-    /// List workspaces visible to an account id.
-    List {
-        /// Provider id such as chatgpt. Not a display name.
-        #[arg(value_name = "PROVIDER_ID")]
-        provider: String,
-        /// Stable account id, not the account label.
-        #[arg(long, value_name = "ACCOUNT_ID")]
-        account: String,
-    },
-    /// Select the workspace id used for later probes.
-    Select {
-        /// Provider id such as chatgpt. Not a display name.
-        #[arg(value_name = "PROVIDER_ID")]
-        provider: String,
-        /// Stable account id, not the account label.
-        #[arg(long, value_name = "ACCOUNT_ID")]
-        account: String,
-        /// Workspace identifier from `workspace list`, not a display name.
-        #[arg(value_name = "WORKSPACE_ID")]
-        workspace_id: String,
     },
 }
 
@@ -1493,32 +1462,6 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
                 }
             }
         },
-        Command::Workspace { command } => match command {
-            WorkspaceCommand::List { provider, account } => {
-                if contains(provider) {
-                    Some("PROVIDER_ID")
-                } else if contains(account) {
-                    Some("--account")
-                } else {
-                    None
-                }
-            }
-            WorkspaceCommand::Select {
-                provider,
-                account,
-                workspace_id,
-            } => {
-                if contains(provider) {
-                    Some("PROVIDER_ID")
-                } else if contains(account) {
-                    Some("--account")
-                } else if contains(workspace_id) {
-                    Some("WORKSPACE_ID")
-                } else {
-                    None
-                }
-            }
-        },
         Command::Show(args) => args.account.as_deref().and_then(|account| {
             if contains(account) {
                 Some("ACCOUNT_ID")
@@ -1621,21 +1564,6 @@ fn to_control_command(command: &Command) -> ControlCommand {
                 request: LogoutRequest {
                     account_label: account_label.clone(),
                 },
-            },
-        },
-        Command::Workspace { command } => match command {
-            WorkspaceCommand::List { provider, account } => ControlCommand::ListWorkspaces {
-                provider: ProviderId::new(provider),
-                account: AccountId::new(account),
-            },
-            WorkspaceCommand::Select {
-                provider,
-                account,
-                workspace_id,
-            } => ControlCommand::SelectWorkspace {
-                provider: ProviderId::new(provider),
-                account: AccountId::new(account),
-                workspace_id: workspace_id.clone(),
             },
         },
         Command::Probe(args) => ControlCommand::Probe {
@@ -1780,22 +1708,6 @@ fn response_matches_command(command: &Command, result: &ControlResult) -> bool {
             ControlResult::AuthChallenge(_),
         ) => true,
         (
-            Command::Workspace {
-                command: WorkspaceCommand::List { .. },
-            },
-            ControlResult::Workspaces(workspaces),
-        ) => workspaces.iter().enumerate().all(|(index, workspace)| {
-            workspaces[index + 1..]
-                .iter()
-                .all(|other| other.id != workspace.id)
-        }),
-        (
-            Command::Workspace {
-                command: WorkspaceCommand::Select { workspace_id, .. },
-            },
-            ControlResult::Workspace(workspace),
-        ) => workspace.id == *workspace_id,
-        (
             Command::Probe(ProbeArgs {
                 account: requested,
                 wait: true,
@@ -1881,37 +1793,16 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
                     account: requested, ..
                 } => account.as_str() == requested,
             },
-            Command::Workspace { command } => match command {
-                WorkspaceCommand::List {
-                    account: requested, ..
-                }
-                | WorkspaceCommand::Select {
-                    account: requested, ..
-                } => account.as_str() == requested,
-            },
             _ => false,
         },
         ControlError::Provider(_) => matches!(
             command,
-            Command::Auth { .. }
-                | Command::Workspace { .. }
-                | Command::Probe(ProbeArgs { wait: true, .. })
+            Command::Auth { .. } | Command::Probe(ProbeArgs { wait: true, .. })
         ),
         ControlError::Registry(RegistryError::NotFound(provider)) => match command {
             Command::Account {
                 command:
                     AccountCommand::Add {
-                        provider: requested,
-                        ..
-                    },
-            }
-            | Command::Workspace {
-                command:
-                    WorkspaceCommand::List {
-                        provider: requested,
-                        ..
-                    }
-                    | WorkspaceCommand::Select {
                         provider: requested,
                         ..
                     },
@@ -1922,16 +1813,6 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
         },
         ControlError::Registry(RegistryError::InstanceUnavailable(provider)) => match command {
             Command::Auth { command } => auth_command_names_provider(command, provider),
-            Command::Workspace { command } => match command {
-                WorkspaceCommand::List {
-                    provider: requested,
-                    ..
-                }
-                | WorkspaceCommand::Select {
-                    provider: requested,
-                    ..
-                } => provider.as_str() == requested,
-            },
             Command::Probe(ProbeArgs { wait: true, .. }) => true,
             _ => false,
         },
@@ -2304,14 +2185,12 @@ fn human_result(
                 palette,
             )
         }
-        ControlResult::Workspaces(workspaces) => render_workspaces(workspaces, reveal, palette),
-        ControlResult::Workspace(workspace) => {
-            render_workspaces(std::slice::from_ref(workspace), reveal, palette)
-        }
         ControlResult::PairCode(pair_code) => render_pair_code(pair_code, palette),
         ControlResult::Devices(devices) => render_devices(devices, palette),
         ControlResult::Ack => "ok\n".into(),
-        ControlResult::Usage(_)
+        ControlResult::Workspaces(_)
+        | ControlResult::Workspace(_)
+        | ControlResult::Usage(_)
         | ControlResult::Error(_)
         | ControlResult::ProtocolMismatch { .. } => String::new(),
     }
@@ -2355,29 +2234,6 @@ fn render_devices(devices: &[DevicePayload], palette: &Palette) -> String {
         &rows,
         palette,
     )
-}
-
-fn render_workspaces(
-    workspaces: &[ullage_protocol::ProviderWorkspace],
-    reveal: bool,
-    palette: &Palette,
-) -> String {
-    let rows = workspaces
-        .iter()
-        .map(|workspace| {
-            vec![
-                Cell::new(&workspace.id),
-                Cell::new(
-                    workspace
-                        .label
-                        .as_deref()
-                        .map(|label| display_sensitive(label, reveal))
-                        .unwrap_or_else(|| "-".into()),
-                ),
-            ]
-        })
-        .collect::<Vec<_>>();
-    render_table(&["WORKSPACE", "LABEL"], &rows, palette)
 }
 
 fn render_daemon_status(status: &DaemonStatusPayload, palette: &Palette) -> String {
@@ -3098,22 +2954,12 @@ fn redact_revealable_values(result: &mut ControlResult) {
             AuthState::Pending { flow_id, .. } => *flow_id = "[redacted]".into(),
             AuthState::NotAuthenticated => {}
         },
-        ControlResult::Workspaces(workspaces) => {
-            for workspace in workspaces {
-                if workspace.label.is_some() {
-                    workspace.label = Some("[redacted]".into());
-                }
-            }
-        }
-        ControlResult::Workspace(workspace) => {
-            if workspace.label.is_some() {
-                workspace.label = Some("[redacted]".into());
-            }
-        }
         ControlResult::DaemonStatus(_)
         | ControlResult::PairCode(_)
         | ControlResult::Devices(_)
         | ControlResult::Providers(_)
+        | ControlResult::Workspaces(_)
+        | ControlResult::Workspace(_)
         | ControlResult::Usage(_)
         | ControlResult::Ack
         | ControlResult::Error(_)

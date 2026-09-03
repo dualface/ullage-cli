@@ -460,10 +460,10 @@ fn summary_cells(
 /// Collapses window + metric into the single label the table prints.
 fn compact_identity(window: &str, metric: &str, keep_usage: bool) -> String {
     let metric = metric.trim();
-    if window.eq_ignore_ascii_case("resets") || window.eq_ignore_ascii_case("reset") {
-        if metric.is_empty() || metric == "available count" {
-            return "Reset".into();
-        }
+    if (window.eq_ignore_ascii_case("resets") || window.eq_ignore_ascii_case("reset"))
+        && (metric.is_empty() || metric == "available count")
+    {
+        return "Reset".into();
     }
     if window.eq_ignore_ascii_case("credits") && (metric.is_empty() || metric == "credit balance") {
         return "Balance".into();

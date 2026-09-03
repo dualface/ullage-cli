@@ -9,8 +9,8 @@ use ullage_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlCommand, ControlError, ControlRequest, ControlResponse,
     ControlResult, CredentialBackendId, DaemonStatusPayload, DevicePayload, MeasurementUnit,
     PairCodePayload, PartialFailure, ProbePayload, ProviderDescriptor, ProviderError, ProviderId,
-    ProviderWorkspace, QueryOutcome, SanitizedErrorPayload, SnapshotPayload, SubscriptionUsage,
-    UsageMeasurement, UsageWindow, UsageWindowKind,
+    QueryOutcome, SanitizedErrorPayload, SnapshotPayload, SubscriptionUsage, UsageMeasurement,
+    UsageWindow, UsageWindowKind,
 };
 
 type Responder = fn(&ControlRequest) -> Result<ControlResponse, ClientError>;
@@ -169,17 +169,8 @@ fn maps_the_complete_command_surface_to_control_requests() {
             ControlCommand::AuthStatus { .. } | ControlCommand::CompleteAuth { .. } => {
                 ControlResult::AuthState(ullage_protocol::AuthState::NotAuthenticated)
             }
-            ControlCommand::ListWorkspaces { .. } => {
-                ControlResult::Workspaces(vec![ProviderWorkspace {
-                    id: "workspace-1".into(),
-                    label: Some("Primary".into()),
-                }])
-            }
-            ControlCommand::SelectWorkspace { workspace_id, .. } => {
-                ControlResult::Workspace(ProviderWorkspace {
-                    id: workspace_id.clone(),
-                    label: Some("Primary".into()),
-                })
+            ControlCommand::ListWorkspaces { .. } | ControlCommand::SelectWorkspace { .. } => {
+                unreachable!("workspace controls have no CLI command")
             }
             ControlCommand::Probe {
                 account_id,
@@ -254,23 +245,6 @@ fn maps_the_complete_command_surface_to_control_requests() {
             "claude",
             "--account",
             "account-1",
-        ],
-        &[
-            "ullage",
-            "workspace",
-            "list",
-            "chatgpt",
-            "--account",
-            "account-1",
-        ],
-        &[
-            "ullage",
-            "workspace",
-            "select",
-            "chatgpt",
-            "--account",
-            "account-1",
-            "workspace-1",
         ],
         &["ullage", "probe", "account-1"],
         &["ullage", "show", "account-1"],
@@ -2813,7 +2787,6 @@ fn missing_subcommands_print_layer_help_to_stderr() {
         &["ullage", "auth"],
         &["ullage", "daemon"],
         &["ullage", "provider"],
-        &["ullage", "workspace"],
     ];
     for command in commands {
         let output = run_from(*command, &MockClient::with_daemon_result(Ok(())));
@@ -2855,6 +2828,21 @@ fn missing_subcommands_print_layer_help_to_stderr() {
         "{}",
         nested_with_global.stderr
     );
+}
+
+#[test]
+fn workspace_is_not_a_cli_command() {
+    let client = MockClient::with_daemon_result(Ok(()));
+    let output = run_from(["ullage", "workspace"], &client);
+
+    assert_eq!(output.code, ExitCode::Usage);
+    assert!(
+        output
+            .stderr
+            .contains("unrecognized subcommand 'workspace'")
+    );
+    assert!(output.stdout.is_empty());
+    assert!(client.requests.lock().unwrap().is_empty());
 }
 
 #[test]

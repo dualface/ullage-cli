@@ -49,8 +49,8 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-cli`: command-line client of the local control protocol.
 - `ullage-app`: single executable composition root for the CLI client and daemon process.
 
-The CLI exposes daemon lifecycle, provider, account, authentication, workspace,
-probe, snapshot, and device-administration commands. `ullage device pair`,
+The CLI exposes daemon lifecycle, provider, account, authentication, probe,
+snapshot, and device-administration commands. `ullage device pair`,
 `list`, and `revoke` map directly to the version 9 device control commands. The
 retired `ullage http token` command is not part of the command surface; HTTP
 clients obtain a per-device token only by exchanging a one-use pairing code.
@@ -203,8 +203,8 @@ Launchpad remain bound to the build-time `AppIcon.icns` palette.
    `ullage daemon run` launches the same `ullage` executable in its private daemon mode.
 3. CLI and app communicate through `ullage-protocol`; they do not inspect daemon or provider
    internals.
-   ChatGPT workspace discovery and selection use the same account-bound control path, and the
-   selected workspace is persisted by that account's Provider instance.
+   The ChatGPT provider derives its workspace from the OAuth token, selects it during login, and
+   uses that account-bound selection for probes.
 4. Cross-crate data uses public DTOs. No crate reads another crate's private state or storage.
 5. Changes to shared contracts are coordinated in an integration task after parallel provider
    work begins.
@@ -319,7 +319,7 @@ Endpoints: `POST /v1/pair`, `GET /v1/status`, `/v1/providers`, `/v1/accounts`,
 `/v1/accounts/{id}`, `/v1/usage` (optional `?account=`), and
 `POST /v1/accounts/{id}/probe` (optional `?wait=false`). `/v1/usage` is
 `ControlCommand::Show` and does not call providers. Authentication, account mutation, device
-administration, and workspace commands are not exposed over HTTP.
+administration and workspace control messages are not exposed over HTTP.
 
 Security model:
 
