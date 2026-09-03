@@ -2789,7 +2789,7 @@ fn unsafe_control_reject_hint(param: &'static str) -> &'static str {
         "--method" => "the --method argument contains disallowed control characters",
         "--output" => "the --output argument contains disallowed control characters",
         "--color" => "the --color argument contains disallowed control characters",
-        "PROVIDER_ID" | "ACCOUNT_ID" | "FLOW_ID" | "WORKSPACE_ID" | "ACCOUNT_LABEL" => {
+        "PROVIDER_ID" | "ACCOUNT_ID" | "FLOW_ID" | "ACCOUNT_LABEL" => {
             "a command argument contains disallowed control characters"
         }
         _ => "a command argument contains disallowed control characters",
