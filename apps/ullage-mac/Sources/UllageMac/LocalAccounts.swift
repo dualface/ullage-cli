@@ -134,8 +134,13 @@ final class LocalAccountManager {
 @MainActor
 @Observable
 final class LoginWizardModel {
+    /// Upper bound on how long a loopback callback endpoint stays open when the
+    /// provider does not date the flow itself.
+    static let callbackWindow: TimeInterval = 10 * 60
+
     private let manager: LocalAccountManager
     private let pollingInterval: Duration
+    private let callbackListenerFactory: (String) throws -> OAuthCallbackListening
     private(set) var account: Account?
     private(set) var challenge: AuthenticationChallenge?
     private(set) var authenticated = false
@@ -143,15 +148,24 @@ final class LoginWizardModel {
     private(set) var busy = false
     private(set) var message = ""
     private var pollingTask: Task<Void, Never>?
+    private var callbackTask: Task<Void, Never>?
+    private var callbackListener: OAuthCallbackListening?
     private var authenticatedAccountLabel: String?
 
     var provider = ""
     var label = ""
     var input = ""
 
-    init(manager: LocalAccountManager, pollingInterval: Duration = .seconds(2)) {
+    init(
+        manager: LocalAccountManager,
+        pollingInterval: Duration = .seconds(2),
+        callbackListenerFactory: @escaping (String) throws -> OAuthCallbackListening = {
+            try OAuthCallbackListener(redirectURI: $0)
+        }
+    ) {
         self.manager = manager
         self.pollingInterval = pollingInterval
+        self.callbackListenerFactory = callbackListenerFactory
     }
 
     func begin() async {
@@ -168,21 +182,120 @@ final class LoginWizardModel {
                 label: label.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             )
             account = created
-            let started = try await client.startAuthentication(
-                provider: created.provider,
-                account: created.id
-            )
-            challenge = started
-            message = ""
-            if let address = started.verificationURI.flatMap(URL.init(string:)) {
-                NSWorkspace.shared.open(address)
-            }
-            if started.method == .deviceCode {
-                startPolling()
-            }
+            try await startAuthentication(on: client, for: created)
         } catch {
             message = setupErrorMessage(error)
             await rollbackTemporaryAccount()
+        }
+    }
+
+    /// Opens the loopback callback endpoint first, and only then starts the
+    /// authorization, so the daemon is never given a redirect URI this process
+    /// does not already own.
+    private func startAuthentication(
+        on client: LocalControlClient,
+        for account: Account
+    ) async throws {
+        closeCallbackListener()
+        var listener: OAuthCallbackListening?
+        var listenerFailure: String?
+        if let redirectURI = registeredLoopbackRedirectURI(forProvider: account.provider) {
+            do {
+                listener = try callbackListenerFactory(redirectURI)
+            } catch {
+                listenerFailure = """
+                \(error.localizedDescription). Complete sign-in in your browser, then paste \
+                the callback URL here.
+                """
+            }
+        }
+        let started: AuthenticationChallenge
+        do {
+            started = try await client.startAuthentication(
+                provider: account.provider,
+                account: account.id,
+                method: listener == nil ? nil : .browserOAuth,
+                redirectURI: listener?.redirectURI
+            )
+        } catch {
+            listener?.close()
+            throw error
+        }
+        input = ""
+        challenge = started
+        message = listenerFailure ?? ""
+        if let address = started.verificationURI.flatMap(URL.init(string:)) {
+            NSWorkspace.shared.open(address)
+        }
+        if let listener, started.method == .browserOAuth {
+            callbackListener = listener
+            awaitCallback(on: listener, account: account, challenge: started)
+        } else {
+            listener?.close()
+        }
+        if started.method == .deviceCode {
+            startPolling()
+        }
+    }
+
+    private func awaitCallback(
+        on listener: OAuthCallbackListening,
+        account: Account,
+        challenge: AuthenticationChallenge
+    ) {
+        let deadline = challenge.expiresAt ?? Date().addingTimeInterval(Self.callbackWindow)
+        callbackTask?.cancel()
+        callbackTask = Task { [weak self] in
+            let outcome: OAuthCallbackOutcome
+            do {
+                outcome = try await listener.waitForCallback(
+                    state: challenge.flowId,
+                    deadline: deadline
+                )
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.callbackListener = nil
+                if case OAuthCallbackError.cancelled = error { return }
+                self.message = """
+                \(error.localizedDescription). Paste the callback URL from your browser here.
+                """
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.callbackListener = nil
+            switch outcome {
+            case .authorized(let callbackURL):
+                await self.complete(
+                    callbackURL: callbackURL,
+                    redirectURI: listener.redirectURI,
+                    account: account,
+                    challenge: challenge
+                )
+            case .declined(let reason):
+                self.message = "The browser reported \(reason). Retry to start again."
+            }
+        }
+    }
+
+    private func complete(
+        callbackURL: String,
+        redirectURI: String,
+        account: Account,
+        challenge: AuthenticationChallenge
+    ) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let state = try await manager.client().completeAuthentication(
+                provider: account.provider,
+                account: account.id,
+                flowId: challenge.flowId,
+                input: callbackURL,
+                redirectURI: redirectURI
+            )
+            try await handle(state)
+        } catch {
+            message = setupErrorMessage(error)
         }
     }
 
@@ -212,17 +325,7 @@ final class LoginWizardModel {
         busy = true
         defer { busy = false }
         do {
-            let started = try await manager.client().startAuthentication(
-                provider: account.provider,
-                account: account.id
-            )
-            input = ""
-            challenge = started
-            message = ""
-            if let address = started.verificationURI.flatMap(URL.init(string:)) {
-                NSWorkspace.shared.open(address)
-            }
-            if started.method == .deviceCode { startPolling() }
+            try await startAuthentication(on: manager.client(), for: account)
         } catch {
             message = error.localizedDescription
         }
@@ -230,7 +333,15 @@ final class LoginWizardModel {
 
     func cancel() async {
         pollingTask?.cancel()
+        closeCallbackListener()
         await rollbackTemporaryAccount()
+    }
+
+    private func closeCallbackListener() {
+        callbackTask?.cancel()
+        callbackTask = nil
+        callbackListener?.close()
+        callbackListener = nil
     }
 
     private func startPolling() {
@@ -279,6 +390,10 @@ final class LoginWizardModel {
         switch state {
         case .authenticated(let accountLabel, _):
             guard let account else { return }
+            // Only the endpoint is released here: this can run inside the
+            // callback task itself, which must not cancel itself mid-setup.
+            callbackListener?.close()
+            callbackListener = nil
             authenticated = true
             authenticatedAccountLabel = accountLabel
             await manager.didCompleteLogin()
