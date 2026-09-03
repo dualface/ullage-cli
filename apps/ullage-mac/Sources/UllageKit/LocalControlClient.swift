@@ -445,6 +445,8 @@ public final class LocalControlClient: @unchecked Sendable {
         timeout: TimeInterval,
         expectedUID: uid_t
     ) throws -> Data {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeout))
         let path = socketURL.path
         let before = try validateSocket(path: path, expectedUID: expectedUID)
         let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
@@ -471,7 +473,7 @@ public final class LocalControlClient: @unchecked Sendable {
         }
         if connected != 0 {
             guard errno == EINPROGRESS else { throw unavailable(errno) }
-            try wait(descriptor: descriptor, events: Int16(POLLOUT), timeout: timeout)
+            try wait(descriptor: descriptor, events: Int16(POLLOUT), deadline: deadline)
             var socketError: Int32 = 0
             var length = socklen_t(MemoryLayout<Int32>.size)
             guard getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0,
@@ -492,8 +494,8 @@ public final class LocalControlClient: @unchecked Sendable {
             throw LocalControlError.invalidSocket
         }
 
-        try writeAll(request, descriptor: descriptor, timeout: timeout)
-        return try readLine(descriptor: descriptor, timeout: timeout)
+        try writeAll(request, descriptor: descriptor, deadline: deadline)
+        return try readLine(descriptor: descriptor, deadline: deadline)
     }
 
     private static func validateSocket(path: String, expectedUID: uid_t) throws -> stat {
@@ -508,11 +510,15 @@ public final class LocalControlClient: @unchecked Sendable {
         return metadata
     }
 
-    private static func writeAll(_ data: Data, descriptor: Int32, timeout: TimeInterval) throws {
+    private static func writeAll(
+        _ data: Data,
+        descriptor: Int32,
+        deadline: ContinuousClock.Instant
+    ) throws {
         var offset = 0
         try data.withUnsafeBytes { bytes in
             while offset < data.count {
-                try wait(descriptor: descriptor, events: Int16(POLLOUT), timeout: timeout)
+                try wait(descriptor: descriptor, events: Int16(POLLOUT), deadline: deadline)
                 let written = Darwin.write(
                     descriptor,
                     bytes.baseAddress!.advanced(by: offset),
@@ -527,11 +533,14 @@ public final class LocalControlClient: @unchecked Sendable {
         }
     }
 
-    private static func readLine(descriptor: Int32, timeout: TimeInterval) throws -> Data {
+    private static func readLine(
+        descriptor: Int32,
+        deadline: ContinuousClock.Instant
+    ) throws -> Data {
         var response = Data()
         var buffer = [UInt8](repeating: 0, count: 8192)
         while true {
-            try wait(descriptor: descriptor, events: Int16(POLLIN), timeout: timeout)
+            try wait(descriptor: descriptor, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(descriptor, &buffer, buffer.count)
             if count < 0 {
                 if errno == EINTR { continue }
@@ -547,10 +556,22 @@ public final class LocalControlClient: @unchecked Sendable {
         }
     }
 
-    private static func wait(descriptor: Int32, events: Int16, timeout: TimeInterval) throws {
+    private static func wait(
+        descriptor: Int32,
+        events: Int16,
+        deadline: ContinuousClock.Instant
+    ) throws {
         var item = pollfd(fd: descriptor, events: events, revents: 0)
-        let milliseconds = Int32(max(1, min(timeout * 1000, Double(Int32.max))))
+        let clock = ContinuousClock()
         while true {
+            let remaining = clock.now.duration(to: deadline)
+            guard remaining > .zero else { throw LocalControlError.timeout }
+            let components = remaining.components
+            let remainingMilliseconds = Double(components.seconds) * 1_000
+                + Double(components.attoseconds) / 1_000_000_000_000_000
+            let milliseconds = Int32(
+                max(1, min(ceil(remainingMilliseconds), Double(Int32.max)))
+            )
             let result = Darwin.poll(&item, 1, milliseconds)
             if result > 0 {
                 if item.revents & events != 0 { return }

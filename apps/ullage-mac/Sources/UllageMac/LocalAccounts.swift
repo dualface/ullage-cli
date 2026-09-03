@@ -135,6 +135,7 @@ final class LocalAccountManager {
 @Observable
 final class LoginWizardModel {
     private let manager: LocalAccountManager
+    private let pollingInterval: Duration
     private(set) var account: Account?
     private(set) var challenge: AuthenticationChallenge?
     private(set) var authenticated = false
@@ -148,8 +149,9 @@ final class LoginWizardModel {
     var label = ""
     var input = ""
 
-    init(manager: LocalAccountManager) {
+    init(manager: LocalAccountManager, pollingInterval: Duration = .seconds(2)) {
         self.manager = manager
+        self.pollingInterval = pollingInterval
     }
 
     func begin() async {
@@ -233,10 +235,15 @@ final class LoginWizardModel {
 
     private func startPolling() {
         pollingTask?.cancel()
-        pollingTask = Task { [weak self] in
+        let interval = pollingInterval
+        pollingTask = Task { [weak self, interval] in
             var attempts = 0
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
+                do {
+                    try await Task.sleep(for: interval)
+                } catch {
+                    return
+                }
                 guard let self, let account = self.account, let challenge = self.challenge else {
                     return
                 }
@@ -268,7 +275,6 @@ final class LoginWizardModel {
         switch state {
         case .authenticated(let accountLabel, _):
             guard let account else { return }
-            pollingTask?.cancel()
             authenticated = true
             authenticatedAccountLabel = accountLabel
             await manager.didCompleteLogin()

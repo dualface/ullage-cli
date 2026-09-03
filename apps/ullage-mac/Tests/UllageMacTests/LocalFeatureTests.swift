@@ -83,6 +83,50 @@ final class LocalFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testDeviceCodePollingReportsPostAuthenticationSetupFailure() async throws {
+        let recorder = LocalRequestRecorder()
+        let client = LocalControlClient { request in
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: request.dropLast()) as? [String: Any]
+            )
+            let requestID = try XCTUnwrap(object["request_id"] as? String)
+            let command = try XCTUnwrap(object["command"] as? [String: Any])
+            let name = try XCTUnwrap(command["command"] as? String)
+            recorder.append(name)
+            return try localResponse(
+                requestID: requestID,
+                command: name,
+                authenticationMethod: "device_code"
+            )
+        }
+        let suite = "LocalFeatureTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        let service = LocalServiceManager(settings: settings)
+        let manager = LocalAccountManager(
+            localService: service,
+            dataChanged: {},
+            clientFactory: { _ in client }
+        )
+        let model = LoginWizardModel(manager: manager, pollingInterval: .milliseconds(1))
+        model.provider = "grok"
+
+        await model.begin()
+        for _ in 0..<100 where !model.authenticated {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertTrue(model.authenticated)
+        XCTAssertFalse(model.setupCompleted)
+        XCTAssertTrue(model.message.hasPrefix("Signed in, but setup is incomplete:"))
+        XCTAssertTrue(recorder.values.contains("probe"))
+        await model.cancel()
+        XCTAssertFalse(recorder.values.contains("logout"))
+        XCTAssertFalse(recorder.values.contains("remove_account"))
+    }
+
+    @MainActor
     func testReadinessRetryUsesAnAbsoluteDeadlineAndCapsClientTimeouts() async {
         let suite = "LocalFeatureTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -146,7 +190,11 @@ private final class LocalRequestRecorder: @unchecked Sendable {
     func append(_ value: String) { lock.withLock { storage.append(value) } }
 }
 
-private func localResponse(requestID: String, command: String) throws -> Data {
+private func localResponse(
+    requestID: String,
+    command: String,
+    authenticationMethod: String = "api_token"
+) throws -> Data {
     let result: [String: Any]
     switch command {
     case "add_account", "set_account_label":
@@ -159,7 +207,7 @@ private func localResponse(requestID: String, command: String) throws -> Data {
             "result": "auth_challenge",
             "payload": [
                 "flow_id": "flow-1",
-                "method": "api_token",
+                "method": authenticationMethod,
                 "input": ["prompt": "API key", "secret": true],
             ],
         ]

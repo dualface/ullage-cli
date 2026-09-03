@@ -195,6 +195,21 @@ struct LocalControlClientTests {
             _ = try await LocalControlClient(socketURL: server.socketURL, timeout: 0.05).accounts()
         }
     }
+
+    @Test func timeoutIsAbsoluteAcrossTrickledResponseBytes() async throws {
+        let server = try UnixTestServer(replyByteDelay: 20_000) { _ in
+            Data(repeating: 0x20, count: 20)
+        }
+        defer { server.stop() }
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LocalControlError.timeout) {
+            _ = try await LocalControlClient(socketURL: server.socketURL, timeout: 0.05).accounts()
+        }
+
+        #expect(start.duration(to: clock.now) < .milliseconds(200))
+    }
 }
 
 private final class UnixTestServer: @unchecked Sendable {
@@ -202,7 +217,11 @@ private final class UnixTestServer: @unchecked Sendable {
     private let descriptor: Int32
     private let task: Task<Void, Never>
 
-    init(mode: mode_t = 0o600, reply: @escaping @Sendable (Data) throws -> Data) throws {
+    init(
+        mode: mode_t = 0o600,
+        replyByteDelay: useconds_t = 0,
+        reply: @escaping @Sendable (Data) throws -> Data
+    ) throws {
         let directory = try temporaryDirectory()
         let serverURL = directory.appendingPathComponent("control.sock")
         let serverDescriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
@@ -241,8 +260,25 @@ private final class UnixTestServer: @unchecked Sendable {
                 if byte == 0x0a { break }
             }
             guard let payload = try? reply(request), !payload.isEmpty else { return }
+            var noSigPipe: Int32 = 1
+            _ = setsockopt(
+                peer,
+                SOL_SOCKET,
+                SO_NOSIGPIPE,
+                &noSigPipe,
+                socklen_t(MemoryLayout<Int32>.size)
+            )
             payload.withUnsafeBytes { bytes in
-                _ = Darwin.write(peer, bytes.baseAddress, payload.count)
+                if replyByteDelay == 0 {
+                    _ = Darwin.write(peer, bytes.baseAddress, payload.count)
+                    return
+                }
+                for offset in 0..<payload.count {
+                    usleep(replyByteDelay)
+                    if Darwin.write(peer, bytes.baseAddress!.advanced(by: offset), 1) != 1 {
+                        break
+                    }
+                }
             }
         }
     }
