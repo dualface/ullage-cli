@@ -45,7 +45,7 @@ final class ApplicationIconController {
         self.setter = setter
     }
 
-    func apply(palette: UllageMark.Palette) throws {
+    func apply(palette: AppPalette) throws {
         let representation = try UllageMark.applicationIcon(pixelSize: 512, palette: palette)
         let image = NSImage(size: NSSize(width: 512, height: 512))
         image.addRepresentation(representation)

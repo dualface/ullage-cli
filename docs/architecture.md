@@ -64,8 +64,9 @@ its daemon and mock adapters, as well as the AppKit application shell, SwiftUI v
 lifecycle, settings, and Keychain access. The application bundle copies the SwiftPM resource bundle
 into `Contents/Resources` so both tests and mock mode use the same canonical fixture files.
 The executable also owns the shared Swift/CoreGraphics U-vessel drawing implementation used for the
-template menu bar mark and full-color application icon. `UllageMark.Palette` owns the six canonical
-application-icon palettes and their glass-rendering colors. The template variant uses dedicated
+template menu bar mark and full-color application icon. `AppPalette` owns the single canonical
+definition of the six named palettes and their icon-rendering colors. `UllageMark` consumes those
+definitions rather than owning another color table. The template variant uses dedicated
 geometry to remain legible at 18 points. Menu bar liquid is a solid fill with a wavy surface;
 `UllageKit` exposes per-account Overview remaining levels, the list of pinnable Overview rows
 (`menuBarMetricOptions`, ids stable across refreshes), and `menuBarLiquidLevels`, which returns the
@@ -111,8 +112,11 @@ local mouse-down monitor close it on any click outside it (clicks on the status 
 the item's own toggle), Escape closes it, and so does another application activating. Below macOS
 26 the same `RootView` goes into an `NSPopover` and `PopoverSurface` paints `AtmosphereBackground`
 instead: a solid base with two blurred discs and a diagonal streak, anchored to the top and bottom
-edges so the header and the last card always have a shape behind them. That is also what macOS 26
-draws with the switch off. Each shape keeps its anchor and breathes: it swells by up to 11% and dims
+edges so the header and the last card always have a shape behind them. The base, discs, and streak
+are light- and dark-appearance derivations of the current `AppSettings.iconPalette`; the popover
+and Settings inject that value through the same environment key. Liquid Glass does not read or tint
+itself with the palette. That flat backdrop is also what macOS 26 draws with the switch off. Each
+shape keeps its anchor and breathes: it swells by up to 11% and dims
 by up to 10%, on a whole number of turns per 45-second loop so the pattern closes on itself and
 nothing jumps when the clock comes round, with different seeds keeping the shapes out of step so
 the backdrop reads as weather rather than pulsing as one. The swell is what carries the change,

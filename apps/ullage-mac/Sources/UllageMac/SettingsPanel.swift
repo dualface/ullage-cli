@@ -190,6 +190,7 @@ private struct SettingsView: View {
         // would keep ticking.
         .modifier(PopoverSurface(placement: .window))
         .environment(\.usesLiquidGlass, liquidGlassIsEnabled(settings: settings))
+        .environment(\.appPalette, settings.iconPalette)
     }
 
     /// One section, on the same frosted panel the popover's cards use.

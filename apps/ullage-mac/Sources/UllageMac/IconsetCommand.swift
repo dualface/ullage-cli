@@ -38,7 +38,7 @@ enum IconsetCommand {
         }
     }
 
-    static func render(to directory: URL, palette: UllageMark.Palette) throws {
+    static func render(to directory: URL, palette: AppPalette) throws {
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
@@ -55,7 +55,7 @@ enum IconsetCommand {
         }
     }
 
-    private static func parse(arguments: [String]) -> (directory: String, palette: UllageMark.Palette)? {
+    private static func parse(arguments: [String]) -> (directory: String, palette: AppPalette)? {
         guard arguments.count == 1 || arguments.count == 3,
               let directory = arguments.first else {
             writeUsage()
@@ -63,7 +63,7 @@ enum IconsetCommand {
         }
         guard arguments.count == 3 else { return (directory, .default) }
         guard arguments[1] == "--palette",
-              let palette = UllageMark.Palette(rawValue: arguments[2]) else {
+              let palette = AppPalette(rawValue: arguments[2]) else {
             writeUsage()
             return nil
         }
@@ -71,7 +71,7 @@ enum IconsetCommand {
     }
 
     private static func writeUsage() {
-        let palettes = UllageMark.Palette.allCases.map(\.rawValue).joined(separator: ", ")
+        let palettes = AppPalette.allCases.map(\.rawValue).joined(separator: ", ")
         writeIconsetError("usage: UllageMac --render-iconset <directory> [--palette <key>]")
         writeIconsetError("palette must be one of: \(palettes)")
     }

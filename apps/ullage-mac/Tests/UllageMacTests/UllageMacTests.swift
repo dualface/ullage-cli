@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import Security
 import SwiftUI
@@ -9,7 +10,7 @@ import UllageKit
 final class UllageMacTests: XCTestCase {
     @MainActor
     func testPalettesExposeTheCanonicalColors() {
-        let expected: [(UllageMark.Palette, UInt32, UInt32, UInt32, UInt32, UInt32)] = [
+        let expected: [(AppPalette, UInt32, UInt32, UInt32, UInt32, UInt32)] = [
             (.amber, 0x1B5044, 0x0B231E, 0xE9F2EC, 0xF2B34A, 0xC47F1F),
             (.oxblood, 0x4A1020, 0x24060F, 0xF3EBDD, 0xD9445F, 0x8C1A33),
             (.propellant, 0x2A2E35, 0x15171B, 0xDDE3E8, 0xFF6A2A, 0xD63A0A),
@@ -18,25 +19,76 @@ final class UllageMacTests: XCTestCase {
             (.plum, 0x3A1F4A, 0x1E0F2A, 0xF1E9F4, 0xF6B26B, 0xE3703F),
         ]
 
-        XCTAssertEqual(UllageMark.Palette.allCases.count, 6)
-        XCTAssertEqual(UllageMark.Palette.default, .oxblood)
+        XCTAssertEqual(AppPalette.allCases.count, 6)
+        XCTAssertEqual(AppPalette.default, .oxblood)
         for (palette, groundInner, groundOuter, wall, liquidTop, liquidBottom) in expected {
-            XCTAssertEqual(palette.groundInner, groundInner, palette.rawValue)
-            XCTAssertEqual(palette.groundOuter, groundOuter, palette.rawValue)
-            XCTAssertEqual(palette.wall, wall, palette.rawValue)
-            XCTAssertEqual(palette.liquidTop, liquidTop, palette.rawValue)
-            XCTAssertEqual(palette.liquidBottom, liquidBottom, palette.rawValue)
+            XCTAssertEqual(palette.colors.groundInner, groundInner, palette.rawValue)
+            XCTAssertEqual(palette.colors.groundOuter, groundOuter, palette.rawValue)
+            XCTAssertEqual(palette.colors.wall, wall, palette.rawValue)
+            XCTAssertEqual(palette.colors.liquidTop, liquidTop, palette.rawValue)
+            XCTAssertEqual(palette.colors.liquidBottom, liquidBottom, palette.rawValue)
         }
-        XCTAssertEqual(UllageMark.Palette.allCases.filter(\.isLightGround), [.paper])
+        XCTAssertEqual(AppPalette.allCases.filter(\.isLightGround), [.paper])
     }
 
     @MainActor
     func testAllPaletteIconsRenderWithDifferentPixels() throws {
-        let pngs = try UllageMark.Palette.allCases.map { palette in
+        let pngs = try AppPalette.allCases.map { palette in
             let icon = try UllageMark.applicationIcon(pixelSize: 64, palette: palette)
             return try XCTUnwrap(icon.representation(using: .png, properties: [:]))
         }
-        XCTAssertEqual(Set(pngs).count, UllageMark.Palette.allCases.count)
+        XCTAssertEqual(Set(pngs).count, AppPalette.allCases.count)
+    }
+
+    @MainActor
+    func testApplicationIconPixelsStayStableAcrossPaletteExtraction() throws {
+        let expected = [
+            AppPalette.amber: "19f6b5e1f7daa746801cc7334b9375711d8ad34aba5e4e8d4fc286cd1d703d44",
+            .oxblood: "739b0f1ccc52e04902ffcddd5ce3db542bdb285b5f82f20fbf597a0a7e699f68",
+            .propellant: "0eb65f96dfe9ece23d1d8d8c4774ba368f5c995b8eedec8fb2dc8e19067e671d",
+            .copper: "c2f1536b43510b8705ad8f14f78a210430369bb91f88b1f83915e6eeca347023",
+            .paper: "95e8d56ca9961b0e126ec09249d8ff8e58963e4da228a682d7ebf444970a055f",
+            .plum: "44a04ca85b85093eb8c41c36e0cb3e2485175e365c540cd8ecbb9395ca1d70a1",
+        ]
+        for palette in AppPalette.allCases {
+            let icon = try UllageMark.applicationIcon(pixelSize: 64, palette: palette)
+            let data = Data(
+                bytes: try XCTUnwrap(icon.bitmapData),
+                count: icon.bytesPerRow * icon.pixelsHigh
+            )
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            XCTAssertEqual(digest, expected[palette], palette.rawValue)
+        }
+    }
+
+    @MainActor
+    func testPalettesProduceDistinctFlatSurfacesInBothAppearances() {
+        for isDark in [false, true] {
+            let surfaces = AppPalette.allCases.map { $0.flatSurface(isDark: isDark) }
+            XCTAssertEqual(Set(surfaces).count, AppPalette.allCases.count)
+        }
+        for palette in AppPalette.allCases {
+            let lightBase = palette.flatSurface(isDark: false).base
+            let darkBase = palette.flatSurface(isDark: true).base
+            XCTAssertGreaterThanOrEqual(minimumChannel(lightBase), 0xD9, palette.rawValue)
+            XCTAssertLessThanOrEqual(maximumChannel(darkBase), 0x33, palette.rawValue)
+        }
+        XCTAssertEqual(
+            AppPalette.default.flatSurface(isDark: false),
+            AppPalette.oxblood.flatSurface(isDark: false)
+        )
+        XCTAssertEqual(
+            AppPalette.default.flatSurface(isDark: true),
+            AppPalette.oxblood.flatSurface(isDark: true)
+        )
+    }
+
+    private func minimumChannel(_ color: UInt32) -> UInt32 {
+        min(min((color >> 16) & 0xFF, (color >> 8) & 0xFF), color & 0xFF)
+    }
+
+    private func maximumChannel(_ color: UInt32) -> UInt32 {
+        max(max((color >> 16) & 0xFF, (color >> 8) & 0xFF), color & 0xFF)
     }
 
     @MainActor

@@ -68,6 +68,7 @@ struct RootView: View {
         // Outermost, so the surface modifier above and everything inside read
         // the same answer.
         .environment(\.usesLiquidGlass, liquidGlassIsEnabled(settings: settings))
+        .environment(\.appPalette, settings.iconPalette)
         .onPreferenceChange(ChromeHeightPreferenceKey.self) { height in
             chromeHeight = height
             reportHeight()

@@ -22,7 +22,7 @@ final class AppSettings {
     private(set) var pairedDeviceName: String?
     private(set) var pairedAt: Date?
 
-    var iconPalette: UllageMark.Palette {
+    var iconPalette: AppPalette {
         didSet { defaults.set(iconPalette.rawValue, forKey: Self.iconPaletteKey) }
     }
 
@@ -75,7 +75,7 @@ final class AppSettings {
         pairedDeviceName = defaults.string(forKey: Self.pairedDeviceNameKey)
         pairedAt = defaults.object(forKey: Self.pairedAtKey) as? Date
         iconPalette = defaults.string(forKey: Self.iconPaletteKey)
-            .flatMap(UllageMark.Palette.init(rawValue:)) ?? .default
+            .flatMap(AppPalette.init(rawValue:)) ?? .default
         animatesMenuBarLiquid = defaults.object(forKey: Self.animatesMenuBarLiquidKey) as? Bool ?? true
         usesLiquidGlass = defaults.object(forKey: Self.usesLiquidGlassKey) as? Bool ?? true
         menuBarMetricID = defaults.string(forKey: Self.menuBarMetricIDKey).flatMap { $0.isEmpty ? nil : $0 }

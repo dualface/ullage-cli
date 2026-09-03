@@ -20,10 +20,19 @@ private struct UsesLiquidGlassKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct AppPaletteKey: EnvironmentKey {
+    static let defaultValue = AppPalette.default
+}
+
 extension EnvironmentValues {
     var usesLiquidGlass: Bool {
         get { self[UsesLiquidGlassKey.self] }
         set { self[UsesLiquidGlassKey.self] = newValue }
+    }
+
+    var appPalette: AppPalette {
+        get { self[AppPaletteKey.self] }
+        set { self[AppPaletteKey.self] = newValue }
     }
 }
 
@@ -37,13 +46,14 @@ struct AtmosphereBackground: View {
     /// they are rather than snapping home when it closes.
     var animates = false
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appPalette) private var appPalette
 
     var body: some View {
         TimelineView(
             .animation(minimumInterval: MenuBarLiquidAnimation.tickInterval(), paused: !animates)
         ) { context in
             StructuredBackdrop(
-                isDark: colorScheme == .dark,
+                colors: appPalette.flatSurface(isDark: colorScheme == .dark),
                 progress: backdropProgress(at: context.date)
             )
         }
@@ -83,7 +93,7 @@ func backdropBreath(progress: Double, turns: Double, seed: Double) -> Double {
 /// frosted panels. Each one drifts a few points around that anchor, which the
 /// blur turns into a slow change of tone rather than a visible move.
 private struct StructuredBackdrop: View {
-    let isDark: Bool
+    let colors: FlatSurfaceColors
     let progress: Double
 
     var body: some View {
@@ -140,25 +150,23 @@ private struct StructuredBackdrop: View {
     }
 
     private var base: Color {
-        isDark ? Color(red: 0.055, green: 0.051, blue: 0.067) : Color(white: 0.96)
+        colors.base.swiftUIColor
     }
 
     private var warm: Color {
-        isDark ? Color(red: 0.44, green: 0.08, blue: 0.19) : Color(red: 0.90, green: 0.56, blue: 0.63)
+        colors.primary.swiftUIColor
     }
 
     private var rose: Color {
-        isDark ? Color(red: 0.60, green: 0.20, blue: 0.33) : Color(red: 0.96, green: 0.74, blue: 0.79)
+        colors.secondary.swiftUIColor
     }
 
     private var cool: Color {
-        isDark ? Color(red: 0.16, green: 0.23, blue: 0.48) : Color(red: 0.62, green: 0.72, blue: 0.93)
+        colors.tertiary.swiftUIColor
     }
 
     private var streak: Color {
-        isDark
-            ? Color(red: 0.93, green: 0.88, blue: 0.82).opacity(0.72)
-            : Color(red: 0.42, green: 0.08, blue: 0.18).opacity(0.50)
+        colors.decoration.swiftUIColor.opacity(0.60)
     }
 }
 

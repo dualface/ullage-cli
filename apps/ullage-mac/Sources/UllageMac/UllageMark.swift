@@ -4,80 +4,6 @@ import UllageKit
 
 @MainActor
 enum UllageMark {
-    enum Palette: String, CaseIterable, Identifiable {
-        case amber
-        case oxblood
-        case propellant
-        case copper
-        case paper
-        case plum
-
-        static let `default`: Self = .oxblood
-
-        var id: Self { self }
-
-        var displayName: String {
-            rawValue.prefix(1).uppercased() + rawValue.dropFirst()
-        }
-
-        var groundInner: UInt32 {
-            switch self {
-            case .amber: 0x1B5044
-            case .oxblood: 0x4A1020
-            case .propellant: 0x2A2E35
-            case .copper: 0x123C40
-            case .paper: 0xF4ECDC
-            case .plum: 0x3A1F4A
-            }
-        }
-
-        var groundOuter: UInt32 {
-            switch self {
-            case .amber: 0x0B231E
-            case .oxblood: 0x24060F
-            case .propellant: 0x15171B
-            case .copper: 0x071E21
-            case .paper: 0xE7DCC4
-            case .plum: 0x1E0F2A
-            }
-        }
-
-        var wall: UInt32 {
-            switch self {
-            case .amber: 0xE9F2EC
-            case .oxblood: 0xF3EBDD
-            case .propellant: 0xDDE3E8
-            case .copper: 0xEAF1EE
-            case .paper: 0x1E1B18
-            case .plum: 0xF1E9F4
-            }
-        }
-
-        var liquidTop: UInt32 {
-            switch self {
-            case .amber: 0xF2B34A
-            case .oxblood: 0xD9445F
-            case .propellant: 0xFF6A2A
-            case .copper: 0xD98A48
-            case .paper: 0x2A3F5F
-            case .plum: 0xF6B26B
-            }
-        }
-
-        var liquidBottom: UInt32 {
-            switch self {
-            case .amber: 0xC47F1F
-            case .oxblood: 0x8C1A33
-            case .propellant: 0xD63A0A
-            case .copper: 0x8E4E1F
-            case .paper: 0x14213A
-            case .plum: 0xE3703F
-            }
-        }
-
-        var isLightGround: Bool { ((groundOuter >> 16) & 0xFF) > 0xA0 }
-    }
-
     private enum Style {
         case applicationIcon
         case template
@@ -148,7 +74,7 @@ enum UllageMark {
         return image
     }
 
-    static func applicationIcon(pixelSize: Int, palette: Palette) throws -> NSBitmapImageRep {
+    static func applicationIcon(pixelSize: Int, palette: AppPalette) throws -> NSBitmapImageRep {
         guard pixelSize > 0 else { throw UllageMarkError.invalidPixelSize }
         guard let representation = NSBitmapImageRep(
             bitmapDataPlanes: nil,
@@ -183,7 +109,7 @@ enum UllageMark {
         in context: CGContext,
         canvasSize: CGFloat,
         style: Style,
-        palette: Palette = .default,
+        palette: AppPalette = .default,
         fillRatio: Double? = nil,
         wavePhase: Double? = nil
     ) {
@@ -236,7 +162,7 @@ enum UllageMark {
         in context: CGContext,
         rect: CGRect,
         cornerRadius: CGFloat,
-        palette: Palette
+        palette: AppPalette
     ) {
         let path = CGPath(
             roundedRect: rect,
@@ -250,7 +176,8 @@ enum UllageMark {
 
         let center = CGPoint(x: rect.midX, y: rect.minY + rect.height * 0.28)
         let radius = hypot(rect.width, rect.height) * 0.62
-        let radialGradient = gradient([(palette.groundInner, 1, 0), (palette.groundOuter, 1, 1)])
+        let colors = palette.colors
+        let radialGradient = gradient([(colors.groundInner, 1, 0), (colors.groundOuter, 1, 1)])
         context.drawRadialGradient(
             radialGradient,
             startCenter: center,
@@ -281,7 +208,7 @@ enum UllageMark {
     private static func drawVessel(
         in context: CGContext,
         style: Style,
-        palette: Palette,
+        palette: AppPalette,
         unit: CGFloat,
         fillRatio: Double?,
         wavePhase: Double?
@@ -296,7 +223,7 @@ enum UllageMark {
 
     private static func drawApplicationIconVessel(
         in context: CGContext,
-        palette: Palette,
+        palette: AppPalette,
         unit: CGFloat
     ) {
         context.saveGState()
@@ -306,7 +233,8 @@ enum UllageMark {
             color: color(0x000000, alpha: palette.isLightGround ? 0.28 : 0.55)
         )
         context.addPath(closedU(radius: 29, top: 16))
-        context.setFillColor(color(palette.groundOuter))
+        let colors = palette.colors
+        context.setFillColor(color(colors.groundOuter))
         context.fillPath()
         context.restoreGState()
 
@@ -314,7 +242,7 @@ enum UllageMark {
         context.addPath(closedU(radius: 19, top: 16))
         context.clip()
         context.drawLinearGradient(
-            gradient([(palette.wall, 0.16, 0), (palette.wall, 0.05, 1)]),
+            gradient([(colors.wall, 0.16, 0), (colors.wall, 0.05, 1)]),
             start: CGPoint(x: 31, y: 16),
             end: CGPoint(x: 69, y: 16),
             options: []
@@ -334,9 +262,9 @@ enum UllageMark {
         context.clip()
         context.drawLinearGradient(
             gradient([
-                (palette.liquidTop, 1, 0),
-                (palette.liquidBottom, 1, 0.75),
-                (mix(palette.liquidBottom, 0x000000, amount: 0.35), 1, 1),
+                (colors.liquidTop, 1, 0),
+                (colors.liquidBottom, 1, 0.75),
+                (mix(colors.liquidBottom, 0x000000, amount: 0.35), 1, 1),
             ]),
             start: CGPoint(x: 50, y: surfaceY),
             end: CGPoint(x: 50, y: 79),
@@ -366,8 +294,8 @@ enum UllageMark {
         context.clip()
         context.drawLinearGradient(
             gradient([
-                (mix(palette.liquidTop, 0xFFFFFF, amount: 0.45), 1, 0),
-                (mix(palette.liquidTop, 0xFFFFFF, amount: 0.15), 1, 1),
+                (mix(colors.liquidTop, 0xFFFFFF, amount: 0.45), 1, 0),
+                (mix(colors.liquidTop, 0xFFFFFF, amount: 0.15), 1, 1),
             ]),
             start: CGPoint(x: 0, y: surface.minY),
             end: CGPoint(x: 0, y: surface.maxY),
@@ -402,10 +330,10 @@ enum UllageMark {
         context.clip()
         context.drawLinearGradient(
             gradient([
-                (mix(palette.wall, 0xFFFFFF, amount: palette.isLightGround ? 0 : 0.6), 0.95, 0),
-                (palette.wall, 0.92, 0.35),
-                (mix(palette.wall, 0x000000, amount: palette.isLightGround ? 0.25 : 0.22), 0.92, 0.7),
-                (palette.wall, 0.92, 1),
+                (mix(colors.wall, 0xFFFFFF, amount: palette.isLightGround ? 0 : 0.6), 0.95, 0),
+                (colors.wall, 0.92, 0.35),
+                (mix(colors.wall, 0x000000, amount: palette.isLightGround ? 0.25 : 0.22), 0.92, 0.7),
+                (colors.wall, 0.92, 1),
             ]),
             start: CGPoint(x: 21, y: 0),
             end: CGPoint(x: 79, y: 0),
@@ -456,7 +384,7 @@ enum UllageMark {
             context.drawLinearGradient(
                 gradient([
                     (0xFFFFFF, palette.isLightGround ? 0.55 : 0.95, 0),
-                    (mix(palette.wall, 0xFFFFFF, amount: 0.3), 1, 1),
+                    (mix(colors.wall, 0xFFFFFF, amount: 0.3), 1, 1),
                 ]),
                 start: CGPoint(x: 0, y: rim.minY),
                 end: CGPoint(x: 0, y: rim.maxY),

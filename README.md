@@ -45,8 +45,10 @@ The popover is 360 points wide, in both light and dark appearance. On macOS 26
 it is a single slab of Liquid Glass in a transparent panel, so the desktop and
 windows it covers show through it and bend at its edges; the header and tab
 row float and the cards scroll underneath them. macOS 14 and 15 open a
-standard popover on a tinted backdrop of large oxblood and blue shapes, with
-frosted cards over it. Those shapes stay where they are and breathe:
+standard popover on a tinted backdrop whose base, large color shapes, and
+diagonal accent follow the selected app-icon palette, with frosted cards over
+it. Settings uses the same palette-linked backdrop. Those shapes stay where
+they are and breathe:
 each swells and dims a little on a 45-second loop that closes on itself, out of
 step with the others, so the tone behind the cards keeps changing without
 anything appearing to move. It runs only while the popover is open and stops
@@ -95,7 +97,8 @@ takes precedence as 0% for that account, so the liquid empties completely at
 the bottom of each breath. After the first refresh, an exclamation mark
 replaces the liquid when no usable quota is available or the connection enters
 an error state, and animation stops. The glass application icon keeps a static
-filled liquid level and has six built-in palettes: Amber,
+filled liquid level and has six built-in palettes shared with the flat popover
+and Settings surfaces: Amber,
 Oxblood, Propellant, Copper, Paper, and Plum; Oxblood is the default. At launch
 the app applies the stored `iconPalette` preference (or Oxblood when unset) to
 the icon used by the About panel and system dialogs. Finder and Launchpad use
