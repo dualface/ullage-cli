@@ -482,39 +482,26 @@ final class UllageMacTests: XCTestCase {
         XCTAssertTrue(AppSettings(defaults: defaults).animatesMenuBarLiquid)
     }
 
-    func testBackdropDriftStaysBoundedAndCloses() {
+    func testBackdropBreathStaysBoundedAndCloses() {
         // The loop closes: the last frame lands where the first one starts.
         for turns in [1.0, 2.0, 3.0] {
-            let start = backdropDrift(progress: 0, turns: turns, seed: 0.4, reach: 14)
-            let end = backdropDrift(progress: 1, turns: turns, seed: 0.4, reach: 14)
-            XCTAssertEqual(start.offset.width, end.offset.width, accuracy: 1e-9)
-            XCTAssertEqual(start.offset.height, end.offset.height, accuracy: 1e-9)
-            XCTAssertEqual(start.breath, end.breath, accuracy: 1e-9)
-        }
-
-        // No shape ever leaves its reach, so the anchored composition holds.
-        for step in 0...200 {
-            let drift = backdropDrift(
-                progress: Double(step) / 200,
-                turns: 2,
-                seed: 1.7,
-                reach: 10
+            XCTAssertEqual(
+                backdropBreath(progress: 0, turns: turns, seed: 0.4),
+                backdropBreath(progress: 1, turns: turns, seed: 0.4),
+                accuracy: 1e-9
             )
-            XCTAssertLessThanOrEqual(abs(drift.offset.width), 10 + 1e-9)
-            XCTAssertLessThanOrEqual(abs(drift.offset.height), 6 + 1e-9)
-            XCTAssertLessThanOrEqual(abs(drift.breath), 1 + 1e-9)
         }
 
-        // Travel and swell do not peak together, or every shape would be
-        // furthest out exactly when it is largest.
-        let peak = backdropDrift(progress: 0.25, turns: 1, seed: 0, reach: 14)
-        XCTAssertEqual(peak.offset.width, 14, accuracy: 1e-9)
-        XCTAssertLessThan(peak.breath, 0.95)
+        // Nothing leaves the range the view scales and dims against.
+        for step in 0...200 {
+            let breath = backdropBreath(progress: Double(step) / 200, turns: 2, seed: 1.7)
+            XCTAssertLessThanOrEqual(abs(breath), 1 + 1e-9)
+        }
 
-        // Seeds put the shapes out of step rather than sliding them together.
-        let first = backdropDrift(progress: 0.25, turns: 1, seed: 0, reach: 14)
-        let second = backdropDrift(progress: 0.25, turns: 1, seed: 3.4, reach: 14)
-        XCTAssertGreaterThan(abs(first.offset.width - second.offset.width), 1)
+        // Seeds put the shapes out of step rather than pulsing them as one.
+        let first = backdropBreath(progress: 0.25, turns: 1, seed: 0)
+        let second = backdropBreath(progress: 0.25, turns: 1, seed: 3.4)
+        XCTAssertGreaterThan(abs(first - second), 0.5)
 
         // The clock folds into the loop, and folds the same way either side of
         // the reference date.

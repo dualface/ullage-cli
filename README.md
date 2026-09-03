@@ -46,10 +46,11 @@ it is a single slab of Liquid Glass in a transparent panel, so the desktop and
 windows it covers show through it and bend at its edges; the header and tab
 row float and the cards scroll underneath them. macOS 14 and 15 open a
 standard popover on a tinted backdrop of large oxblood and blue shapes, with
-frosted cards over it. Those shapes drift around where they sit and swell
-slightly as they go, on a 45-second loop that closes on itself, so the tone
-behind the cards keeps changing; it runs only while the popover is open and
-stops under the same conditions that hold the menu bar liquid still. On macOS 26 the "Liquid Glass" switch in Settings
+frosted cards over it. Those shapes stay where they are and breathe:
+each swells and dims a little on a 45-second loop that closes on itself, out of
+step with the others, so the tone behind the cards keeps changing without
+anything appearing to move. It runs only while the popover is open and stops
+under the same conditions that hold the menu bar liquid still. On macOS 26 the "Liquid Glass" switch in Settings
 chooses between the two: off gives that same standard popover, backdrop and
 all, and it takes effect the next time the popover opens. Below macOS 26 the
 switch is not shown, since the flat presentation is the only one. Its header
