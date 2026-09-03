@@ -113,14 +113,18 @@ final class LocalFeatureTests: XCTestCase {
         model.provider = "grok"
 
         await model.begin()
-        for _ in 0..<100 where !model.authenticated {
+        for _ in 0..<100 where !model.message.hasPrefix("Signed in, but setup is incomplete:") {
             try await Task.sleep(for: .milliseconds(10))
         }
 
         XCTAssertTrue(model.authenticated)
         XCTAssertFalse(model.setupCompleted)
         XCTAssertTrue(model.message.hasPrefix("Signed in, but setup is incomplete:"))
-        XCTAssertTrue(recorder.values.contains("probe"))
+        XCTAssertEqual(recorder.values.filter { $0 == "complete_auth" }.count, 1)
+        XCTAssertEqual(recorder.values.filter { $0 == "probe" }.count, 1)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(recorder.values.filter { $0 == "complete_auth" }.count, 1)
+        XCTAssertEqual(recorder.values.filter { $0 == "probe" }.count, 1)
         await model.cancel()
         XCTAssertFalse(recorder.values.contains("logout"))
         XCTAssertFalse(recorder.values.contains("remove_account"))

@@ -481,8 +481,6 @@ public final class LocalControlClient: @unchecked Sendable {
                 throw unavailable(socketError == 0 ? errno : socketError)
             }
         }
-        guard fcntl(descriptor, F_SETFL, flags) == 0 else { throw unavailable(errno) }
-
         var peerUID: uid_t = 0
         var peerGID: gid_t = 0
         guard getpeereid(descriptor, &peerUID, &peerGID) == 0 else { throw unavailable(errno) }
@@ -525,9 +523,10 @@ public final class LocalControlClient: @unchecked Sendable {
                     data.count - offset
                 )
                 if written < 0 {
-                    if errno == EINTR { continue }
+                    if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                     throw unavailable(errno)
                 }
+                guard written > 0 else { throw unavailable(EPIPE) }
                 offset += written
             }
         }
@@ -543,7 +542,7 @@ public final class LocalControlClient: @unchecked Sendable {
             try wait(descriptor: descriptor, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(descriptor, &buffer, buffer.count)
             if count < 0 {
-                if errno == EINTR { continue }
+                if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 throw unavailable(errno)
             }
             guard count > 0 else { throw LocalControlError.invalidFraming }

@@ -261,7 +261,11 @@ final class LoginWizardModel {
                         input: nil
                     )
                     if case .authenticated = completed {
-                        try await self.handle(completed)
+                        do {
+                            try await self.handle(completed)
+                        } catch {
+                            if !Task.isCancelled { self.message = self.setupErrorMessage(error) }
+                        }
                         return
                     }
                 } catch {

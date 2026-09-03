@@ -210,6 +210,25 @@ struct LocalControlClientTests {
 
         #expect(start.duration(to: clock.now) < .milliseconds(200))
     }
+
+    @Test func timeoutBoundsLargeWritesWhenThePeerDoesNotRead() async throws {
+        let server = try UnixTestServer(readsRequest: false) { _ in Data() }
+        defer { server.stop() }
+        let client = LocalControlClient(socketURL: server.socketURL, timeout: 0.05)
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LocalControlError.timeout) {
+            _ = try await client.completeAuthentication(
+                provider: "cursor",
+                account: "account-1",
+                flowId: "flow-1",
+                input: String(repeating: "x", count: 4 * 1024 * 1024)
+            )
+        }
+
+        #expect(start.duration(to: clock.now) < .milliseconds(200))
+    }
 }
 
 private final class UnixTestServer: @unchecked Sendable {
@@ -219,6 +238,7 @@ private final class UnixTestServer: @unchecked Sendable {
 
     init(
         mode: mode_t = 0o600,
+        readsRequest: Bool = true,
         replyByteDelay: useconds_t = 0,
         reply: @escaping @Sendable (Data) throws -> Data
     ) throws {
@@ -253,6 +273,10 @@ private final class UnixTestServer: @unchecked Sendable {
             let peer = Darwin.accept(serverDescriptor, nil, nil)
             guard peer >= 0 else { return }
             defer { Darwin.close(peer) }
+            if !readsRequest {
+                usleep(200_000)
+                return
+            }
             var request = Data()
             var byte: UInt8 = 0
             while Darwin.read(peer, &byte, 1) == 1 {
