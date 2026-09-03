@@ -61,17 +61,32 @@ func backdropProgress(at date: Date, loop: Double = backdropLoopSeconds) -> Doub
 
 /// One turn of the slowest shape. Long enough that the backdrop reads as
 /// weather rather than as something sliding across the window.
-let backdropLoopSeconds: Double = 60
+let backdropLoopSeconds: Double = 45
 
-/// Where one backdrop shape sits at this point in the loop, as an offset from
-/// where it rests. `turns` is how many times the shape goes round in one loop —
-/// a whole number, so the pattern closes on itself — and `seed` puts the shapes
-/// out of step, so they drift as weather instead of sliding as one block. The
-/// path is a flattened ellipse: the popover is taller than it is wide, and
-/// vertical travel is the more noticeable of the two.
-func backdropDrift(progress: Double, turns: Double, seed: Double, reach: CGFloat) -> CGSize {
+/// Where one backdrop shape is in its loop.
+struct BackdropDrift {
+    /// How far the shape has travelled from where it rests.
+    var offset: CGSize
+    /// Its place in a second, slower swell, in `-1...1`. The view spends this
+    /// on size and tone: a disc that only slides reads as a disc sliding, while
+    /// one that also swells and fades reads as the light changing behind the
+    /// cards, which is the point.
+    var breath: Double
+}
+
+/// Where one backdrop shape is at this point in the loop. `turns` is how many
+/// times it goes round in one loop — a whole number, so the pattern closes on
+/// itself — and `seed` puts the shapes out of step, so they drift as weather
+/// instead of sliding as one block. The path is a flattened ellipse: the
+/// popover is taller than it is wide, and vertical travel is the more
+/// noticeable of the two. The swell runs a third of a turn behind the travel,
+/// so a shape is never at once furthest out and largest.
+func backdropDrift(progress: Double, turns: Double, seed: Double, reach: CGFloat) -> BackdropDrift {
     let angle = progress * 2 * .pi * turns + seed
-    return CGSize(width: reach * CGFloat(sin(angle)), height: reach * 0.6 * CGFloat(cos(angle)))
+    return BackdropDrift(
+        offset: CGSize(width: reach * CGFloat(sin(angle)), height: reach * 0.6 * CGFloat(cos(angle))),
+        breath: sin(angle + .pi / 3)
+    )
 }
 
 /// Two discs and a streak on a solid base. The shapes are anchored to the top
@@ -89,41 +104,59 @@ private struct StructuredBackdrop: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let height = proxy.size.height
-            let warmDrift = drift(turns: 1, seed: 0, reach: 14)
-            let roseDrift = drift(turns: 2, seed: 1.7, reach: 10)
-            let coolDrift = drift(turns: 1, seed: 3.4, reach: 16)
-            let streakDrift = drift(turns: 3, seed: 0.9, reach: 8)
+            let warmDrift = drift(turns: 1, seed: 0, reach: 44)
+            let roseDrift = drift(turns: 2, seed: 1.7, reach: 32)
+            let coolDrift = drift(turns: 1, seed: 3.4, reach: 50)
+            let streakDrift = drift(turns: 3, seed: 0.9, reach: 24)
             ZStack {
                 base
-                Circle()
-                    .fill(warm)
-                    .frame(width: 340, height: 340)
-                    .position(x: width * 0.22 + warmDrift.width, y: 40 + warmDrift.height)
-                    .blur(radius: 14)
-                Circle()
-                    .fill(rose)
-                    .frame(width: 220, height: 220)
-                    .position(x: width * 0.96 + roseDrift.width, y: height * 0.48 + roseDrift.height)
-                    .blur(radius: 18)
-                Circle()
-                    .fill(cool)
-                    .frame(width: 300, height: 300)
-                    .position(x: width * 0.30 + coolDrift.width, y: height - 30 + coolDrift.height)
-                    .blur(radius: 16)
+                disc(warm, size: 340, blur: 14, drift: warmDrift)
+                    .position(x: width * 0.22 + warmDrift.offset.width, y: 40 + warmDrift.offset.height)
+                disc(rose, size: 220, blur: 18, drift: roseDrift)
+                    .position(
+                        x: width * 0.96 + roseDrift.offset.width,
+                        y: height * 0.48 + roseDrift.offset.height
+                    )
+                disc(cool, size: 300, blur: 16, drift: coolDrift)
+                    .position(
+                        x: width * 0.30 + coolDrift.offset.width,
+                        y: height - 30 + coolDrift.offset.height
+                    )
                 Capsule()
-                    .fill(streak)
+                    .fill(streak.opacity(tone(streakDrift)))
                     .frame(width: width * 1.3, height: 26)
-                    // The streak leans with its drift, a couple of degrees, so
-                    // it does not read as a bar being pushed around.
-                    .rotationEffect(.degrees(-24 + Double(streakDrift.width) * 0.25))
-                    .position(x: width * 0.55 + streakDrift.width, y: 132 + streakDrift.height)
+                    // The streak leans with its drift, a few degrees, so it
+                    // does not read as a bar being pushed around.
+                    .rotationEffect(.degrees(-24 + Double(streakDrift.breath) * 3))
+                    .position(
+                        x: width * 0.55 + streakDrift.offset.width,
+                        y: 132 + streakDrift.offset.height
+                    )
                     .blur(radius: 5)
             }
             .clipped()
         }
     }
 
-    private func drift(turns: Double, seed: Double, reach: CGFloat) -> CGSize {
+    /// A disc at its current size and tone. Both swell with the shape's breath,
+    /// which is what carries the change through the blur: at this radius a disc
+    /// that only moves barely changes the colour anything sits on.
+    private func disc(_ color: Color, size: CGFloat, blur: CGFloat, drift: BackdropDrift) -> some View {
+        let scale = 1 + 0.09 * CGFloat(drift.breath)
+        return Circle()
+            .fill(color.opacity(tone(drift)))
+            .frame(width: size * scale, height: size * scale)
+            .blur(radius: blur)
+    }
+
+    /// The shape's own alpha, dimmed by up to a sixth at the bottom of its
+    /// swell. Never brighter than the resting colour, so the backdrop keeps the
+    /// contrast the frosted panels were tuned against.
+    private func tone(_ drift: BackdropDrift) -> Double {
+        0.92 + 0.08 * drift.breath
+    }
+
+    private func drift(turns: Double, seed: Double, reach: CGFloat) -> BackdropDrift {
         backdropDrift(progress: progress, turns: turns, seed: seed, reach: reach)
     }
 
