@@ -123,21 +123,28 @@ final class LoginCallbackWizardTests: XCTestCase {
         await model.cancel()
     }
 
+    /// Grok is not in the loopback table: auth.x.ai never bounces back, so the
+    /// wizard must not bind a port or override the provider's device code path.
     @MainActor
-    func testADeviceCodeChallengeReleasesTheEndpoint() async throws {
+    func testAnUnregisteredProviderDoesNotBindOrOverrideTheAuthMethod() async throws {
         let recorder = ControlRecorder()
-        let listener = CallbackListenerFixture(redirectURI: redirectURI, outcome: nil)
+        var factoryCalls = 0
         let model = try makeModel(
             recorder: recorder,
             provider: "grok",
             authenticationMethod: "device_code"
-        ) { _ in listener }
+        ) { _ in
+            factoryCalls += 1
+            throw OAuthCallbackError.bindFailed("the factory should not be called")
+        }
         model.provider = "grok"
 
         await model.begin()
 
-        XCTAssertEqual(listener.closeCount, 1)
-        XCTAssertTrue(listener.observedStates.isEmpty)
+        XCTAssertEqual(factoryCalls, 0)
+        let start = try XCTUnwrap(recorder.request(for: "start_auth"))
+        XCTAssertTrue(start["redirect_uri"] is NSNull)
+        XCTAssertTrue(start["method"] is NSNull)
         await model.cancel()
     }
 

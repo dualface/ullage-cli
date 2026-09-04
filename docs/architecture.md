@@ -204,18 +204,20 @@ The Add Account wizard receives browser OAuth callbacks itself through
 target. It binds before the flow starts, so the app only ever hands the daemon a
 `redirect_uri` it already owns; the daemon then validates that value as loopback
 HTTP (see "Runtime configuration"). The endpoint uses the port each provider has
-registered with its authorization server — `http://localhost:1455/auth/callback`
-for ChatGPT and `http://127.0.0.1:1456/callback` for Grok — because those
-servers may match the redirect URI exactly. A provider outside that table keeps
-the manual paste path. `localhost` is bound on both `127.0.0.1` and `::1`, since
+registered with its authorization server — currently only
+`http://localhost:1455/auth/callback` for ChatGPT — because that server may
+match the redirect URI exactly. Grok is not in that table: auth.x.ai does not
+bounce back to a loopback URI for this client, so the wizard leaves Grok on its
+default device code path and never binds `127.0.0.1:1456`. A provider outside
+the table keeps its own path (device code for Grok, manual paste for Claude).
+`localhost` is bound on both `127.0.0.1` and `::1`, since
 macOS resolves it to both and browsers often prefer `::1`; a literal address
 binds only its own family. Both sockets bind the loopback address itself, never
 a wildcard, which is the entire use of the app's
-`com.apple.security.network.server` entitlement. When the endpoint cannot be
-bound — a squatted port, most likely — the wizard starts the flow with no
-`redirect_uri` and no method override and says why, which leaves the pre-existing
-manual paste path exactly as it was; for Grok that means its device code flow,
-and for ChatGPT its browser flow with a pasted callback URL.
+`com.apple.security.network.server` entitlement. When the ChatGPT endpoint
+cannot be bound — a squatted port, most likely — the wizard starts the flow with
+no `redirect_uri` and no method override and says why, which leaves the
+pre-existing manual paste path exactly as it was.
 
 The endpoint answers only `GET` on the redirect URI's own path and answers 404
 elsewhere. It bounds the request line at 2 KiB and the whole request head at
@@ -366,8 +368,11 @@ everything else, while the HTTP transport strips the field before calling
 providers. Older clients omit the field and providers keep their registered
 defaults (`http://localhost:1455/auth/callback` for ChatGPT,
 `http://127.0.0.1:1456/callback` for Grok, and Anthropic's remote callback
-page for Claude). The macOS app is the first client to send the field; it passes
-the address of the loopback endpoint it has already bound (see "Ullage Mac"). Control protocol version 9 adds device pairing and revocation. Version 8 added
+page for Claude). The macOS app is the first client to send the field; for
+ChatGPT it passes the address of the loopback endpoint it has already bound
+(see "Ullage Mac"). Grok's compiled-in redirect URI is used only when a client
+explicitly requests browser OAuth; the app no longer drives that path.
+Control protocol version 9 adds device pairing and revocation. Version 8 added
 `credential_backend` on daemon status. Version 7 added the diagnostics opt-in
 (`diagnostics` / `diagnostic`) and `SetAccountLabel`.
 
