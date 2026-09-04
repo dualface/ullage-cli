@@ -205,7 +205,7 @@ target. It binds before the flow starts, so the app only ever hands the daemon a
 `redirect_uri` it already owns; the daemon then validates that value as loopback
 HTTP (see "Runtime configuration"). The endpoint uses the port each provider has
 registered with its authorization server — `http://localhost:1455/auth/callback`
-for ChatGPT and `http://127.0.0.1:1456/auth/callback` for Grok — because those
+for ChatGPT and `http://127.0.0.1:1456/callback` for Grok — because those
 servers may match the redirect URI exactly. A provider outside that table keeps
 the manual paste path. `localhost` is bound on both `127.0.0.1` and `::1`, since
 macOS resolves it to both and browsers often prefer `::1`; a literal address
@@ -365,7 +365,7 @@ on the local control channel only; the daemon validates loopback HTTP and reject
 everything else, while the HTTP transport strips the field before calling
 providers. Older clients omit the field and providers keep their registered
 defaults (`http://localhost:1455/auth/callback` for ChatGPT,
-`http://127.0.0.1:1456/auth/callback` for Grok, and Anthropic's remote callback
+`http://127.0.0.1:1456/callback` for Grok, and Anthropic's remote callback
 page for Claude). The macOS app is the first client to send the field; it passes
 the address of the loopback endpoint it has already bound (see "Ullage Mac"). Control protocol version 9 adds device pairing and revocation. Version 8 added
 `credential_backend` on daemon status. Version 7 added the diagnostics opt-in

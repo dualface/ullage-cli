@@ -51,7 +51,7 @@ protocol OAuthCallbackListening: AnyObject, Sendable {
 func registeredLoopbackRedirectURI(forProvider provider: String) -> String? {
     switch provider {
     case "chatgpt": "http://localhost:1455/auth/callback"
-    case "grok": "http://127.0.0.1:1456/auth/callback"
+    case "grok": "http://127.0.0.1:1456/callback"
     default: nil
     }
 }

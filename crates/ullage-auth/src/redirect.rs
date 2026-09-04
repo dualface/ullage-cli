@@ -51,7 +51,7 @@ mod tests {
     fn accepts_registered_loopback_spellings() {
         for uri in [
             "http://localhost:1455/auth/callback",
-            "http://127.0.0.1:1456/auth/callback",
+            "http://127.0.0.1:1456/callback",
             "http://[::1]:8080/callback",
         ] {
             assert_eq!(validate_loopback_http_redirect_uri(uri), Ok(()), "{uri}");

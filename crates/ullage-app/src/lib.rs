@@ -107,7 +107,7 @@ pub fn registry_with_credentials(
             scope: "openid profile email offline_access grok-cli:access api:access \
                      conversations:read conversations:write workspaces:read workspaces:write"
                 .into(),
-            redirect_uri: "http://127.0.0.1:1456/auth/callback".into(),
+            redirect_uri: "http://127.0.0.1:1456/callback".into(),
             device_authorization_url: "https://auth.x.ai/oauth2/device/code".into(),
             authorization_url: "https://auth.x.ai/oauth2/authorize".into(),
             token_url: "https://auth.x.ai/oauth2/token".into(),

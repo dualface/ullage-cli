@@ -12,7 +12,7 @@ final class OAuthCallbackListenerTests: XCTestCase {
         )
         XCTAssertEqual(
             registeredLoopbackRedirectURI(forProvider: "grok"),
-            "http://127.0.0.1:1456/auth/callback"
+            "http://127.0.0.1:1456/callback"
         )
         XCTAssertNil(registeredLoopbackRedirectURI(forProvider: "claude"))
         XCTAssertNil(registeredLoopbackRedirectURI(forProvider: "cursor"))
