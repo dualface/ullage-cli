@@ -262,28 +262,16 @@ pub fn parse_billing(
     );
     recognized |= !products_values.is_empty();
     let (products, products_valid) = first_products(products_values, &mut failures);
-    // Credits schema: currentPeriod / creditUsagePercent / productUsage.
-    // Missing percent is Partial; typed windows still need currentPeriod.type.
+    // Credits envelope without a percent pool is Partial, not Complete empty windows.
     let credits_schema =
         current_period_key_present || credit_usage_field_present || product_usage_field_present;
-    let kind_missing = current_period
-        .as_ref()
-        .is_none_or(|period| period.kind.is_none());
+    let kind_missing = current_period.as_ref().is_none_or(|p| p.kind.is_none());
     let will_emit_percent_window = usage_percent.is_some() || !products.is_empty();
-    if credits_schema
-        && !will_emit_percent_window
-        && !failures.iter().any(|item| item.scope == "weekly")
-    {
-        failures.push(failure("weekly"));
+    if credits_schema && !will_emit_percent_window {
+        push_unique_failure(&mut failures, "weekly");
     }
-    if will_emit_percent_window
-        && kind_missing
-        && credits_schema
-        && !failures
-            .iter()
-            .any(|item| item.scope == "current_period.type")
-    {
-        failures.push(failure("current_period.type"));
+    if will_emit_percent_window && kind_missing && credits_schema {
+        push_unique_failure(&mut failures, "current_period.type");
     }
 
     let prepaid_values = fields(
@@ -1107,4 +1095,10 @@ fn failure(scope: impl Into<String>) -> PartialFailure {
             message: String::new(),
         },
     )
+}
+
+fn push_unique_failure(failures: &mut Vec<PartialFailure>, scope: &str) {
+    if !failures.iter().any(|item| item.scope == scope) {
+        failures.push(failure(scope));
+    }
 }
