@@ -262,16 +262,23 @@ pub fn parse_billing(
     );
     recognized |= !products_values.is_empty();
     let (products, products_valid) = first_products(products_values, &mut failures);
-    // format=credits windows are typed by currentPeriod.type. Require that
-    // type whenever the credits schema is in play; legacy percent fields that
-    // only use billing_period / period stay silent for compatibility.
+    // Credits schema: currentPeriod / creditUsagePercent / productUsage.
+    // Missing percent is Partial; typed windows still need currentPeriod.type.
+    let credits_schema =
+        current_period_key_present || credit_usage_field_present || product_usage_field_present;
     let kind_missing = current_period
         .as_ref()
         .is_none_or(|period| period.kind.is_none());
     let will_emit_percent_window = usage_percent.is_some() || !products.is_empty();
+    if credits_schema
+        && !will_emit_percent_window
+        && !failures.iter().any(|item| item.scope == "weekly")
+    {
+        failures.push(failure("weekly"));
+    }
     if will_emit_percent_window
         && kind_missing
-        && (current_period_key_present || credit_usage_field_present || product_usage_field_present)
+        && credits_schema
         && !failures
             .iter()
             .any(|item| item.scope == "current_period.type")
@@ -364,9 +371,7 @@ pub fn parse_billing(
         current_period,
         usage_percent,
         usage_percent_derived,
-        prefer_weekly_type_fallback: current_period_key_present
-            || credit_usage_field_present
-            || product_usage_field_present,
+        prefer_weekly_type_fallback: credits_schema,
         monthly_used,
         monthly_limit,
         products,
