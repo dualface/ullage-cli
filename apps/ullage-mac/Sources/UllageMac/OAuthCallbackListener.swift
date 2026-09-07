@@ -44,14 +44,17 @@ protocol OAuthCallbackListening: AnyObject, Sendable {
     func close()
 }
 
-/// Registered loopback redirect URIs, mirroring the provider defaults the Rust
-/// crates use when a client sends no `redirect_uri` (`crates/ullage-app`).
-/// ChatGPT is the only entry: auth.x.ai does not bounce back to a loopback URI
-/// for this Grok client, so Grok stays on device code. A provider absent from
-/// this table has no loopback callback.
+/// Loopback redirect URIs the providers accept, which is what lets a sign-in
+/// finish without the user pasting a code back. ChatGPT's is the exact callback
+/// registered for its client; Anthropic accepts any loopback port for the
+/// Claude client, so that one is only a port this app is unlikely to collide
+/// with. auth.x.ai does not bounce back to a loopback URI for this Grok client,
+/// so Grok stays on device code, and a provider absent from this table has no
+/// loopback callback.
 func registeredLoopbackRedirectURI(forProvider provider: String) -> String? {
     switch provider {
     case "chatgpt": "http://localhost:1455/auth/callback"
+    case "claude": "http://localhost:54545/callback"
     default: nil
     }
 }

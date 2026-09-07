@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
-    LogoutRequest,
+    LogoutRequest, validate_loopback_http_redirect_uri,
 };
 use ullage_core::{
     Capability, MeasurementUnit, PartialFailure, Provider, ProviderDescriptor, ProviderError,
@@ -234,9 +234,13 @@ impl Provider for ClaudeProvider {
         let redirect_uri = match request.redirect_uri {
             None => REDIRECT_URI.to_owned(),
             Some(uri) if uri == REDIRECT_URI => uri,
+            // Anthropic accepts any loopback callback for this client, which is
+            // what lets a desktop client finish sign-in without a manual paste.
+            Some(uri) if validate_loopback_http_redirect_uri(&uri).is_ok() => uri,
             Some(_) => {
                 return Err(ProviderError::AuthenticationInvalid {
-                    message: "Claude OAuth only supports the registered remote callback".into(),
+                    message: "Claude OAuth needs the registered remote callback or a loopback one"
+                        .into(),
                 });
             }
         };
@@ -936,6 +940,49 @@ mod tests {
             run_ready(provider.auth_status()).unwrap(),
             AuthState::Pending { flow_id, .. } if flow_id == challenge.flow_id
         ));
+    }
+
+    #[test]
+    fn completes_a_loopback_callback_and_still_rejects_other_redirects() {
+        let store = Arc::new(MemoryStore::default());
+        let provider = provider(
+            FakeApi {
+                profile: Ok(ClaudeProfile::default()),
+                usage: Ok(ClaudeUsageResponse::default()),
+            },
+            store.clone(),
+        );
+        let loopback = "http://localhost:54545/callback";
+        let challenge = run_ready(provider.start_auth(AuthStartRequest {
+            method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: Some(loopback.into()),
+        }))
+        .unwrap();
+        assert!(
+            challenge
+                .verification_uri
+                .as_deref()
+                .unwrap()
+                .contains("redirect_uri=http%3A%2F%2Flocalhost%3A54545%2Fcallback")
+        );
+        let state = run_ready(provider.complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: Some(format!(
+                "{loopback}?code=safe-code&state={}",
+                challenge.flow_id
+            )),
+            redirect_uri: Some(loopback.into()),
+        }))
+        .unwrap();
+        assert!(matches!(state, AuthState::Authenticated { .. }));
+        assert_eq!(store.load().unwrap().unwrap().access_token, "access");
+
+        let error = run_ready(provider.start_auth(AuthStartRequest {
+            method: Some(AuthMethod::BrowserOAuth),
+            redirect_uri: Some("https://attacker.invalid/callback".into()),
+        }))
+        .unwrap_err();
+        assert!(matches!(error, ProviderError::AuthenticationInvalid { .. }));
     }
 
     #[test]

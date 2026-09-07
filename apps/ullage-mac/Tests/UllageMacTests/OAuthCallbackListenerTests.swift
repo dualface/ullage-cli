@@ -10,8 +10,11 @@ final class OAuthCallbackListenerTests: XCTestCase {
             registeredLoopbackRedirectURI(forProvider: "chatgpt"),
             "http://localhost:1455/auth/callback"
         )
+        XCTAssertEqual(
+            registeredLoopbackRedirectURI(forProvider: "claude"),
+            "http://localhost:54545/callback"
+        )
         XCTAssertNil(registeredLoopbackRedirectURI(forProvider: "grok"))
-        XCTAssertNil(registeredLoopbackRedirectURI(forProvider: "claude"))
         XCTAssertNil(registeredLoopbackRedirectURI(forProvider: "cursor"))
     }
 
