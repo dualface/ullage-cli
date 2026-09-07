@@ -530,6 +530,7 @@ fn browser_sign_in_polls_then_stores_a_session_that_needs_no_exchange() {
         AuthState::Authenticated {
             account_label: Some(ref label),
             expires_at: Some(_),
+            ..
         } if label == "user@example.com"
     ));
     drop(provider);

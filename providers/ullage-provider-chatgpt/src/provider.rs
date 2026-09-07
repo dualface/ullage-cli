@@ -755,6 +755,9 @@ fn authenticated_state(session: &ChatGptSession) -> AuthState {
     });
     AuthState::Authenticated {
         account_label,
+        // The label above is a workspace name, which two different accounts can
+        // share; the workspace ID is what actually identifies this sign-in.
+        account_key: session.selected_workspace_id.clone(),
         expires_at: session.tokens.expires_at,
     }
 }

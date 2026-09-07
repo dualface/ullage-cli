@@ -227,11 +227,16 @@ impl DaemonEngine {
             return Err(DaemonError::DuplicateAccount(id));
         }
         let runtime_config = runtime.config();
-        if accounts.values().any(|account| {
-            let account_config = account.config();
-            account_config.provider == runtime_config.provider
-                && account_config.query.account_label == runtime_config.query.account_label
-        }) {
+        // Only a named account claims a selector. Two unnamed accounts of one
+        // provider are the ordinary way to add a second sign-in before either
+        // has been named, so they do not collide.
+        if runtime_config.query.account_label.is_some()
+            && accounts.values().any(|account| {
+                let account_config = account.config();
+                account_config.provider == runtime_config.provider
+                    && account_config.query.account_label == runtime_config.query.account_label
+            })
+        {
             return Err(DaemonError::DuplicateAccountSelector {
                 provider: runtime_config.provider,
                 account_label: runtime_config.query.account_label,
@@ -331,12 +336,14 @@ impl DaemonEngine {
             return Ok(None);
         };
         let provider = account.config().provider;
-        if accounts.iter().any(|(id, other)| {
-            let other_config = other.config();
-            id != account_id
-                && other_config.provider == provider
-                && other_config.query.account_label == label
-        }) {
+        if label.is_some()
+            && accounts.iter().any(|(id, other)| {
+                let other_config = other.config();
+                id != account_id
+                    && other_config.provider == provider
+                    && other_config.query.account_label == label
+            })
+        {
             return Err(DaemonError::DuplicateAccountSelector {
                 provider,
                 account_label: label,

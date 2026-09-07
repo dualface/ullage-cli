@@ -701,6 +701,7 @@ fn unexpected_diagnostics_are_rejected_and_opt_in_is_honoured() {
             ControlResult::AuthState(ullage_protocol::AuthState::Authenticated {
                 account_label: None,
                 expires_at: None,
+                account_key: None,
             }),
         );
         response.diagnostic = Some(DETAIL.into());
@@ -2072,6 +2073,7 @@ impl ControlClient for LoginClient {
                             ControlResult::AuthState(ullage_protocol::AuthState::Authenticated {
                                 account_label: self.authenticated_label.map(Into::into),
                                 expires_at: None,
+                                account_key: None,
                             })
                         }
                     }
@@ -2088,6 +2090,7 @@ impl ControlClient for LoginClient {
                 ControlResult::AuthState(ullage_protocol::AuthState::Authenticated {
                     account_label: self.authenticated_label.map(Into::into),
                     expires_at: None,
+                    account_key: None,
                 })
             }
             other => unreachable!("unexpected control command: {other:?}"),

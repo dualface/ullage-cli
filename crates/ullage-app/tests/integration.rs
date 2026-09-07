@@ -55,6 +55,7 @@ impl Provider for MockProviderServer {
         Ok(AuthState::Authenticated {
             account_label: None,
             expires_at: None,
+            account_key: None,
         })
     }
 
@@ -62,6 +63,7 @@ impl Provider for MockProviderServer {
         Ok(AuthState::Authenticated {
             account_label: None,
             expires_at: None,
+            account_key: None,
         })
     }
 

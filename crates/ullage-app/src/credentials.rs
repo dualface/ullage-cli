@@ -224,6 +224,7 @@ mod tests {
             access_token: "claude-access".into(),
             refresh_token: Some("claude-refresh".into()),
             expires_at: Some(Utc::now()),
+            account_label: None,
         };
         claude.save(&claude_credential).unwrap();
         assert_eq!(claude.load().unwrap(), Some(claude_credential));
@@ -258,16 +259,19 @@ mod tests {
                 access_token: " ".into(),
                 refresh_token: Some("refresh".into()),
                 expires_at: None,
+                account_label: None,
             },
             ClaudeCredential {
                 access_token: "access".into(),
                 refresh_token: None,
                 expires_at: None,
+                account_label: None,
             },
             ClaudeCredential {
                 access_token: "access".into(),
                 refresh_token: Some(" ".into()),
                 expires_at: None,
+                account_label: None,
             },
         ] {
             save_json(&store, &vault.key, &credential).unwrap();

@@ -179,6 +179,7 @@ impl Provider for ScenarioProvider {
         Ok(AuthState::Authenticated {
             account_label: None,
             expires_at: None,
+            account_key: None,
         })
     }
 
@@ -187,6 +188,7 @@ impl Provider for ScenarioProvider {
             Ok(AuthState::Authenticated {
                 account_label: None,
                 expires_at: None,
+                account_key: None,
             })
         } else {
             Ok(AuthState::NotAuthenticated)
@@ -968,6 +970,7 @@ async fn sensitive_material_is_absent_from_cli_errors_debug_and_fixtures() {
         access_token: SECRET.into(),
         refresh_token: Some(SECRET.into()),
         expires_at: None,
+        account_label: None,
     };
     let tokens = OAuthTokenSet::new(SECRET, Some(SECRET.into()), None).unwrap();
     let grok_token = OAuthToken {

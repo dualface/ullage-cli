@@ -103,7 +103,15 @@ pub enum AuthState {
         expires_at: Option<DateTime<Utc>>,
     },
     Authenticated {
+        /// Display name for the account, which the user may override.
         account_label: Option<String>,
+        /// Stable identity of whoever is signed in, as the provider reports it.
+        /// Unlike the label this is never user-chosen, so it is what tells two
+        /// accounts holding the same upstream sign-in apart from two distinct
+        /// ones that happen to share a name. `None` means the provider cannot
+        /// report an identity, and no such comparison is possible.
+        #[serde(default)]
+        account_key: Option<String>,
         expires_at: Option<DateTime<Utc>>,
     },
     Invalid {

@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use serde::Deserialize;
-use ullage_auth::{AuthStartRequest, validate_loopback_http_redirect_uri};
+use ullage_auth::{AuthStartRequest, LogoutRequest, validate_loopback_http_redirect_uri};
 use ullage_core::{RegisteredProvider, SubscriptionUsage, UsageQuery};
 use ullage_protocol::{
     Account, AccountError, AccountId as ProtocolAccountId, AccountStatusPayload,
@@ -167,6 +167,62 @@ impl ControlService {
             .map_err(Into::into)
     }
 
+    /// Drops any other account of `provider` already signed in as the identity
+    /// that `state` just authenticated. The sign-in that just happened is the
+    /// one the user asked for, so the older copies of it go rather than the new
+    /// one; each is signed out first so its stored credential goes with it.
+    ///
+    /// A provider that reports no `account_key` cannot be compared, and a
+    /// sibling whose status cannot be read is not evidence of a duplicate, so
+    /// both leave the accounts alone.
+    async fn evict_superseded_accounts(
+        &self,
+        provider: &ullage_core::ProviderId,
+        account: &ProtocolAccountId,
+        state: &ullage_auth::AuthState,
+    ) {
+        let ullage_auth::AuthState::Authenticated {
+            account_key: Some(key),
+            ..
+        } = state
+        else {
+            return;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return;
+        }
+        for config in self.engine.account_configs().await {
+            let other = ProtocolAccountId::new(config.id.to_string());
+            if &config.provider != provider || other == *account {
+                continue;
+            }
+            let Ok(instance) = self
+                .engine
+                .registry()
+                .get_for_account(provider, other.as_str())
+            else {
+                continue;
+            };
+            let Ok(ullage_auth::AuthState::Authenticated {
+                account_key: Some(other_key),
+                ..
+            }) = instance.auth_status().await
+            else {
+                continue;
+            };
+            if !other_key.trim().eq_ignore_ascii_case(key) {
+                continue;
+            }
+            // A logout that fails would leave the credential behind, so the
+            // account stays too rather than becoming an orphaned secret.
+            if instance.logout(LogoutRequest::default()).await.is_err() {
+                continue;
+            }
+            let _ = self.engine.remove_account(&config.id).await;
+        }
+    }
+
     pub async fn handle(&self, request: ControlRequest) -> ControlResponse {
         self.handle_with_transport(request, ControlTransport::Local)
             .await
@@ -305,8 +361,12 @@ impl ControlService {
                 account,
                 request,
             } => match self.provider_for_account(&provider, &account).await {
-                Ok(provider) => match provider.complete_auth(request).await {
-                    Ok(state) => ControlResult::AuthState(sanitize_auth_state(diagnostics, state)),
+                Ok(instance) => match instance.complete_auth(request).await {
+                    Ok(state) => {
+                        self.evict_superseded_accounts(&provider, &account, &state)
+                            .await;
+                        ControlResult::AuthState(sanitize_auth_state(diagnostics, state))
+                    }
                     Err(error) => {
                         diagnostic = provider_error_diagnostic(diagnostics, &error);
                         ControlResult::Error(sanitize_provider_error(error).into())

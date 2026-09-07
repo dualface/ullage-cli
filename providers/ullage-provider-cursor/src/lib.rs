@@ -492,6 +492,7 @@ impl CursorProvider {
         });
         Ok((
             AuthState::Authenticated {
+                account_key: account_label.clone(),
                 account_label,
                 expires_at,
             },
@@ -967,6 +968,9 @@ fn session_auth_state(auth: &AuthMaterial) -> AuthState {
     }
     AuthState::Authenticated {
         account_label: auth.account_label.clone(),
+        // Cursor reports the signed-in email, which the exchange fixes rather
+        // than the user.
+        account_key: auth.account_label.clone(),
         expires_at: auth.expires_at,
     }
 }

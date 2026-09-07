@@ -71,6 +71,9 @@ impl OAuthToken {
     pub(crate) fn auth_state(&self) -> AuthState {
         AuthState::Authenticated {
             account_label: self.account_label.clone(),
+            // x.ai reports an email or subject, which names the signed-in user
+            // rather than anything the user chose.
+            account_key: self.account_label.clone(),
             expires_at: self.expires_at,
         }
     }

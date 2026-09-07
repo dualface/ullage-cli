@@ -243,6 +243,7 @@ impl Provider for MockProvider {
         Ok(AuthState::Authenticated {
             account_label: Some("primary".into()),
             expires_at: None,
+            account_key: None,
         })
     }
 
@@ -283,6 +284,70 @@ impl Provider for MockProvider {
 
     fn normalize(&self, usage: Self::VendorUsage) -> ProviderResult<SubscriptionUsage> {
         Ok(usage)
+    }
+}
+
+/// A provider that always reports one identity, so every account registered
+/// against it looks like the same upstream sign-in.
+#[derive(Clone, Default)]
+struct SharedIdentityProvider {
+    logouts: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Provider for SharedIdentityProvider {
+    type VendorUsage = SubscriptionUsage;
+
+    fn descriptor(&self) -> ProviderDescriptor {
+        ProviderDescriptor {
+            id: ProviderId::new("shared"),
+            display_name: "shared mock".into(),
+            capabilities: vec![Capability::Authentication, Capability::UsageQuery],
+        }
+    }
+
+    async fn start_auth(&self, _: AuthStartRequest) -> ProviderResult<AuthChallenge> {
+        Ok(AuthChallenge {
+            flow_id: "flow-1".into(),
+            method: AuthMethod::DeviceCode,
+            verification_uri: None,
+            user_code: None,
+            expires_at: None,
+            input: None,
+        })
+    }
+
+    async fn complete_auth(&self, _: AuthCompleteRequest) -> ProviderResult<AuthState> {
+        Ok(self.state())
+    }
+
+    async fn auth_status(&self) -> ProviderResult<AuthState> {
+        Ok(self.state())
+    }
+
+    async fn logout(&self, _: LogoutRequest) -> ProviderResult<()> {
+        self.logouts.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn query(&self, request: UsageQuery) -> ProviderResult<QueryOutcome<Self::VendorUsage>> {
+        Ok(QueryOutcome::Complete {
+            data: usage(&ProviderId::new("shared"), request.account_label.as_deref()),
+        })
+    }
+
+    fn normalize(&self, usage: Self::VendorUsage) -> ProviderResult<SubscriptionUsage> {
+        Ok(usage)
+    }
+}
+
+impl SharedIdentityProvider {
+    fn state(&self) -> AuthState {
+        AuthState::Authenticated {
+            account_label: None,
+            account_key: Some("user@example.test".into()),
+            expires_at: None,
+        }
     }
 }
 
@@ -1957,6 +2022,72 @@ async fn control_service_supports_status_auth_probe_show_and_version_checks() {
         cancelled.result,
         ControlResult::Error(ullage_protocol::ControlError::Cancelled)
     );
+}
+
+#[tokio::test]
+async fn completing_a_sign_in_replaces_the_account_already_holding_that_identity() {
+    let provider = SharedIdentityProvider::default();
+    let logouts = provider.logouts.clone();
+    let mut registry = ProviderRegistry::default();
+    registry.register(provider).unwrap();
+    let engine = engine_with(
+        Arc::new(registry),
+        Arc::new(ManualClock::new()),
+        Arc::new(MemorySnapshotStore::default()),
+        DaemonConfig::default(),
+    )
+    .await;
+    let service = ControlService::new(engine.clone());
+
+    let add = |name: &'static str| {
+        service.handle(ControlRequest::new(
+            name,
+            ControlCommand::AddAccount {
+                provider: ProviderId::new("shared"),
+                label: None,
+            },
+        ))
+    };
+    // Two accounts with no label are how a second sign-in starts, so neither
+    // may be turned away as a duplicate selector.
+    let ControlResult::Account(first) = add("first").await.result else {
+        panic!("the first account was not added");
+    };
+    let ControlResult::Account(second) = add("second").await.result else {
+        panic!("the second account was not added");
+    };
+
+    let completed = service
+        .handle(ControlRequest::new(
+            "complete",
+            ControlCommand::CompleteAuth {
+                provider: ProviderId::new("shared"),
+                account: second.id.clone(),
+                request: AuthCompleteRequest {
+                    flow_id: "flow-1".into(),
+                    authorization_code: Some("code".into()),
+                    redirect_uri: None,
+                },
+            },
+        ))
+        .await;
+    assert!(matches!(
+        completed.result,
+        ControlResult::AuthState(ullage_protocol::AuthState::Authenticated { .. })
+    ));
+
+    // The sign-in that just happened is the one the user asked for, so the
+    // older account holding the same identity is signed out and dropped.
+    let listed = service
+        .handle(ControlRequest::new("list", ControlCommand::ListAccounts))
+        .await;
+    let ControlResult::Accounts(accounts) = listed.result else {
+        panic!("accounts were not listed");
+    };
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].id, second.id);
+    assert_ne!(accounts[0].id, first.id);
+    assert_eq!(logouts.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
