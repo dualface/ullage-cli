@@ -408,14 +408,8 @@ fn run(
             LoginStage::AccountLabel,
         )
     })();
-    if let (true, Err(error)) = (created, &outcome) {
-        discard_account(
-            session,
-            prompt,
-            provider.id.as_str(),
-            &account_id,
-            error.stage(),
-        );
+    if created && outcome.is_err() {
+        discard_account(session, prompt, provider.id.as_str(), &account_id);
     }
     outcome
 }
@@ -906,31 +900,29 @@ fn discard_account(
     prompt: &mut dyn Prompt,
     provider: &str,
     account_id: &str,
-    stage: LoginStage,
 ) {
-    // A completion whose reply was lost still stored a credential, so at that
-    // stage alone the daemon is asked what actually happened; discarding on no
-    // answer would throw away a sign-in the user completed. Failing any later
-    // stage means the sign-in did land and the user walked away from the rest,
-    // which is the case this account is supposed to be cleaned up for.
-    if matches!(stage, LoginStage::CompleteAuth) {
-        let kept = match session.call(&Command::Auth {
-            command: AuthCommand::Status {
-                provider: provider.to_owned(),
-                account: account_id.to_owned(),
-            },
-        }) {
-            Ok(ControlResult::AuthState(AuthState::Authenticated { .. })) => Some("is signed in"),
-            Ok(ControlResult::AuthState(_)) => None,
-            _ => Some("could not be checked"),
-        };
-        if let Some(reason) = kept {
-            prompt.tell(&format!(
-                "{account_id} {reason}, so it was kept. Remove it with `ullage account remove \
-                 {account_id}` if that is not wanted."
-            ));
-            return;
-        }
+    // An account that holds a credential is never discarded, whatever step of
+    // the login went wrong. By this point it may already have replaced an older
+    // account signed in as the same person, and it may hold a sign-in whose
+    // reply was lost rather than never made; deleting it would lose both. A
+    // status that cannot be read answers nothing, which is also no grounds to
+    // delete. Only an account the daemon says holds nothing is cleaned up.
+    let kept = match session.call(&Command::Auth {
+        command: AuthCommand::Status {
+            provider: provider.to_owned(),
+            account: account_id.to_owned(),
+        },
+    }) {
+        Ok(ControlResult::AuthState(AuthState::Authenticated { .. })) => Some("is signed in"),
+        Ok(ControlResult::AuthState(_)) => None,
+        _ => Some("could not be checked"),
+    };
+    if let Some(reason) = kept {
+        prompt.tell(&format!(
+            "{account_id} {reason}, so it was kept. Remove it with `ullage account remove \
+             {account_id}` if that is not wanted."
+        ));
+        return;
     }
     if session
         .call(&Command::Auth {

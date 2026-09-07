@@ -303,13 +303,14 @@ final class LoginWizardModel {
         busy = true
         defer { busy = false }
         do {
-            let state = try await manager.client().completeAuthentication(
-                provider: account.provider,
-                account: account.id,
-                flowId: challenge.flowId,
-                input: callbackURL,
-                redirectURI: redirectURI
-            )
+            let state = try await manager.client(timeout: Self.pollTimeout)
+                .completeAuthentication(
+                    provider: account.provider,
+                    account: account.id,
+                    flowId: challenge.flowId,
+                    input: callbackURL,
+                    redirectURI: redirectURI
+                )
             try await handle(state)
         } catch {
             message = setupErrorMessage(error)
@@ -321,13 +322,14 @@ final class LoginWizardModel {
         busy = true
         defer { busy = false }
         do {
-            let state = try await manager.client().completeAuthentication(
-                provider: account.provider,
-                account: account.id,
-                flowId: challenge.flowId,
-                input: challenge.input == nil ? nil : input,
-                redirectURI: callbackOrigin(input)
-            )
+            let state = try await manager.client(timeout: Self.pollTimeout)
+                .completeAuthentication(
+                    provider: account.provider,
+                    account: account.id,
+                    flowId: challenge.flowId,
+                    input: challenge.input == nil ? nil : input,
+                    redirectURI: callbackOrigin(input)
+                )
             try await handle(state)
         } catch {
             message = setupErrorMessage(error)
@@ -342,9 +344,21 @@ final class LoginWizardModel {
         busy = true
         defer { busy = false }
         do {
-            try await startAuthentication(on: manager.client(), for: account)
+            let client = try manager.client()
+            // The previous attempt may have succeeded on a reply that never
+            // arrived. Starting a new flow would hide that credential behind a
+            // pending one and leave Cancel free to delete it.
+            let state = try await client.authenticationStatus(
+                provider: account.provider,
+                account: account.id
+            )
+            if case .authenticated = state {
+                try await handle(state)
+                return
+            }
+            try await startAuthentication(on: client, for: account)
         } catch {
-            message = error.localizedDescription
+            message = setupErrorMessage(error)
         }
     }
 

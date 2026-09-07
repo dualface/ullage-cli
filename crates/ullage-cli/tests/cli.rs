@@ -2389,7 +2389,10 @@ fn interactive_login_explains_a_stopped_daemon() {
 }
 
 #[test]
-fn interactive_login_removes_a_stub_when_naming_is_abandoned() {
+fn interactive_login_keeps_an_account_whose_naming_is_abandoned() {
+    // By this point the account holds a credential and may already have
+    // replaced an older one signed in as the same person. Abandoning the name
+    // leaves it unnamed, not deleted.
     let client = LoginClient::new();
     let mut prompt = ullage_cli::prompt::ScriptedPrompt::new(["1", "code#flow-1"]);
 
@@ -2402,13 +2405,13 @@ fn interactive_login_removes_a_stub_when_naming_is_abandoned() {
         "{}",
         output.stderr
     );
-    assert!(client.saw(|command| matches!(command, ControlCommand::Logout { .. })));
-    assert!(client.saw(|command| matches!(command, ControlCommand::RemoveAccount { .. })));
-    assert!(client.accounts.lock().unwrap().is_empty());
+    assert!(!client.saw(|command| matches!(command, ControlCommand::RemoveAccount { .. })));
+    assert_eq!(client.accounts.lock().unwrap().len(), 1);
+    assert!(prompt.said("is signed in"), "{:?}", prompt.transcript());
 }
 
 #[test]
-fn interactive_login_removes_a_stub_when_renaming_fails() {
+fn interactive_login_keeps_an_account_whose_renaming_fails() {
     let client = LoginClient::new();
     client
         .label_failures
@@ -2426,9 +2429,8 @@ fn interactive_login_removes_a_stub_when_renaming_fails() {
         "{}",
         output.stderr
     );
-    assert!(client.saw(|command| matches!(command, ControlCommand::Logout { .. })));
-    assert!(client.saw(|command| matches!(command, ControlCommand::RemoveAccount { .. })));
-    assert!(client.accounts.lock().unwrap().is_empty());
+    assert!(!client.saw(|command| matches!(command, ControlCommand::RemoveAccount { .. })));
+    assert_eq!(client.accounts.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -2769,7 +2771,19 @@ fn color_always_does_not_color_json_error_envelopes() {
 
 #[test]
 fn interactive_login_keeps_a_stub_when_logout_fails() {
+    // The sign-in itself fails here, so the stub holds nothing and is cleaned
+    // up — except that signing it out fails, and a row whose credential may
+    // still exist is kept rather than orphaning the secret.
     let client = LoginClient::new();
+    client
+        .complete_failures
+        .lock()
+        .unwrap()
+        .push(ControlError::Provider(
+            ProviderError::AuthenticationInvalid {
+                message: "provider said no".into(),
+            },
+        ));
     client
         .logout_failures
         .lock()
@@ -2781,7 +2795,7 @@ fn interactive_login_keeps_a_stub_when_logout_fails() {
 
     let output = run_from_with(["ullage", "auth", "login"], &client, &mut prompt);
 
-    assert_eq!(output.code, ExitCode::Failure);
+    assert_eq!(output.code, ExitCode::AuthenticationInvalid);
     assert!(client.saw(|command| matches!(command, ControlCommand::Logout { .. })));
     assert!(!client.saw(|command| matches!(command, ControlCommand::RemoveAccount { .. })));
     assert_eq!(client.accounts.lock().unwrap().len(), 1);

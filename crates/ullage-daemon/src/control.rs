@@ -189,6 +189,12 @@ impl ControlService {
         state: &ullage_auth::AuthState,
     ) -> Vec<Account> {
         let mut retired = Vec::new();
+        // Nothing is removed on behalf of an account that is not itself signed
+        // in: an expired row still names its account, which makes it something
+        // to replace rather than something to replace others with.
+        if !matches!(state, ullage_auth::AuthState::Authenticated { .. }) {
+            return retired;
+        }
         let Some(key) = identity_of(state) else {
             return retired;
         };

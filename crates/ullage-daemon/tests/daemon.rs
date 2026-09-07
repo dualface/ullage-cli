@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::future::{Future, poll_fn};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -292,9 +292,41 @@ impl Provider for MockProvider {
 #[derive(Clone, Default)]
 struct SharedIdentityProvider {
     logouts: Arc<AtomicUsize>,
-    /// Report the stored identity as expired rather than usable. An expired
-    /// credential still names the account that owns it.
-    expired: bool,
+    /// Accounts whose credential has expired. An expired credential still names
+    /// the account that owns it, so it is something to replace rather than
+    /// something to replace others with.
+    expired: Arc<Mutex<BTreeSet<String>>>,
+    account_id: String,
+}
+
+impl SharedIdentityProvider {
+    /// Registers one instance per account, the way production providers are
+    /// built, so a test can give two accounts different credential states.
+    fn register(registry: &mut ProviderRegistry, expired: &[&str]) -> Arc<AtomicUsize> {
+        let logouts = Arc::new(AtomicUsize::new(0));
+        let expired: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new(
+            expired.iter().map(|id| (*id).to_owned()).collect(),
+        ));
+        let descriptor = SharedIdentityProvider {
+            logouts: logouts.clone(),
+            expired: expired.clone(),
+            account_id: String::new(),
+        }
+        .descriptor();
+        registry
+            .register_factory(descriptor, {
+                let logouts = logouts.clone();
+                move |account_id| {
+                    Ok(Arc::new(SharedIdentityProvider {
+                        logouts: logouts.clone(),
+                        expired: expired.clone(),
+                        account_id: account_id.to_owned(),
+                    }))
+                }
+            })
+            .unwrap();
+        logouts
+    }
 }
 
 #[async_trait]
@@ -350,7 +382,12 @@ impl Provider for SharedIdentityProvider {
 
 impl SharedIdentityProvider {
     fn state(&self) -> AuthState {
-        if self.expired {
+        if self
+            .expired
+            .lock()
+            .unwrap()
+            .contains(self.account_id.as_str())
+        {
             return AuthState::Invalid {
                 reason: "the shared sign-in expired".into(),
                 account_key: Some("user@example.test".into()),
@@ -2045,13 +2082,10 @@ async fn control_service_supports_status_auth_probe_show_and_version_checks() {
 async fn retiring_duplicates_replaces_an_expired_account_holding_that_identity() {
     // An expired credential still names its account, so a fresh sign-in as that
     // identity has to replace it rather than leave a second row behind.
-    let provider = SharedIdentityProvider {
-        expired: true,
-        ..SharedIdentityProvider::default()
-    };
-    let logouts = provider.logouts.clone();
     let mut registry = ProviderRegistry::default();
-    registry.register(provider).unwrap();
+    // Only the account that is about to be replaced has expired; the one doing
+    // the replacing has to be signed in for anything to be removed.
+    let logouts = SharedIdentityProvider::register(&mut registry, &["account-1"]);
     let engine = engine_with(
         Arc::new(registry),
         Arc::new(ManualClock::new()),
@@ -2104,10 +2138,8 @@ async fn retiring_duplicates_replaces_an_expired_account_holding_that_identity()
 async fn concurrent_duplicate_retirements_leave_exactly_one_account() {
     // Without a gate each cleanup would see the other account as the duplicate
     // and remove it, leaving the user with neither sign-in.
-    let provider = SharedIdentityProvider::default();
-    let logouts = provider.logouts.clone();
     let mut registry = ProviderRegistry::default();
-    registry.register(provider).unwrap();
+    let logouts = SharedIdentityProvider::register(&mut registry, &[]);
     let engine = engine_with(
         Arc::new(registry),
         Arc::new(ManualClock::new()),
@@ -2164,10 +2196,8 @@ async fn concurrent_duplicate_retirements_leave_exactly_one_account() {
 
 #[tokio::test]
 async fn retiring_duplicates_replaces_the_account_already_holding_that_identity() {
-    let provider = SharedIdentityProvider::default();
-    let logouts = provider.logouts.clone();
     let mut registry = ProviderRegistry::default();
-    registry.register(provider).unwrap();
+    let logouts = SharedIdentityProvider::register(&mut registry, &[]);
     let engine = engine_with(
         Arc::new(registry),
         Arc::new(ManualClock::new()),

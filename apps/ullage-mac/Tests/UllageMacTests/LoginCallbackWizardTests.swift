@@ -143,6 +143,29 @@ final class LoginCallbackWizardTests: XCTestCase {
         )
     }
 
+    /// A completion whose reply was lost leaves the daemon holding a credential
+    /// this side does not know about. Retry must resume that account rather than
+    /// bury it behind a fresh flow that Cancel would then delete.
+    @MainActor
+    func testRetryResumesASignInThatAlreadyLanded() async throws {
+        let recorder = ControlRecorder()
+        var created = 0
+        let model = try makeModel(recorder: recorder, probeSucceeds: true) { _ in
+            created += 1
+            return CallbackListenerFixture(redirectURI: self.redirectURI, outcome: nil)
+        }
+        model.provider = "chatgpt"
+
+        await model.begin()
+        try await waitUntil { created == 1 }
+        await model.retry()
+
+        XCTAssertEqual(created, 1, "retry started a new flow over a stored sign-in")
+        XCTAssertTrue(model.authenticated)
+        XCTAssertTrue(model.setupCompleted)
+        await model.cancel()
+    }
+
     /// Retry has to wait for the previous endpoint to actually let go of the
     /// port; closing it only asks the accept loop to stop.
     @MainActor
@@ -152,7 +175,9 @@ final class LoginCallbackWizardTests: XCTestCase {
         let second = CallbackListenerFixture(redirectURI: redirectURI, outcome: nil)
         var finishedWhenRebound: Bool?
         var created = 0
-        let model = try makeModel(recorder: recorder) { _ in
+        // The flow is still open, which is the only state Retry restarts from:
+        // an account that turned out to be signed in resumes setup instead.
+        let model = try makeModel(recorder: recorder, authStatus: "pending") { _ in
             created += 1
             if created == 1 { return first }
             finishedWhenRebound = first.hasFinished
