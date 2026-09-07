@@ -515,7 +515,22 @@ where
             .as_ref()
             .is_some_and(|token| token.expires_at.is_some_and(|expiry| expiry <= Utc::now()));
         if expired {
-            return self.refresh_auth().await;
+            // A refresh the server refuses leaves the account unusable, but it
+            // is still that account: reporting the identity is what lets a fresh
+            // sign-in as the same user replace this row.
+            let account_label = self
+                .lock_session()?
+                .token
+                .as_ref()
+                .and_then(|token| token.account_label.clone());
+            return match self.refresh_auth().await {
+                Ok(state) => Ok(state),
+                Err(ProviderError::AuthenticationInvalid { message }) => Ok(AuthState::Invalid {
+                    reason: message,
+                    account_key: account_label,
+                }),
+                Err(error) => Err(error),
+            };
         }
         let session = self.lock_session()?;
         if let Some(token) = &session.token {

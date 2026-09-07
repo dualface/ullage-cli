@@ -2097,6 +2097,12 @@ impl ControlClient for LoginClient {
                 }
             }
             ControlCommand::RetireDuplicateAccounts { .. } => ControlResult::Accounts(Vec::new()),
+            ControlCommand::Probe { account_id, .. } => ControlResult::Probe(ProbePayload {
+                account_id: account_id.clone(),
+                usage: QueryOutcome::Complete {
+                    data: empty_usage(),
+                },
+            }),
             ControlCommand::AuthStatus { .. } => {
                 if *self.signed_in.lock().unwrap() {
                     ControlResult::AuthState(ullage_protocol::AuthState::Authenticated {

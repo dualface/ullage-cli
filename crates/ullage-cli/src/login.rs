@@ -15,9 +15,9 @@ use ullage_protocol::{
 use crate::prompt::{Prompt, SecretInput};
 use crate::{
     AccountCommand, AuthCommand, AuthMethodArg, Cli, ClientError, Command, ControlClient,
-    DaemonCommand, ExitCode, OutputFormat, ProviderCommand, RunOutput, control_error_kind,
-    error_output_with_options, is_unsafe_control, next_request_id, render_result,
-    response_matches_command, result_exit_code, to_control_command,
+    DaemonCommand, ExitCode, OutputFormat, ProbeArgs, ProviderCommand, RunOutput,
+    control_error_kind, error_output_with_options, is_unsafe_control, next_request_id,
+    render_result, response_matches_command, result_exit_code, to_control_command,
 };
 
 /// How many times a malformed answer is re-asked before the flow gives up.
@@ -853,6 +853,29 @@ fn retire_duplicates(
     let context = Command::Account {
         command: AccountCommand::List,
     };
+    // A credential can authenticate and still fail every query. Nothing is
+    // deleted until this account has actually answered one, so a sign-in that
+    // does not work cannot take out the working row it was meant to replace.
+    let probe = Command::Probe(ProbeArgs {
+        account: account_id.to_owned(),
+        wait: true,
+    });
+    if session
+        .call_with(
+            &probe,
+            ControlCommand::Probe {
+                account_id: account_id.to_owned(),
+                wait: true,
+            },
+        )
+        .is_err()
+    {
+        prompt.tell(
+            "Signed in, but this account did not answer a usage query, so no other account was \
+             replaced. Run `ullage probe` and then `ullage account list` to check for a duplicate.",
+        );
+        return;
+    }
     let Ok(ControlResult::Accounts(retired)) = session.call_with(
         &context,
         ControlCommand::RetireDuplicateAccounts {
