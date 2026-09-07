@@ -486,15 +486,27 @@ final class LoginWizardModel {
             return
         }
         // A poll reply that never arrived leaves this side believing the flow is
-        // unfinished while the daemon has already stored the credential.
-        // Removing the account would discard a sign-in the user completed.
-        if let state = try? await client.authenticationStatus(
-            provider: account.provider,
-            account: account.id
-        ), case .authenticated = state {
-            authenticated = true
-            message = "Signed in. The account was kept."
-            await manager.refresh()
+        // unfinished while the daemon has already stored the credential, and
+        // removing the account would discard a sign-in the user completed. A
+        // status check that fails answers nothing either way, and deleting on
+        // no answer is the mistake this guards against.
+        do {
+            if case .authenticated = try await client.authenticationStatus(
+                provider: account.provider,
+                account: account.id
+            ) {
+                authenticated = true
+                message = "Signed in. The account was kept."
+                await manager.refresh()
+                return
+            }
+            // Every other state means no credential was stored, which is the
+            // ordinary shape of cancelling a sign-in part way through.
+        } catch {
+            message = """
+            The account was kept because its sign-in state could not be read: \
+            \(error.localizedDescription)
+            """
             return
         }
         try? await client.logout(provider: account.provider, account: account.id, accountLabel: nil)

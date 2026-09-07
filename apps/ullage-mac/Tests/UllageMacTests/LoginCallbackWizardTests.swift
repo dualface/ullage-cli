@@ -64,6 +64,29 @@ final class LoginCallbackWizardTests: XCTestCase {
         XCTAssertTrue(model.authenticated)
     }
 
+    /// Cancelling before the browser comes back must clean up the temporary
+    /// account, and cancelling after the daemon has stored a credential must
+    /// not: the reply carrying that sign-in can be lost in transit.
+    @MainActor
+    func testCancellingRemovesAnUnfinishedAccountButKeepsASignedInOne() async throws {
+        for (status, expectsRemoval) in [("pending", true), ("authenticated", false)] {
+            let recorder = ControlRecorder()
+            let listener = CallbackListenerFixture(redirectURI: redirectURI, outcome: nil)
+            let model = try makeModel(recorder: recorder, authStatus: status) { _ in listener }
+            model.provider = "chatgpt"
+
+            await model.begin()
+            try await waitUntil { listener.observedStates == ["flow-1"] }
+            await model.cancel()
+
+            XCTAssertEqual(
+                recorder.request(for: "remove_account") != nil,
+                expectsRemoval,
+                "auth_status \(status)"
+            )
+        }
+    }
+
     @MainActor
     func testCancellingTheWizardClosesTheCallbackEndpoint() async throws {
         let recorder = ControlRecorder()
@@ -155,6 +178,7 @@ final class LoginCallbackWizardTests: XCTestCase {
         recorder: ControlRecorder,
         provider: String = "chatgpt",
         authenticationMethod: String = "browser_o_auth",
+        authStatus: String = "authenticated",
         callbackListenerFactory: @escaping (String) throws -> OAuthCallbackListening
     ) throws -> LoginWizardModel {
         let client = LocalControlClient { data in
@@ -169,7 +193,8 @@ final class LoginCallbackWizardTests: XCTestCase {
                 requestID: requestID,
                 command: name,
                 provider: provider,
-                authenticationMethod: authenticationMethod
+                authenticationMethod: authenticationMethod,
+                authStatus: authStatus
             )
         }
         let suite = "LoginCallbackWizardTests.\(UUID().uuidString)"
@@ -252,7 +277,8 @@ private func controlResponse(
     requestID: String,
     command: String,
     provider: String,
-    authenticationMethod: String
+    authenticationMethod: String,
+    authStatus: String = "authenticated"
 ) throws -> Data {
     let result: [String: Any]
     switch command {
@@ -270,10 +296,17 @@ private func controlResponse(
                 "input": ["prompt": "the full callback URL", "secret": false],
             ],
         ]
-    case "complete_auth", "auth_status":
+    case "complete_auth":
         result = [
             "result": "auth_state",
             "payload": ["state": "authenticated", "account_label": "Personal"],
+        ]
+    case "auth_status":
+        result = [
+            "result": "auth_state",
+            "payload": authStatus == "authenticated"
+                ? ["state": "authenticated", "account_label": "Personal"]
+                : ["state": authStatus, "flow_id": "flow-1"],
         ]
     case "list_accounts":
         result = [
