@@ -504,7 +504,16 @@ final class LoginWizardModel {
                 account: account.id
             ) {
                 authenticated = true
-                message = "Signed in. The account was kept."
+                // The sign-in landed, so the account still needs the naming,
+                // probe and duplicate cleanup the wizard would have run.
+                do {
+                    try await finishAuthenticatedSetup(for: account)
+                } catch {
+                    message = """
+                    Signed in, and the account was kept, but setup is \
+                    incomplete: \(error.localizedDescription)
+                    """
+                }
                 await manager.refresh()
                 return
             }

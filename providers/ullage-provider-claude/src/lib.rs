@@ -431,6 +431,22 @@ impl Provider for ClaudeProvider {
                 None
             }
         };
+        // Credentials stored before the identity was recorded carry none, which
+        // leaves them out of every account comparison. The profile is already
+        // here, so this is the cheapest place to fill one in.
+        if let Some(profile) = &profile {
+            if credential.account_key.is_none() {
+                if let Some(account_key) = profile.account_key() {
+                    let mut updated = credential.clone();
+                    updated.account_key = Some(account_key);
+                    if updated.account_label.is_none() {
+                        updated.account_label = profile.account_label();
+                    }
+                    // Losing this only means trying again on the next query.
+                    let _ = self.credentials.save(&updated);
+                }
+            }
+        }
         let data = ClaudeUsage {
             profile,
             usage,
@@ -1245,6 +1261,47 @@ mod tests {
                 retry_after_seconds: Some(17),
             }
         );
+    }
+
+    #[test]
+    fn a_query_records_an_identity_the_stored_credential_never_had() {
+        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: Some(Utc::now() + Duration::hours(1)),
+            account_label: None,
+            account_key: None,
+        }))));
+        let provider = provider(
+            FakeApi {
+                profile: Ok(ClaudeProfile {
+                    account: Some(ClaudeAccount {
+                        uuid: Some("acct-1".into()),
+                        email_address: Some("user@example.invalid".into()),
+                        ..ClaudeAccount::default()
+                    }),
+                    ..ClaudeProfile::default()
+                }),
+                usage: Ok(ClaudeUsageResponse::default()),
+            },
+            store.clone(),
+        );
+
+        run_ready(provider.query(UsageQuery::default())).unwrap();
+
+        let stored = store.load().unwrap().unwrap();
+        assert_eq!(stored.account_key.as_deref(), Some("acct-1"));
+        assert_eq!(
+            stored.account_label.as_deref(),
+            Some("user@example.invalid")
+        );
+        assert!(matches!(
+            run_ready(provider.auth_status()).unwrap(),
+            AuthState::Authenticated {
+                account_key: Some(ref key),
+                ..
+            } if key == "acct-1"
+        ));
     }
 
     #[test]

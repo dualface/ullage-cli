@@ -559,10 +559,15 @@ fn browser_sign_in_polls_then_stores_a_session_that_needs_no_exchange() {
             expired_session_credential(),
         )
         .unwrap();
+    // The expired session still names its account, which is what lets a fresh
+    // sign-in as the same person replace it.
     let stale = CursorProvider::with_api_and_store(api, store).unwrap();
     assert!(matches!(
         run_ready(stale.auth_status()).unwrap(),
-        AuthState::Invalid { .. }
+        AuthState::Invalid {
+            account_key: Some(ref key),
+            ..
+        } if key == "user@example.com"
     ));
 }
 
@@ -572,6 +577,12 @@ fn expired_session_credential() -> Credential {
         .insert(
             "access_token",
             SecretValue::new(session_token(-60).as_bytes()),
+        )
+        .unwrap();
+    credential
+        .insert(
+            "account_label",
+            SecretValue::new(b"user@example.com".as_slice()),
         )
         .unwrap();
     credential
