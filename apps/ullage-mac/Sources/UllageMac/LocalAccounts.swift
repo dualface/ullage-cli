@@ -458,23 +458,27 @@ final class LoginWizardModel {
         guard case .authenticated(let verifiedLabel, _) = verified else {
             throw LocalControlError.server("authentication verification did not succeed")
         }
+        // Probing proves the new account works, which is what makes it safe to
+        // drop an older one signed in as the same person. Naming comes last:
+        // the name a provider discovers is the same for both, so the older row
+        // holds it until it is gone.
+        _ = try await client.probe(accountId: account.id, wait: true)
+        let retired = try await client.retireDuplicateAccounts(
+            provider: account.provider,
+            account: account.id
+        )
         let discoveredLabel = authenticatedAccountLabel ?? verifiedLabel
         if label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let discoveredLabel,
            !discoveredLabel.isEmpty {
             _ = try await client.setAccountLabel(account.id, label: discoveredLabel)
         }
-        _ = try await client.probe(accountId: account.id, wait: true)
-        // Only now, with this account named and answering, is it safe to drop
-        // an older one signed in as the same person.
-        let retired = try await client.retireDuplicateAccounts(
-            provider: account.provider,
-            account: account.id
-        )
         setupCompleted = true
-        message = retired.isEmpty
-            ? "Account connected."
-            : "Account connected. It replaced \(retired.count) earlier sign-in for this account."
+        message = switch retired.count {
+        case 0: "Account connected."
+        case 1: "Account connected. It replaced an earlier sign-in for this account."
+        default: "Account connected. It replaced \(retired.count) earlier sign-ins for this account."
+        }
         await manager.didCompleteLogin()
     }
 

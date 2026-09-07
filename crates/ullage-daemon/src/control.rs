@@ -60,9 +60,8 @@ pub struct ControlService {
     engine: DaemonEngine,
     credential_backend: CredentialBackendId,
     device_store: Arc<RwLock<DeviceStore>>,
-    /// One gate per provider, held across a sign-in completion and the eviction
-    /// that follows it. Scoped per provider so a slow sign-in only delays other
-    /// sign-ins to the same provider.
+    /// One gate per provider, held across a duplicate cleanup. Scoped per
+    /// provider so a slow cleanup only delays cleanups for that same provider.
     auth_gates: Arc<Mutex<HashMap<ullage_core::ProviderId, Arc<tokio::sync::Mutex<()>>>>>,
 }
 

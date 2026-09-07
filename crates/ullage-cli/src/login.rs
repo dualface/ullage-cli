@@ -376,6 +376,9 @@ fn run(
             "Authenticated {} as {}.",
             provider.display_name, account_id
         ));
+        // Before naming, not after: the name a provider discovers is the same
+        // for both accounts, so the older row holds it until it is gone.
+        retire_duplicates(session, prompt, provider.id.as_str(), &account_id);
 
         let default_label = if created {
             authenticated
@@ -405,19 +408,14 @@ fn run(
             LoginStage::AccountLabel,
         )
     })();
-    match (created, &outcome) {
-        (true, Err(error)) => discard_account(
+    if let (true, Err(error)) = (created, &outcome) {
+        discard_account(
             session,
             prompt,
             provider.id.as_str(),
             &account_id,
             error.stage(),
-        ),
-        // Only now, with the account named and stored, is it safe to drop an
-        // older one signed in as the same person. A failure here leaves both,
-        // which the user can sort out; it must not fail the login that worked.
-        (_, Ok(_)) => retire_duplicates(session, prompt, provider.id.as_str(), &account_id),
-        _ => {}
+        );
     }
     outcome
 }
@@ -843,10 +841,9 @@ fn set_label(
     })
 }
 
-/// Best-effort cleanup for an account this run created but did not finish
-/// naming. Logout is attempted first so credentials are not orphaned; if logout
-/// fails the account is kept so the user can retry cleanup with ordinary
 /// Asks the daemon to drop any other account signed in as this same person.
+/// A failure here leaves both accounts, which the user can sort out; it must
+/// never fail a sign-in that worked.
 fn retire_duplicates(
     session: &Session<'_>,
     prompt: &mut dyn Prompt,
@@ -877,6 +874,9 @@ fn retire_duplicates(
     }
 }
 
+/// Best-effort cleanup for an account this run created but did not finish
+/// naming. Logout is attempted first so credentials are not orphaned; if logout
+/// fails the account is kept so the user can retry cleanup with ordinary
 /// commands.
 fn discard_account(
     session: &Session<'_>,

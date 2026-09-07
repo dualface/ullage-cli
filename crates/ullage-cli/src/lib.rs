@@ -414,6 +414,11 @@ pub enum AuthCommand {
     /// (default `ULLAGE_AUTH_CODE`), not from process arguments. Leave that
     /// variable unset for device-code flows. One call may return pending until
     /// the user finishes authorization; run the same command again.
+    ///
+    /// This path does not retire an older account signed in as the same person,
+    /// which interactive `auth login` does once the new account works. A script
+    /// that re-adds an identity keeps both rows unless it removes the old one
+    /// with `account remove`.
     Complete {
         /// Provider id such as claude, chatgpt, grok, or cursor. Not a display name.
         #[arg(value_name = "PROVIDER_ID")]

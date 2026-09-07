@@ -87,6 +87,29 @@ final class LoginCallbackWizardTests: XCTestCase {
         }
     }
 
+    /// The name a provider discovers is the same for both accounts, so retiring
+    /// the older row has to happen before the new one claims that name, and
+    /// only after a probe has shown the new one works.
+    @MainActor
+    func testSetupRetiresDuplicatesAfterProbingAndBeforeNaming() async throws {
+        let recorder = ControlRecorder()
+        let listener = CallbackListenerFixture(
+            redirectURI: redirectURI,
+            outcome: .success(.authorized(callbackURL: "\(redirectURI)?code=secret&state=flow-1"))
+        )
+        let model = try makeModel(recorder: recorder, probeSucceeds: true) { _ in listener }
+        model.provider = "chatgpt"
+
+        await model.begin()
+        try await waitUntil { model.setupCompleted }
+
+        let probed = try XCTUnwrap(recorder.position(of: "probe"))
+        let retired = try XCTUnwrap(recorder.position(of: "retire_duplicate_accounts"))
+        let named = try XCTUnwrap(recorder.position(of: "set_account_label"))
+        XCTAssertLessThan(probed, retired)
+        XCTAssertLessThan(retired, named)
+    }
+
     @MainActor
     func testCancellingTheWizardClosesTheCallbackEndpoint() async throws {
         let recorder = ControlRecorder()
@@ -179,6 +202,7 @@ final class LoginCallbackWizardTests: XCTestCase {
         provider: String = "chatgpt",
         authenticationMethod: String = "browser_o_auth",
         authStatus: String = "authenticated",
+        probeSucceeds: Bool = false,
         callbackListenerFactory: @escaping (String) throws -> OAuthCallbackListening
     ) throws -> LoginWizardModel {
         let client = LocalControlClient { data in
@@ -194,7 +218,8 @@ final class LoginCallbackWizardTests: XCTestCase {
                 command: name,
                 provider: provider,
                 authenticationMethod: authenticationMethod,
-                authStatus: authStatus
+                authStatus: authStatus,
+                probeSucceeds: probeSucceeds
             )
         }
         let suite = "LoginCallbackWizardTests.\(UUID().uuidString)"
@@ -271,6 +296,12 @@ private final class ControlRecorder: @unchecked Sendable {
     func request(for command: String) -> [String: Any]? {
         lock.withLock { storage.first { $0.0 == command }?.1 }
     }
+
+    /// Position of the first request for `command`, so a test can pin the order
+    /// two steps have to run in.
+    func position(of command: String) -> Int? {
+        lock.withLock { storage.firstIndex { $0.0 == command } }
+    }
 }
 
 private func controlResponse(
@@ -278,7 +309,8 @@ private func controlResponse(
     command: String,
     provider: String,
     authenticationMethod: String,
-    authStatus: String = "authenticated"
+    authStatus: String = "authenticated",
+    probeSucceeds: Bool = false
 ) throws -> Data {
     let result: [String: Any]
     switch command {
@@ -317,8 +349,25 @@ private func controlResponse(
         result = ["result": "providers", "payload": []]
     // The post-authentication probe is left failing on purpose: these tests are
     // about how the login is completed, not about the setup that follows it.
+    case "probe" where probeSucceeds:
+        result = [
+            "result": "probe",
+            "payload": [
+                "account_id": "account-1",
+                "usage": [
+                    "outcome": "complete",
+                    "data": [
+                        "provider": provider,
+                        "observed_at": "2026-09-01T12:00:00Z",
+                        "windows": [],
+                    ],
+                ],
+            ],
+        ]
     case "probe":
         result = ["result": "error", "payload": ["kind": "timeout"]]
+    case "retire_duplicate_accounts":
+        result = ["result": "accounts", "payload": []]
     default:
         result = ["result": "ack"]
     }

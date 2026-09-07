@@ -2165,6 +2165,30 @@ fn interactive_login_creates_authenticates_and_names_an_account() {
     assert!(prompt.said("https://example.test/authorize"));
 }
 
+/// The name a provider discovers is the same for both accounts, so retiring the
+/// older row has to happen before the new one claims that name.
+#[test]
+fn interactive_login_retires_duplicates_before_it_names_the_account() {
+    let client = LoginClient::new();
+    // Provider 1, a new account, pasted code, then Enter to take the default
+    // name, which is the identity the provider reported.
+    let mut prompt = ullage_cli::prompt::ScriptedPrompt::new(["1", "1", "code#flow-1", ""]);
+
+    let output = run_from_with(["ullage", "auth", "login"], &client, &mut prompt);
+
+    assert_eq!(output.code, ExitCode::Success, "{}", output.stderr);
+    let commands = client.commands();
+    let retired = commands
+        .iter()
+        .position(|command| matches!(command, ControlCommand::RetireDuplicateAccounts { .. }))
+        .expect("duplicates were never retired");
+    let named = commands
+        .iter()
+        .position(|command| matches!(command, ControlCommand::SetAccountLabel { .. }))
+        .expect("the account was never named");
+    assert!(retired < named, "{commands:?}");
+}
+
 #[test]
 fn interactive_login_offers_existing_accounts_and_keeps_their_label() {
     let client = LoginClient::new();
