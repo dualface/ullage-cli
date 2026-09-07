@@ -405,8 +405,19 @@ fn run(
             LoginStage::AccountLabel,
         )
     })();
-    if created && outcome.is_err() {
-        discard_account(session, prompt, provider.id.as_str(), &account_id);
+    match (created, &outcome) {
+        (true, Err(error)) => discard_account(
+            session,
+            prompt,
+            provider.id.as_str(),
+            &account_id,
+            error.stage(),
+        ),
+        // Only now, with the account named and stored, is it safe to drop an
+        // older one signed in as the same person. A failure here leaves both,
+        // which the user can sort out; it must not fail the login that worked.
+        (_, Ok(_)) => retire_duplicates(session, prompt, provider.id.as_str(), &account_id),
+        _ => {}
     }
     outcome
 }
@@ -835,13 +846,69 @@ fn set_label(
 /// Best-effort cleanup for an account this run created but did not finish
 /// naming. Logout is attempted first so credentials are not orphaned; if logout
 /// fails the account is kept so the user can retry cleanup with ordinary
+/// Asks the daemon to drop any other account signed in as this same person.
+fn retire_duplicates(
+    session: &Session<'_>,
+    prompt: &mut dyn Prompt,
+    provider: &str,
+    account_id: &str,
+) {
+    let context = Command::Account {
+        command: AccountCommand::List,
+    };
+    let Ok(ControlResult::Accounts(retired)) = session.call_with(
+        &context,
+        ControlCommand::RetireDuplicateAccounts {
+            provider: ProviderId::new(provider),
+            account: AccountId::new(account_id),
+        },
+    ) else {
+        prompt.tell(
+            "Signed in, but other accounts could not be checked for the same sign-in. Run \
+             `ullage account list` to see whether one is now a duplicate.",
+        );
+        return;
+    };
+    for account in retired {
+        prompt.tell(&format!(
+            "Removed {}, which was signed in as the same account.",
+            account.id.as_str()
+        ));
+    }
+}
+
 /// commands.
 fn discard_account(
     session: &Session<'_>,
     prompt: &mut dyn Prompt,
     provider: &str,
     account_id: &str,
+    stage: LoginStage,
 ) {
+    // A completion whose reply was lost still stored a credential, so at that
+    // stage alone the daemon is asked what actually happened; discarding on no
+    // answer would throw away a sign-in the user completed. Failing any later
+    // stage means the sign-in did land and the user walked away from the rest,
+    // which is the case this account is supposed to be cleaned up for.
+    if matches!(stage, LoginStage::CompleteAuth) {
+        let kept = match session.call(&Command::Auth {
+            command: AuthCommand::Status {
+                provider: provider.to_owned(),
+                account: account_id.to_owned(),
+            },
+        }) {
+            Ok(ControlResult::AuthState(AuthState::Authenticated { .. })) => Some("is signed in"),
+            Ok(ControlResult::AuthState(_)) => None,
+            _ => Some("could not be checked"),
+        };
+        if let Some(reason) = kept {
+            prompt.tell(&format!(
+                "{account_id} {reason}, so it was kept. Remove it with `ullage account remove \
+                 {account_id}` if that is not wanted."
+            ));
+            return;
+        }
+    }
     if session
         .call(&Command::Auth {
             command: AuthCommand::Logout {

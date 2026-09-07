@@ -199,6 +199,17 @@ newlines, limits responses to 1 MiB, and validates protocol version and request 
 status, provider and account management, authentication, logout, probes, and snapshots. Provider
 secrets occur only in the request body sent over this socket.
 
+Accounts are identified for deduplication by the identity the provider reports
+in `AuthState`, not by the label the user picked: two people can choose the same
+label, and the same person's sign-in can be labelled twice. Once a new account
+is authenticated, named and answering, the client asks the daemon to
+`retire_duplicate_accounts`, which signs out and removes the other accounts of
+that provider reporting the same identity. Doing it then rather than at sign-in
+means nothing is deleted before its replacement is known to work, and the
+sign-in the user just finished is the one that survives. An expired or rejected
+credential still names its account, so it is retired too; a provider that
+reports no identity, or a sibling whose status cannot be read, is left alone.
+
 The Add Account wizard receives browser OAuth callbacks itself through
 `OAuthCallbackListener`, a one-shot loopback HTTP endpoint in the `UllageMac`
 target. It binds before the flow starts, so the app only ever hands the daemon a

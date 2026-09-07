@@ -784,7 +784,9 @@ impl Provider for CursorProvider {
         state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = Some(pending);
         state.invalid_reason = None;
-        state.invalid_account_key = None;
+        // The identity outlives the replacement flow. Clearing it here would
+        // lose it for as long as that flow is pending, and an abandoned flow is
+        // pending until something else ends it.
         Ok(challenge)
     }
 
@@ -849,7 +851,19 @@ impl Provider for CursorProvider {
 
     async fn auth_status(&self) -> ProviderResult<AuthState> {
         self.ensure_credentials_loaded().await?;
-        let state = self.lock_state()?;
+        let mut state = self.lock_state()?;
+        // A browser flow nobody finished would stay pending forever otherwise,
+        // and a pending flow names no account, so the identity behind it would
+        // stay invisible to anything comparing accounts.
+        if let Some(PendingFlow::Browser { expires_at, .. }) = &state.pending_flow {
+            if *expires_at <= Utc::now() {
+                state.pending_flow = None;
+                if state.auth.is_none() && state.invalid_account_key.is_some() {
+                    state.invalid_reason = Some("the Cursor sign-in was not completed".into());
+                }
+            }
+        }
+        let state = state;
         if let Some(reason) = &state.invalid_reason {
             return Ok(AuthState::Invalid {
                 reason: reason.clone(),

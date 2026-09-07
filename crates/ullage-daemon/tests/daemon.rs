@@ -2042,9 +2042,9 @@ async fn control_service_supports_status_auth_probe_show_and_version_checks() {
 }
 
 #[tokio::test]
-async fn completing_a_sign_in_replaces_an_expired_account_holding_that_identity() {
-    // An expired credential still names its account, so signing in again as
-    // that identity has to replace it rather than leave a second row behind.
+async fn retiring_duplicates_replaces_an_expired_account_holding_that_identity() {
+    // An expired credential still names its account, so a fresh sign-in as that
+    // identity has to replace it rather than leave a second row behind.
     let provider = SharedIdentityProvider {
         expired: true,
         ..SharedIdentityProvider::default()
@@ -2079,15 +2079,10 @@ async fn completing_a_sign_in_replaces_an_expired_account_holding_that_identity(
 
     service
         .handle(ControlRequest::new(
-            "complete",
-            ControlCommand::CompleteAuth {
+            "retire",
+            ControlCommand::RetireDuplicateAccounts {
                 provider: ProviderId::new("shared"),
                 account: second.id.clone(),
-                request: AuthCompleteRequest {
-                    flow_id: "flow-1".into(),
-                    authorization_code: Some("code".into()),
-                    redirect_uri: None,
-                },
             },
         ))
         .await;
@@ -2106,9 +2101,9 @@ async fn completing_a_sign_in_replaces_an_expired_account_holding_that_identity(
 }
 
 #[tokio::test]
-async fn concurrent_sign_ins_for_one_identity_leave_exactly_one_account() {
-    // Without a gate each completion would see the other as the stale copy and
-    // evict it, leaving the user with neither sign-in.
+async fn concurrent_duplicate_retirements_leave_exactly_one_account() {
+    // Without a gate each cleanup would see the other account as the duplicate
+    // and remove it, leaving the user with neither sign-in.
     let provider = SharedIdentityProvider::default();
     let logouts = provider.logouts.clone();
     let mut registry = ProviderRegistry::default();
@@ -2140,26 +2135,21 @@ async fn concurrent_sign_ins_for_one_identity_leave_exactly_one_account() {
         ids.push(account.id);
     }
 
-    let complete = |account: ullage_protocol::AccountId| {
+    let retire = |account: ullage_protocol::AccountId| {
         let service = service.clone();
         async move {
             service
                 .handle(ControlRequest::new(
-                    "complete",
-                    ControlCommand::CompleteAuth {
+                    "retire",
+                    ControlCommand::RetireDuplicateAccounts {
                         provider: ProviderId::new("shared"),
                         account,
-                        request: AuthCompleteRequest {
-                            flow_id: "flow-1".into(),
-                            authorization_code: Some("code".into()),
-                            redirect_uri: None,
-                        },
                     },
                 ))
                 .await
         }
     };
-    tokio::join!(complete(ids[0].clone()), complete(ids[1].clone()));
+    tokio::join!(retire(ids[0].clone()), retire(ids[1].clone()));
 
     let ControlResult::Accounts(accounts) = service
         .handle(ControlRequest::new("list", ControlCommand::ListAccounts))
@@ -2173,7 +2163,7 @@ async fn concurrent_sign_ins_for_one_identity_leave_exactly_one_account() {
 }
 
 #[tokio::test]
-async fn completing_a_sign_in_replaces_the_account_already_holding_that_identity() {
+async fn retiring_duplicates_replaces_the_account_already_holding_that_identity() {
     let provider = SharedIdentityProvider::default();
     let logouts = provider.logouts.clone();
     let mut registry = ProviderRegistry::default();
@@ -2207,21 +2197,16 @@ async fn completing_a_sign_in_replaces_the_account_already_holding_that_identity
 
     let completed = service
         .handle(ControlRequest::new(
-            "complete",
-            ControlCommand::CompleteAuth {
+            "retire",
+            ControlCommand::RetireDuplicateAccounts {
                 provider: ProviderId::new("shared"),
                 account: second.id.clone(),
-                request: AuthCompleteRequest {
-                    flow_id: "flow-1".into(),
-                    authorization_code: Some("code".into()),
-                    redirect_uri: None,
-                },
             },
         ))
         .await;
     assert!(matches!(
         completed.result,
-        ControlResult::AuthState(ullage_protocol::AuthState::Authenticated { .. })
+        ControlResult::Accounts(ref retired) if retired.len() == 1
     ));
 
     // The sign-in that just happened is the one the user asked for, so the

@@ -173,22 +173,25 @@ impl ControlService {
             .map_err(Into::into)
     }
 
-    /// Drops any other account of `provider` already signed in as the identity
-    /// that `state` just authenticated. The sign-in that just happened is the
-    /// one the user asked for, so the older copies of it go rather than the new
-    /// one; each is signed out first so its stored credential goes with it.
+    /// Removes the accounts of `provider` signed in as the same identity as
+    /// `account`, whose own state is `state`. Called once `account` is fully set
+    /// up, so nothing is deleted before its replacement is known to work, and
+    /// the sign-in the user just finished is the one that survives.
     ///
-    /// A provider that reports no `account_key` cannot be compared, and a
-    /// sibling whose status cannot be read is not evidence of a duplicate, so
-    /// both leave the accounts alone.
-    async fn evict_superseded_accounts(
+    /// A provider that reports no identity cannot be compared, and a sibling
+    /// whose status cannot be read is not evidence of a duplicate, so both leave
+    /// the accounts alone. Each account is signed out before it is removed; one
+    /// that will not sign out keeps its row rather than leaving a secret behind
+    /// with nothing pointing at it.
+    async fn retire_duplicates(
         &self,
         provider: &ullage_core::ProviderId,
         account: &ProtocolAccountId,
         state: &ullage_auth::AuthState,
-    ) {
+    ) -> Vec<Account> {
+        let mut retired = Vec::new();
         let Some(key) = identity_of(state) else {
-            return;
+            return retired;
         };
         for config in self.engine.account_configs().await {
             let other = ProtocolAccountId::new(config.id.to_string());
@@ -211,19 +214,19 @@ impl ControlService {
             if !other_key.eq_ignore_ascii_case(&key) {
                 continue;
             }
-            // A logout that fails would leave the credential behind, so the
-            // account stays too rather than becoming an orphaned secret.
             if instance.logout(LogoutRequest::default()).await.is_err() {
                 continue;
             }
-            let _ = self.engine.remove_account(&config.id).await;
+            if self.engine.remove_account(&config.id).await.is_ok() {
+                retired.push(account_payload(config));
+            }
         }
+        retired
     }
 
-    /// Serializes a provider's sign-in completions. Two completions of one
-    /// identity that ran concurrently would each see the other as the stale
-    /// copy and evict it, leaving neither. Holding this across completion and
-    /// eviction means the later one is the survivor.
+    /// Serializes a provider's duplicate cleanups. Two cleanups for one identity
+    /// that ran concurrently would each see the other account as the duplicate
+    /// and remove it, leaving neither.
     async fn auth_gate(&self, provider: &ullage_core::ProviderId) -> Arc<tokio::sync::Mutex<()>> {
         let mut gates = self
             .auth_gates
@@ -369,29 +372,16 @@ impl ControlService {
                 provider,
                 account,
                 request,
-            } => {
-                // The account is resolved under the gate, not before it: a
-                // concurrent completion may have evicted this one while it
-                // waited, and completing anyway would store a credential for an
-                // account that no longer exists and evict the one that replaced
-                // it.
-                let gate = self.auth_gate(&provider).await;
-                let _gate = gate.lock().await;
-                match self.provider_for_account(&provider, &account).await {
-                    Ok(instance) => match instance.complete_auth(request).await {
-                        Ok(state) => {
-                            self.evict_superseded_accounts(&provider, &account, &state)
-                                .await;
-                            ControlResult::AuthState(sanitize_auth_state(diagnostics, state))
-                        }
-                        Err(error) => {
-                            diagnostic = provider_error_diagnostic(diagnostics, &error);
-                            ControlResult::Error(sanitize_provider_error(error).into())
-                        }
-                    },
-                    Err(error) => ControlResult::Error(error),
-                }
-            }
+            } => match self.provider_for_account(&provider, &account).await {
+                Ok(instance) => match instance.complete_auth(request).await {
+                    Ok(state) => ControlResult::AuthState(sanitize_auth_state(diagnostics, state)),
+                    Err(error) => {
+                        diagnostic = provider_error_diagnostic(diagnostics, &error);
+                        ControlResult::Error(sanitize_provider_error(error).into())
+                    }
+                },
+                Err(error) => ControlResult::Error(error),
+            },
             ControlCommand::AuthStatus { provider, account } => {
                 match self.provider_for_account(&provider, &account).await {
                     Ok(provider) => match provider.auth_status().await {
@@ -433,21 +423,21 @@ impl ControlService {
                 provider,
                 account,
                 workspace_id,
-            } => {
+            } => match self.provider_for_account(&provider, &account).await {
+                Ok(instance) => match instance.select_workspace(&workspace_id).await {
+                    Ok(workspace) => ControlResult::Workspace(workspace),
+                    Err(error) => ControlResult::Error(sanitize_provider_error(error).into()),
+                },
+                Err(error) => ControlResult::Error(error),
+            },
+            ControlCommand::RetireDuplicateAccounts { provider, account } => {
                 let gate = self.auth_gate(&provider).await;
                 let _gate = gate.lock().await;
                 match self.provider_for_account(&provider, &account).await {
-                    Ok(instance) => match instance.select_workspace(&workspace_id).await {
-                        // Selecting a workspace is what gives a ChatGPT sign-in
-                        // its identity, so duplicates can only be resolved once
-                        // it has happened.
-                        Ok(workspace) => {
-                            if let Ok(state) = instance.auth_status().await {
-                                self.evict_superseded_accounts(&provider, &account, &state)
-                                    .await;
-                            }
-                            ControlResult::Workspace(workspace)
-                        }
+                    Ok(instance) => match instance.auth_status().await {
+                        Ok(state) => ControlResult::Accounts(
+                            self.retire_duplicates(&provider, &account, &state).await,
+                        ),
                         Err(error) => ControlResult::Error(sanitize_provider_error(error).into()),
                     },
                     Err(error) => ControlResult::Error(error),

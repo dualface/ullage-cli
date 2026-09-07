@@ -730,7 +730,13 @@ impl ControlClient for SystemClient {
     fn send(&self, request: &ControlRequest) -> Result<ControlResponse, ClientError> {
         self.send_unix(
             request,
-            (!request_waits_for_probe(request)).then_some(Duration::from_secs(30)),
+            (!request_waits_for_probe(request)).then(|| {
+                if request_completes_a_sign_in(request) {
+                    SIGN_IN_TIMEOUT
+                } else {
+                    CONTROL_TIMEOUT
+                }
+            }),
         )
     }
 
@@ -766,6 +772,11 @@ impl ControlClient for SystemClient {
             .ok_or(ClientError::InvalidResponse)?
             .clone();
         let waits_for_probe = request_waits_for_probe(request);
+        let timeout = if request_completes_a_sign_in(request) {
+            SIGN_IN_TIMEOUT
+        } else {
+            CONTROL_TIMEOUT
+        };
         let request = request.clone();
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
@@ -780,7 +791,7 @@ impl ControlClient for SystemClient {
                 .map_err(|_| ClientError::DaemonUnavailable)?
         } else {
             receiver
-                .recv_timeout(Duration::from_secs(30))
+                .recv_timeout(timeout)
                 .map_err(|_| ClientError::DaemonUnavailable)?
         }
     }
@@ -882,6 +893,17 @@ fn daemon_command(windows: bool) -> Result<(PathBuf, Vec<OsString>), ClientError
 fn request_waits_for_probe(request: &ControlRequest) -> bool {
     matches!(request.command, ControlCommand::Probe { wait: true, .. })
 }
+
+/// Completing a sign-in waits on the provider, and the daemon does not send a
+/// reply twice: timing out early would drop the one carrying the credential it
+/// has already stored. This has to outlast the provider HTTP timeouts, and the
+/// eviction that follows a completion.
+fn request_completes_a_sign_in(request: &ControlRequest) -> bool {
+    matches!(request.command, ControlCommand::CompleteAuth { .. })
+}
+
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[cfg(windows)]
 fn send_windows_pipe(

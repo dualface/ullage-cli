@@ -465,8 +465,16 @@ final class LoginWizardModel {
             _ = try await client.setAccountLabel(account.id, label: discoveredLabel)
         }
         _ = try await client.probe(accountId: account.id, wait: true)
+        // Only now, with this account named and answering, is it safe to drop
+        // an older one signed in as the same person.
+        let retired = try await client.retireDuplicateAccounts(
+            provider: account.provider,
+            account: account.id
+        )
         setupCompleted = true
-        message = "Account connected."
+        message = retired.isEmpty
+            ? "Account connected."
+            : "Account connected. It replaced \(retired.count) earlier sign-in for this account."
         await manager.didCompleteLogin()
     }
 

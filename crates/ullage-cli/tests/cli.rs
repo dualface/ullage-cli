@@ -169,6 +169,7 @@ fn maps_the_complete_command_surface_to_control_requests() {
             ControlCommand::AuthStatus { .. } | ControlCommand::CompleteAuth { .. } => {
                 ControlResult::AuthState(ullage_protocol::AuthState::NotAuthenticated)
             }
+            ControlCommand::RetireDuplicateAccounts { .. } => ControlResult::Accounts(Vec::new()),
             ControlCommand::ListWorkspaces { .. } | ControlCommand::SelectWorkspace { .. } => {
                 unreachable!("workspace controls have no CLI command")
             }
@@ -1951,6 +1952,9 @@ struct LoginClient {
     providers: Vec<ProviderDescriptor>,
     challenge_input: Option<ullage_protocol::AuthInputRequest>,
     challenge_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Set once `CompleteAuth` has actually stored a session, so `AuthStatus`
+    /// answers what happened rather than always claiming a sign-in.
+    signed_in: Mutex<bool>,
 }
 
 impl LoginClient {
@@ -1972,6 +1976,7 @@ impl LoginClient {
                 "the full callback URL from the browser, or code#state",
             )),
             challenge_expires_at: None,
+            signed_in: Mutex::new(false),
         }
     }
 
@@ -2073,6 +2078,7 @@ impl ControlClient for LoginClient {
                                 expires_at: self.challenge_expires_at,
                             })
                         } else {
+                            *self.signed_in.lock().unwrap() = true;
                             ControlResult::AuthState(ullage_protocol::AuthState::Authenticated {
                                 account_label: self.authenticated_label.map(Into::into),
                                 expires_at: None,
@@ -2086,15 +2092,21 @@ impl ControlClient for LoginClient {
                 if let Some(error) = self.logout_failures.lock().unwrap().pop() {
                     ControlResult::Error(error)
                 } else {
+                    *self.signed_in.lock().unwrap() = false;
                     ControlResult::Ack
                 }
             }
+            ControlCommand::RetireDuplicateAccounts { .. } => ControlResult::Accounts(Vec::new()),
             ControlCommand::AuthStatus { .. } => {
-                ControlResult::AuthState(ullage_protocol::AuthState::Authenticated {
-                    account_label: self.authenticated_label.map(Into::into),
-                    expires_at: None,
-                    account_key: None,
-                })
+                if *self.signed_in.lock().unwrap() {
+                    ControlResult::AuthState(ullage_protocol::AuthState::Authenticated {
+                        account_label: self.authenticated_label.map(Into::into),
+                        expires_at: None,
+                        account_key: None,
+                    })
+                } else {
+                    ControlResult::AuthState(ullage_protocol::AuthState::NotAuthenticated)
+                }
             }
             other => unreachable!("unexpected control command: {other:?}"),
         };

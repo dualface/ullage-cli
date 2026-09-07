@@ -143,6 +143,14 @@ pub enum ControlCommand {
         account: AccountId,
         workspace_id: String,
     },
+    /// Removes the accounts of `provider` that are signed in as the same
+    /// identity as `account`, which is asked for once `account` is fully set up.
+    /// Doing it then rather than at sign-in means nothing is deleted until its
+    /// replacement is known to work.
+    RetireDuplicateAccounts {
+        provider: ProviderId,
+        account: AccountId,
+    },
 }
 
 impl ControlCommand {

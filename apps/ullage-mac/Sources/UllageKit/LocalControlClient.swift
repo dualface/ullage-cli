@@ -290,6 +290,24 @@ public final class LocalControlClient: @unchecked Sendable {
         )
     }
 
+    /// Removes the accounts of `provider` signed in as the same person as
+    /// `account`. Asked for once `account` is fully set up, so nothing is
+    /// deleted before its replacement is known to work.
+    @discardableResult
+    public func retireDuplicateAccounts(
+        provider: String,
+        account: String
+    ) async throws -> [Account] {
+        try await send(
+            command: [
+                "command": "retire_duplicate_accounts",
+                "provider": provider,
+                "account": account,
+            ],
+            expectedResult: "accounts"
+        )
+    }
+
     public func removeAccount(_ account: String) async throws {
         try await sendAck(command: ["command": "remove_account", "account": account])
     }
