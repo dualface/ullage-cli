@@ -971,6 +971,7 @@ async fn sensitive_material_is_absent_from_cli_errors_debug_and_fixtures() {
         refresh_token: Some(SECRET.into()),
         expires_at: None,
         account_label: None,
+        account_key: None,
     };
     let tokens = OAuthTokenSet::new(SECRET, Some(SECRET.into()), None).unwrap();
     let grok_token = OAuthToken {

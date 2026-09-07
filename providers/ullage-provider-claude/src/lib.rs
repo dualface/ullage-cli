@@ -40,11 +40,15 @@ pub struct ClaudeCredential {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
-    /// Email of the signed-in account, read from the profile once at sign-in.
-    /// Absent on credentials stored before this was recorded, and on any account
-    /// whose profile does not carry one.
+    /// Display name of the signed-in account, read from the profile once at
+    /// sign-in. Absent on credentials stored before this was recorded.
     #[serde(default)]
     pub account_label: Option<String>,
+    /// Identity of the signed-in account, which unlike the label above is never
+    /// a name two accounts could share. Absent on credentials stored before
+    /// this was recorded, and on a profile carrying neither UUID nor email.
+    #[serde(default)]
+    pub account_key: Option<String>,
 }
 
 impl ClaudeCredential {
@@ -78,6 +82,7 @@ impl std::fmt::Debug for ClaudeCredential {
             )
             .field("expires_at", &self.expires_at)
             .field("account_label", &self.account_label)
+            .field("account_key", &self.account_key)
             .finish()
     }
 }
@@ -178,6 +183,7 @@ impl ClaudeProvider {
         // A refresh does not re-read the profile: the account cannot change
         // under a refresh token, so the identity recorded at sign-in stands.
         credential.account_label = current.account_label;
+        credential.account_key = current.account_key;
         self.credentials.save(&credential)?;
         Ok(authenticated_state(&credential))
     }
@@ -329,12 +335,10 @@ impl Provider for ClaudeProvider {
         // The profile is what names the account, so it is read once here rather
         // than on every status check. A profile Anthropic will not serve leaves
         // the account unnamed instead of failing a sign-in that did work.
-        credential.account_label = self
-            .api
-            .profile(&credential.access_token)
-            .await
-            .ok()
-            .and_then(|profile| profile.account_label());
+        if let Ok(profile) = self.api.profile(&credential.access_token).await {
+            credential.account_label = profile.account_label();
+            credential.account_key = profile.account_key();
+        }
         self.credentials.save(&credential)?;
         *lock(&self.pending_auth)? = None;
         Ok(authenticated_state(&credential))
@@ -673,6 +677,7 @@ fn credential_from_response(
         refresh_token: response.refresh_token.or(previous_refresh_token),
         expires_at: Some(expires_at),
         account_label: None,
+        account_key: None,
     };
     credential.validate()?;
     Ok(credential)
@@ -681,10 +686,7 @@ fn credential_from_response(
 fn authenticated_state(credential: &ClaudeCredential) -> AuthState {
     AuthState::Authenticated {
         account_label: credential.account_label.clone(),
-        // Anthropic gives no identifier beyond the profile email, so the label
-        // and the identity are the same value here. It is still read from the
-        // profile rather than chosen by the user.
-        account_key: credential.account_label.clone(),
+        account_key: credential.account_key.clone(),
         expires_at: credential.expires_at,
     }
 }
@@ -946,6 +948,7 @@ mod tests {
             refresh_token: Some("old-refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
+            account_key: None,
         }))));
         let provider = provider(
             FakeApi {
@@ -1117,6 +1120,7 @@ mod tests {
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
+            account_key: None,
         }))));
         let provider = provider(
             FakeApi {
@@ -1147,6 +1151,7 @@ mod tests {
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
+            account_key: None,
         }))));
         let provider = provider(
             FakeApi {
@@ -1182,6 +1187,7 @@ mod tests {
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
+            account_key: None,
         }))));
         let provider = provider(
             FakeApi {
@@ -1210,6 +1216,7 @@ mod tests {
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
+            account_key: None,
         }))));
         let provider = provider(
             FakeApi {
@@ -1241,6 +1248,7 @@ mod tests {
             refresh_token: Some("refresh-secret".into()),
             expires_at: None,
             account_label: None,
+            account_key: None,
         };
         let output = format!("{credential:?}");
         assert!(!output.contains("access-secret"));
@@ -1478,6 +1486,7 @@ mod tests {
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
+            account_key: None,
         }))));
         let entered = Arc::new(tokio::sync::Notify::new());
         let provider = Arc::new(ClaudeProvider::with_api(
@@ -1505,6 +1514,7 @@ mod tests {
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
+            account_key: None,
         }))));
         let revoke_calls = Arc::new(AtomicUsize::new(0));
         let provider = ClaudeProvider::with_api(
@@ -1535,6 +1545,7 @@ mod tests {
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
+            account_key: None,
         }))));
         let profile_entered = Arc::new(tokio::sync::Notify::new());
         let release_profile = Arc::new(tokio::sync::Notify::new());
@@ -1570,6 +1581,7 @@ mod tests {
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::seconds(1)),
             account_label: None,
+            account_key: None,
         }))));
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let profile_entered = Arc::new(tokio::sync::Notify::new());

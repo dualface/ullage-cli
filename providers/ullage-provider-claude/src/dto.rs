@@ -16,6 +16,23 @@ pub struct ClaudeProfile {
 }
 
 impl ClaudeProfile {
+    /// Stable identity of the signed-in account: the account UUID when
+    /// Anthropic sends one, the email otherwise. Never a display name, which
+    /// two accounts can share and which therefore must not decide that one of
+    /// them supersedes the other.
+    pub(crate) fn account_key(&self) -> Option<String> {
+        self.account
+            .as_ref()
+            .and_then(|account| {
+                account
+                    .uuid
+                    .clone()
+                    .or_else(|| account.email_address.clone())
+            })
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
     pub(crate) fn account_label(&self) -> Option<String> {
         self.account.as_ref().and_then(|account| {
             account
@@ -178,6 +195,31 @@ pub(crate) fn normalize_plan(raw: &str, tier: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_key_never_falls_back_to_a_shareable_display_name() {
+        let with_uuid: ClaudeProfile =
+            serde_json::from_str(r#"{"account":{"uuid":"acct-1","email":"user@example.invalid"}}"#)
+                .unwrap();
+        assert_eq!(with_uuid.account_key().as_deref(), Some("acct-1"));
+
+        let email_only: ClaudeProfile =
+            serde_json::from_str(r#"{"account":{"email":" user@example.invalid "}}"#).unwrap();
+        assert_eq!(
+            email_only.account_key().as_deref(),
+            Some("user@example.invalid")
+        );
+
+        // Two people can share a name, and this value decides whether one
+        // account supersedes another, so a name must not produce a key.
+        let name_only: ClaudeProfile =
+            serde_json::from_str(r#"{"account":{"full_name":"Fixture User"}}"#).unwrap();
+        assert_eq!(name_only.account_key(), None);
+        assert_eq!(name_only.account_label().as_deref(), Some("Fixture User"));
+
+        let empty: ClaudeProfile = serde_json::from_str(r#"{"account":{"uuid":"  "}}"#).unwrap();
+        assert_eq!(empty.account_key(), None);
+    }
 
     #[test]
     fn maps_known_plans_without_rejecting_unknown_values() {
