@@ -292,6 +292,9 @@ impl Provider for MockProvider {
 #[derive(Clone, Default)]
 struct SharedIdentityProvider {
     logouts: Arc<AtomicUsize>,
+    /// Report the stored identity as expired rather than usable. An expired
+    /// credential still names the account that owns it.
+    expired: bool,
 }
 
 #[async_trait]
@@ -318,7 +321,11 @@ impl Provider for SharedIdentityProvider {
     }
 
     async fn complete_auth(&self, _: AuthCompleteRequest) -> ProviderResult<AuthState> {
-        Ok(self.state())
+        Ok(AuthState::Authenticated {
+            account_label: None,
+            account_key: Some("user@example.test".into()),
+            expires_at: None,
+        })
     }
 
     async fn auth_status(&self) -> ProviderResult<AuthState> {
@@ -343,6 +350,12 @@ impl Provider for SharedIdentityProvider {
 
 impl SharedIdentityProvider {
     fn state(&self) -> AuthState {
+        if self.expired {
+            return AuthState::Invalid {
+                reason: "the shared sign-in expired".into(),
+                account_key: Some("user@example.test".into()),
+            };
+        }
         AuthState::Authenticated {
             account_label: None,
             account_key: Some("user@example.test".into()),
@@ -1432,12 +1445,14 @@ impl Provider for InvalidAuthProvider {
     async fn complete_auth(&self, _: AuthCompleteRequest) -> ProviderResult<AuthState> {
         Ok(AuthState::Invalid {
             reason: "secret invalid detail must-not-cross-control-boundary".into(),
+            account_key: None,
         })
     }
 
     async fn auth_status(&self) -> ProviderResult<AuthState> {
         Ok(AuthState::Invalid {
             reason: "secret status detail must-not-cross-control-boundary".into(),
+            account_key: None,
         })
     }
 
@@ -1493,6 +1508,7 @@ async fn invalid_auth_state_reason_is_opt_in() {
         hidden.result,
         ControlResult::AuthState(AuthState::Invalid {
             reason: "provider authentication is invalid".into(),
+            account_key: None,
         })
     );
     let encoded = serde_json::to_string(&hidden).unwrap();
@@ -1505,6 +1521,7 @@ async fn invalid_auth_state_reason_is_opt_in() {
         shown.result,
         ControlResult::AuthState(AuthState::Invalid {
             reason: "secret invalid detail must-not-cross-control-boundary".into(),
+            account_key: None,
         })
     );
 }
@@ -2022,6 +2039,137 @@ async fn control_service_supports_status_auth_probe_show_and_version_checks() {
         cancelled.result,
         ControlResult::Error(ullage_protocol::ControlError::Cancelled)
     );
+}
+
+#[tokio::test]
+async fn completing_a_sign_in_replaces_an_expired_account_holding_that_identity() {
+    // An expired credential still names its account, so signing in again as
+    // that identity has to replace it rather than leave a second row behind.
+    let provider = SharedIdentityProvider {
+        expired: true,
+        ..SharedIdentityProvider::default()
+    };
+    let logouts = provider.logouts.clone();
+    let mut registry = ProviderRegistry::default();
+    registry.register(provider).unwrap();
+    let engine = engine_with(
+        Arc::new(registry),
+        Arc::new(ManualClock::new()),
+        Arc::new(MemorySnapshotStore::default()),
+        DaemonConfig::default(),
+    )
+    .await;
+    let service = ControlService::new(engine.clone());
+
+    let add = |name: &'static str| {
+        service.handle(ControlRequest::new(
+            name,
+            ControlCommand::AddAccount {
+                provider: ProviderId::new("shared"),
+                label: None,
+            },
+        ))
+    };
+    let ControlResult::Account(first) = add("first").await.result else {
+        panic!("the first account was not added");
+    };
+    let ControlResult::Account(second) = add("second").await.result else {
+        panic!("the second account was not added");
+    };
+
+    service
+        .handle(ControlRequest::new(
+            "complete",
+            ControlCommand::CompleteAuth {
+                provider: ProviderId::new("shared"),
+                account: second.id.clone(),
+                request: AuthCompleteRequest {
+                    flow_id: "flow-1".into(),
+                    authorization_code: Some("code".into()),
+                    redirect_uri: None,
+                },
+            },
+        ))
+        .await;
+
+    let ControlResult::Accounts(accounts) = service
+        .handle(ControlRequest::new("list", ControlCommand::ListAccounts))
+        .await
+        .result
+    else {
+        panic!("accounts were not listed");
+    };
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].id, second.id);
+    assert_ne!(accounts[0].id, first.id);
+    assert_eq!(logouts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn concurrent_sign_ins_for_one_identity_leave_exactly_one_account() {
+    // Without a gate each completion would see the other as the stale copy and
+    // evict it, leaving the user with neither sign-in.
+    let provider = SharedIdentityProvider::default();
+    let logouts = provider.logouts.clone();
+    let mut registry = ProviderRegistry::default();
+    registry.register(provider).unwrap();
+    let engine = engine_with(
+        Arc::new(registry),
+        Arc::new(ManualClock::new()),
+        Arc::new(MemorySnapshotStore::default()),
+        DaemonConfig::default(),
+    )
+    .await;
+    let service = ControlService::new(engine.clone());
+
+    let mut ids = Vec::new();
+    for name in ["first", "second"] {
+        let ControlResult::Account(account) = service
+            .handle(ControlRequest::new(
+                name,
+                ControlCommand::AddAccount {
+                    provider: ProviderId::new("shared"),
+                    label: None,
+                },
+            ))
+            .await
+            .result
+        else {
+            panic!("an account was not added");
+        };
+        ids.push(account.id);
+    }
+
+    let complete = |account: ullage_protocol::AccountId| {
+        let service = service.clone();
+        async move {
+            service
+                .handle(ControlRequest::new(
+                    "complete",
+                    ControlCommand::CompleteAuth {
+                        provider: ProviderId::new("shared"),
+                        account,
+                        request: AuthCompleteRequest {
+                            flow_id: "flow-1".into(),
+                            authorization_code: Some("code".into()),
+                            redirect_uri: None,
+                        },
+                    },
+                ))
+                .await
+        }
+    };
+    tokio::join!(complete(ids[0].clone()), complete(ids[1].clone()));
+
+    let ControlResult::Accounts(accounts) = service
+        .handle(ControlRequest::new("list", ControlCommand::ListAccounts))
+        .await
+        .result
+    else {
+        panic!("accounts were not listed");
+    };
+    assert_eq!(accounts.len(), 1, "both sign-ins evicted each other");
+    assert_eq!(logouts.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

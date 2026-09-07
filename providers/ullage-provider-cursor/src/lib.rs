@@ -403,6 +403,17 @@ impl CursorProvider {
             }
         };
         let Some(exchange) = polled else {
+            // A poll that started before another one installed the session
+            // would otherwise report this flow as still pending after it has
+            // already finished.
+            let state = self.lock_state()?;
+            if state.generation != generation
+                || state.pending_flow.as_ref().map(PendingFlow::flow_id) != Some(flow_id)
+            {
+                return Err(ProviderError::ProtocolIncompatible {
+                    message: "Cursor authentication operation was superseded".into(),
+                });
+            }
             return Ok(AuthState::Pending {
                 flow_id: flow_id.to_owned(),
                 expires_at: Some(expires_at),
@@ -836,6 +847,9 @@ impl Provider for CursorProvider {
         if let Some(reason) = &state.invalid_reason {
             return Ok(AuthState::Invalid {
                 reason: reason.clone(),
+                // Rejection clears the auth material, so the identity is gone
+                // with it.
+                account_key: None,
             });
         }
         if let Some(auth) = &state.auth {
@@ -964,6 +978,9 @@ fn session_auth_state(auth: &AuthMaterial) -> AuthState {
     if auth.api_key.is_none() && auth.expires_at.is_some_and(|expiry| expiry <= Utc::now()) {
         return AuthState::Invalid {
             reason: "the Cursor browser sign-in expired".into(),
+            // The session expired, but it is still this account's session, so a
+            // fresh sign-in as the same identity supersedes it.
+            account_key: auth.account_label.clone(),
         };
     }
     AuthState::Authenticated {

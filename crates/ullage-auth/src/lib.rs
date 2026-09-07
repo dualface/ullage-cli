@@ -116,6 +116,11 @@ pub enum AuthState {
     },
     Invalid {
         reason: String,
+        /// Identity of the account whose credential went invalid, when the
+        /// provider still knows it. An expired sign-in is still that account's
+        /// sign-in, so a fresh one for the same identity supersedes it.
+        #[serde(default)]
+        account_key: Option<String>,
     },
 }
 

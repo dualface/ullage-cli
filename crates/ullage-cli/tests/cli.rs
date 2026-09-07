@@ -566,6 +566,7 @@ fn invalid_auth_status_has_a_distinct_exit_code_and_redacted_reason() {
             request,
             ControlResult::AuthState(ullage_protocol::AuthState::Invalid {
                 reason: "person@example.test secret-token".into(),
+                account_key: None,
             }),
         ))
     }
@@ -599,6 +600,7 @@ fn diagnose_surfaces_invalid_auth_state_detail() {
             request,
             ControlResult::AuthState(ullage_protocol::AuthState::Invalid {
                 reason: DETAIL.into(),
+                account_key: None,
             }),
         ))
     }
@@ -1222,6 +1224,7 @@ fn reveal_never_exposes_error_details_in_json_output() {
             request,
             ControlResult::AuthState(ullage_protocol::AuthState::Invalid {
                 reason: "secret-auth".into(),
+                account_key: None,
             }),
         ))
     }

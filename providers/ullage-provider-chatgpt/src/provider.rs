@@ -610,14 +610,19 @@ where
         let Some(session) = self.store.load().map_err(ProviderError::from)? else {
             return Ok(AuthState::NotAuthenticated);
         };
+        let account_key = session.selected_workspace_id.clone();
         if let Some(reason) = session.invalid_reason.clone() {
-            return Ok(AuthState::Invalid { reason });
+            return Ok(AuthState::Invalid {
+                reason,
+                account_key,
+            });
         }
         match self.refresh_session(session, false).await {
             Ok(session) => Ok(authenticated_state(&session)),
-            Err(ProviderError::AuthenticationInvalid { message }) => {
-                Ok(AuthState::Invalid { reason: message })
-            }
+            Err(ProviderError::AuthenticationInvalid { message }) => Ok(AuthState::Invalid {
+                reason: message,
+                account_key,
+            }),
             Err(error) => Err(error),
         }
     }

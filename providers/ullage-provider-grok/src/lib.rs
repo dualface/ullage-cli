@@ -528,6 +528,8 @@ where
             {
                 return Ok(AuthState::Invalid {
                     reason: "Grok OAuth flow expired".into(),
+                    // An abandoned flow never named an account.
+                    account_key: None,
                 });
             }
             return Ok(AuthState::Pending {

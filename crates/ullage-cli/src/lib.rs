@@ -1945,7 +1945,7 @@ fn render_result(
     }
 
     let invalid_detail = match &result {
-        ControlResult::AuthState(AuthState::Invalid { reason })
+        ControlResult::AuthState(AuthState::Invalid { reason, .. })
             if diagnose && !reason.chars().any(is_unsafe_control) =>
         {
             Some(reason.clone())
@@ -2907,7 +2907,7 @@ fn redact_error_details(result: &mut ControlResult, diagnose: bool) {
                 redact_failures(&mut snapshot.usage, diagnose);
             }
         }
-        ControlResult::AuthState(AuthState::Invalid { reason }) if !diagnose => {
+        ControlResult::AuthState(AuthState::Invalid { reason, .. }) if !diagnose => {
             *reason = "[redacted]".into();
         }
         _ => {}

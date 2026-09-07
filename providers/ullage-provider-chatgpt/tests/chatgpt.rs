@@ -539,7 +539,7 @@ fn marks_session_invalid_when_refreshed_token_is_also_rejected() {
     ));
     assert!(matches!(
         run_ready(provider.auth_status()).unwrap(),
-        AuthState::Invalid { reason } if reason == "refreshed access token rejected"
+        AuthState::Invalid { reason, .. } if reason == "refreshed access token rejected"
     ));
 }
 
@@ -571,7 +571,7 @@ fn marks_session_invalid_when_refreshed_workspace_request_is_rejected() {
     ));
     assert!(matches!(
         run_ready(provider.auth_status()).unwrap(),
-        AuthState::Invalid { reason } if reason == "refreshed workspace token rejected"
+        AuthState::Invalid { reason, .. } if reason == "refreshed workspace token rejected"
     ));
 }
 

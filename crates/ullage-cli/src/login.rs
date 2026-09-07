@@ -643,7 +643,7 @@ fn authenticate_once(
 
     let label = match state {
         AuthState::Authenticated { account_label, .. } => account_label,
-        AuthState::Invalid { reason } => {
+        AuthState::Invalid { reason, .. } => {
             return Err(LoginError::Flow {
                 stage: LoginStage::CompleteAuth,
                 kind: "authentication_invalid",
@@ -707,8 +707,11 @@ fn poll_device_flow(
                 },
             },
         ) {
+            // A poll that could not reach the provider says nothing about the
+            // authorization, which stays live until the flow expires. Only a
+            // refusal ends the login.
             Err(CallFailure::Control {
-                kind: "rate_limited",
+                kind: "rate_limited" | "network_failure",
                 ..
             }) => {}
             Err(failure) => return Err(failure.at(LoginStage::CompleteAuth)),
@@ -760,7 +763,7 @@ fn verify(
         LoginStage::Verification,
     )? {
         AuthState::Authenticated { .. } => Ok(()),
-        AuthState::Invalid { reason } => Err(LoginError::Flow {
+        AuthState::Invalid { reason, .. } => Err(LoginError::Flow {
             stage: LoginStage::Verification,
             kind: "authentication_invalid",
             code: ExitCode::AuthenticationInvalid,

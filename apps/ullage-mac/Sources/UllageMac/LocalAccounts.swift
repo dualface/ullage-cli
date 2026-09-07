@@ -137,6 +137,11 @@ final class LoginWizardModel {
     /// Upper bound on how long a loopback callback endpoint stays open when the
     /// provider does not date the flow itself.
     static let callbackWindow: TimeInterval = 10 * 60
+    /// A poll is answered only once the daemon has finished its own request to
+    /// the provider, so this has to outlast the provider HTTP timeouts (30s at
+    /// the time of writing). Timing out early drops a reply that may have
+    /// carried the completed sign-in, which the daemon will not send twice.
+    static let pollTimeout: TimeInterval = 45
 
     private let manager: LocalAccountManager
     private let pollingInterval: Duration
@@ -384,12 +389,14 @@ final class LoginWizardModel {
                 }
                 attempts += 1
                 do {
-                    let completed = try await self.manager.client().completeAuthentication(
-                        provider: account.provider,
-                        account: account.id,
-                        flowId: challenge.flowId,
-                        input: nil
-                    )
+                    let completed = try await self.manager
+                        .client(timeout: Self.pollTimeout)
+                        .completeAuthentication(
+                            provider: account.provider,
+                            account: account.id,
+                            flowId: challenge.flowId,
+                            input: nil
+                        )
                     if case .authenticated = completed {
                         do {
                             try await self.handle(completed)
@@ -399,7 +406,11 @@ final class LoginWizardModel {
                         return
                     }
                 } catch {
-                    if !Task.isCancelled { self.message = self.setupErrorMessage(error) }
+                    guard !Task.isCancelled else { return }
+                    self.message = self.setupErrorMessage(error)
+                    // The daemon rejected the flow rather than failing to
+                    // answer, so repeating the same poll can only fail again.
+                    if case LocalControlError.server = error { return }
                 }
             }
         }

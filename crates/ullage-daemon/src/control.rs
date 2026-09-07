@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -59,6 +60,10 @@ pub struct ControlService {
     engine: DaemonEngine,
     credential_backend: CredentialBackendId,
     device_store: Arc<RwLock<DeviceStore>>,
+    /// One gate per provider, held across a sign-in completion and the eviction
+    /// that follows it. Scoped per provider so a slow sign-in only delays other
+    /// sign-ins to the same provider.
+    auth_gates: Arc<Mutex<HashMap<ullage_core::ProviderId, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl ControlService {
@@ -67,6 +72,7 @@ impl ControlService {
             engine,
             credential_backend: CredentialBackendId::native(),
             device_store: Arc::new(RwLock::new(DeviceStore::memory())),
+            auth_gates: Arc::default(),
         }
     }
 
@@ -181,17 +187,9 @@ impl ControlService {
         account: &ProtocolAccountId,
         state: &ullage_auth::AuthState,
     ) {
-        let ullage_auth::AuthState::Authenticated {
-            account_key: Some(key),
-            ..
-        } = state
-        else {
+        let Some(key) = identity_of(state) else {
             return;
         };
-        let key = key.trim();
-        if key.is_empty() {
-            return;
-        }
         for config in self.engine.account_configs().await {
             let other = ProtocolAccountId::new(config.id.to_string());
             if &config.provider != provider || other == *account {
@@ -204,14 +202,13 @@ impl ControlService {
             else {
                 continue;
             };
-            let Ok(ullage_auth::AuthState::Authenticated {
-                account_key: Some(other_key),
-                ..
-            }) = instance.auth_status().await
-            else {
+            let Ok(status) = instance.auth_status().await else {
                 continue;
             };
-            if !other_key.trim().eq_ignore_ascii_case(key) {
+            let Some(other_key) = identity_of(&status) else {
+                continue;
+            };
+            if !other_key.eq_ignore_ascii_case(&key) {
                 continue;
             }
             // A logout that fails would leave the credential behind, so the
@@ -221,6 +218,18 @@ impl ControlService {
             }
             let _ = self.engine.remove_account(&config.id).await;
         }
+    }
+
+    /// Serializes a provider's sign-in completions. Two completions of one
+    /// identity that ran concurrently would each see the other as the stale
+    /// copy and evict it, leaving neither. Holding this across completion and
+    /// eviction means the later one is the survivor.
+    async fn auth_gate(&self, provider: &ullage_core::ProviderId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut gates = self
+            .auth_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gates.entry(provider.clone()).or_default().clone()
     }
 
     pub async fn handle(&self, request: ControlRequest) -> ControlResponse {
@@ -360,20 +369,29 @@ impl ControlService {
                 provider,
                 account,
                 request,
-            } => match self.provider_for_account(&provider, &account).await {
-                Ok(instance) => match instance.complete_auth(request).await {
-                    Ok(state) => {
-                        self.evict_superseded_accounts(&provider, &account, &state)
-                            .await;
-                        ControlResult::AuthState(sanitize_auth_state(diagnostics, state))
-                    }
-                    Err(error) => {
-                        diagnostic = provider_error_diagnostic(diagnostics, &error);
-                        ControlResult::Error(sanitize_provider_error(error).into())
-                    }
-                },
-                Err(error) => ControlResult::Error(error),
-            },
+            } => {
+                // The account is resolved under the gate, not before it: a
+                // concurrent completion may have evicted this one while it
+                // waited, and completing anyway would store a credential for an
+                // account that no longer exists and evict the one that replaced
+                // it.
+                let gate = self.auth_gate(&provider).await;
+                let _gate = gate.lock().await;
+                match self.provider_for_account(&provider, &account).await {
+                    Ok(instance) => match instance.complete_auth(request).await {
+                        Ok(state) => {
+                            self.evict_superseded_accounts(&provider, &account, &state)
+                                .await;
+                            ControlResult::AuthState(sanitize_auth_state(diagnostics, state))
+                        }
+                        Err(error) => {
+                            diagnostic = provider_error_diagnostic(diagnostics, &error);
+                            ControlResult::Error(sanitize_provider_error(error).into())
+                        }
+                    },
+                    Err(error) => ControlResult::Error(error),
+                }
+            }
             ControlCommand::AuthStatus { provider, account } => {
                 match self.provider_for_account(&provider, &account).await {
                     Ok(provider) => match provider.auth_status().await {
@@ -415,13 +433,26 @@ impl ControlService {
                 provider,
                 account,
                 workspace_id,
-            } => match self.provider_for_account(&provider, &account).await {
-                Ok(provider) => match provider.select_workspace(&workspace_id).await {
-                    Ok(workspace) => ControlResult::Workspace(workspace),
-                    Err(error) => ControlResult::Error(sanitize_provider_error(error).into()),
-                },
-                Err(error) => ControlResult::Error(error),
-            },
+            } => {
+                let gate = self.auth_gate(&provider).await;
+                let _gate = gate.lock().await;
+                match self.provider_for_account(&provider, &account).await {
+                    Ok(instance) => match instance.select_workspace(&workspace_id).await {
+                        // Selecting a workspace is what gives a ChatGPT sign-in
+                        // its identity, so duplicates can only be resolved once
+                        // it has happened.
+                        Ok(workspace) => {
+                            if let Ok(state) = instance.auth_status().await {
+                                self.evict_superseded_accounts(&provider, &account, &state)
+                                    .await;
+                            }
+                            ControlResult::Workspace(workspace)
+                        }
+                        Err(error) => ControlResult::Error(sanitize_provider_error(error).into()),
+                    },
+                    Err(error) => ControlResult::Error(error),
+                }
+            }
             ControlCommand::AddAccount { provider, label } => {
                 if !self.engine.registry().contains(&provider) {
                     let error = ullage_core::RegistryError::NotFound(provider.clone());
@@ -519,10 +550,24 @@ fn probe_error_diagnostic(diagnostics: bool, error: &ProbeError) -> Option<Strin
 
 /// `AuthState::Invalid.reason` is provider text. Keep it only when this call
 /// opted into diagnostics; otherwise replace it with the stable sanitized kind.
+/// The identity an authentication state names, trimmed and non-empty. An
+/// expired or rejected credential still belongs to the account that created it,
+/// so `Invalid` counts here as well as `Authenticated`.
+fn identity_of(state: &ullage_auth::AuthState) -> Option<String> {
+    let key = match state {
+        ullage_auth::AuthState::Authenticated { account_key, .. }
+        | ullage_auth::AuthState::Invalid { account_key, .. } => account_key.as_deref()?,
+        _ => return None,
+    };
+    let key = key.trim();
+    (!key.is_empty()).then(|| key.to_owned())
+}
+
 fn sanitize_auth_state(diagnostics: bool, state: ullage_auth::AuthState) -> ullage_auth::AuthState {
     match state {
         ullage_auth::AuthState::Invalid { .. } if !diagnostics => ullage_auth::AuthState::Invalid {
             reason: "provider authentication is invalid".into(),
+            account_key: None,
         },
         state => state,
     }

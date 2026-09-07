@@ -371,7 +371,13 @@ impl Provider for ClaudeProvider {
             return match self.refresh_auth_locked().await {
                 Ok(state) => Ok(state),
                 Err(ProviderError::AuthenticationInvalid { message }) => {
-                    Ok(AuthState::Invalid { reason: message })
+                    Ok(AuthState::Invalid {
+                        reason: message,
+                        // A credential that can no longer be refreshed still
+                        // belongs to this account, so a fresh sign-in as the
+                        // same identity supersedes it.
+                        account_key: credential.account_key.clone(),
+                    })
                 }
                 Err(error) => Err(error),
             };
