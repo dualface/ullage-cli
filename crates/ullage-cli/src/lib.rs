@@ -901,8 +901,7 @@ fn request_waits_for_probe(request: &ControlRequest) -> bool {
 
 /// Completing a sign-in waits on the provider, and the daemon does not send a
 /// reply twice: timing out early would drop the one carrying the credential it
-/// has already stored. This has to outlast the provider HTTP timeouts, and the
-/// eviction that follows a completion.
+/// has already stored. This has to outlast the provider HTTP timeouts.
 fn request_completes_a_sign_in(request: &ControlRequest) -> bool {
     matches!(request.command, ControlCommand::CompleteAuth { .. })
 }

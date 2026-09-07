@@ -142,6 +142,10 @@ final class LoginWizardModel {
     /// the time of writing). Timing out early drops a reply that may have
     /// carried the completed sign-in, which the daemon will not send twice.
     static let pollTimeout: TimeInterval = 45
+    /// The daemon caps an account probe at 30s and the setup that follows it
+    /// gates naming and duplicate cleanup, so a shorter wait here would leave a
+    /// working sign-in unnamed beside the account it was meant to replace.
+    static let setupTimeout: TimeInterval = 45
 
     private let manager: LocalAccountManager
     private let pollingInterval: Duration
@@ -450,7 +454,7 @@ final class LoginWizardModel {
     }
 
     private func finishAuthenticatedSetup(for account: Account) async throws {
-        let client = try manager.client()
+        let client = try manager.client(timeout: Self.setupTimeout)
         let verified = try await client.authenticationStatus(
             provider: account.provider,
             account: account.id
