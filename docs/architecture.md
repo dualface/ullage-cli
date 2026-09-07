@@ -204,12 +204,14 @@ The Add Account wizard receives browser OAuth callbacks itself through
 target. It binds before the flow starts, so the app only ever hands the daemon a
 `redirect_uri` it already owns; the daemon then validates that value as loopback
 HTTP (see "Runtime configuration"). The endpoint uses the port each provider has
-registered with its authorization server — currently only
-`http://localhost:1455/auth/callback` for ChatGPT — because that server may
-match the redirect URI exactly. Grok is not in that table: auth.x.ai does not
-bounce back to a loopback URI for this client, so the wizard leaves Grok on its
-default device code path and never binds `127.0.0.1:1456`. A provider outside
-the table keeps its own path (device code for Grok, manual paste for Claude).
+registered with its authorization server: `http://localhost:1455/auth/callback`
+for ChatGPT, because that server matches the redirect URI exactly, and
+`http://localhost:54545/callback` for Claude, whose authorization server accepts
+any loopback port. Grok is not in that table: auth.x.ai does not bounce back to
+a loopback URI for this client, so the wizard leaves Grok on its default device
+code path and never binds `127.0.0.1:1456`. A provider outside the table keeps
+its own path: device code for Grok, and for Cursor a browser sign-in the daemon
+polls rather than a callback it receives.
 `localhost` is bound on both `127.0.0.1` and `::1`, since
 macOS resolves it to both and browsers often prefer `::1`; a literal address
 binds only its own family. Both sockets bind the loopback address itself, never

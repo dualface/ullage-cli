@@ -578,6 +578,32 @@ fn expired_session_credential() -> Credential {
 }
 
 #[test]
+fn a_rejected_session_still_reports_the_identity_it_belonged_to() {
+    // Rejection drops the credential, but the account it named is still the one
+    // a fresh sign-in as that identity supersedes.
+    let api = fake_api(vec![
+        Err(ApiFailure::authentication("token rejected")),
+        Err(ApiFailure::authentication("token rejected")),
+    ]);
+    api.exchanges
+        .lock()
+        .unwrap()
+        .push_back(Err(ApiFailure::authentication("token rejected")));
+    let provider = CursorProvider::with_api(api);
+    authenticate(&provider);
+
+    let error = run_ready(provider.query(UsageQuery::default())).unwrap_err();
+    assert!(matches!(error, ProviderError::AuthenticationInvalid { .. }));
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::Invalid {
+            account_key: Some(ref key),
+            ..
+        } if key == "user@example.com"
+    ));
+}
+
+#[test]
 fn authentication_restores_from_the_shared_credential_store() {
     let store = Arc::new(CredentialStore::new(MemoryCredentialBackend::default()));
     let api = fake_api(Vec::new());

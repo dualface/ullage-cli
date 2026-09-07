@@ -507,8 +507,10 @@ ullage auth login claude
 
 You do not need the internal account ID or `ULLAGE_AUTH_CODE`. Providers
 describe what to paste (Claude: the full callback URL or `code#state`;
-ChatGPT: the `code` query value; Cursor: an API key, typed without echo).
-Grok's device-code flow has nothing to paste.
+ChatGPT: the `code` query value). Grok's device-code flow and Cursor's
+browser sign-in have nothing to paste; both open a page and finish on their
+own. `--method api-token` keeps Cursor's older path, where you create a User
+API Key at cursor.com/dashboard and type it without echo.
 
 Scripts keep the two-step path:
 

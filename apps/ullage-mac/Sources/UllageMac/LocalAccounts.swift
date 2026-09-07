@@ -406,11 +406,12 @@ final class LoginWizardModel {
                         return
                     }
                 } catch {
-                    guard !Task.isCancelled else { return }
-                    self.message = self.setupErrorMessage(error)
-                    // The daemon rejected the flow rather than failing to
-                    // answer, so repeating the same poll can only fail again.
-                    if case LocalControlError.server = error { return }
+                    // A failed poll says nothing about the authorization, which
+                    // stays live until the flow expires. The daemon reports
+                    // every provider failure under one error kind, so a network
+                    // blip cannot be told from a refusal here; polling on costs
+                    // a few requests, stopping would abandon a live sign-in.
+                    if !Task.isCancelled { self.message = self.setupErrorMessage(error) }
                 }
             }
         }
@@ -482,6 +483,18 @@ final class LoginWizardModel {
             client = try manager.client()
         } catch {
             message = "Temporary account could not be removed: \(error.localizedDescription)"
+            return
+        }
+        // A poll reply that never arrived leaves this side believing the flow is
+        // unfinished while the daemon has already stored the credential.
+        // Removing the account would discard a sign-in the user completed.
+        if let state = try? await client.authenticationStatus(
+            provider: account.provider,
+            account: account.id
+        ), case .authenticated = state {
+            authenticated = true
+            message = "Signed in. The account was kept."
+            await manager.refresh()
             return
         }
         try? await client.logout(provider: account.provider, account: account.id, accountLabel: nil)

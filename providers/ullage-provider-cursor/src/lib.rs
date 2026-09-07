@@ -41,6 +41,10 @@ struct ProviderState {
     pending_flow: Option<PendingFlow>,
     auth: Option<AuthMaterial>,
     invalid_reason: Option<String>,
+    /// Identity of the account whose credential was rejected. Rejection drops
+    /// the auth material, but the account it belonged to is still the account a
+    /// fresh sign-in as that identity supersedes.
+    invalid_account_key: Option<String>,
     credentials_loaded: bool,
 }
 
@@ -494,6 +498,7 @@ impl CursorProvider {
         }
         state.pending_flow = None;
         state.invalid_reason = None;
+        state.invalid_account_key = None;
         let expires_at = token_expiry(&access_token);
         state.auth = Some(AuthMaterial {
             api_key,
@@ -582,7 +587,7 @@ impl CursorProvider {
                 state.generation = state.generation.wrapping_add(1);
                 state.session_id = state.session_id.wrapping_add(1);
                 state.pending_flow = None;
-                state.auth = None;
+                state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_label);
                 state.invalid_reason = Some(error.message.clone());
             }
             return Ok(ExchangeFailureResolution::Failed(
@@ -643,7 +648,7 @@ impl CursorProvider {
         state.generation = state.generation.wrapping_add(1);
         state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = None;
-        state.auth = None;
+        state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_label);
         state.invalid_reason = Some(error.message.clone());
         Err(error)
     }
@@ -779,6 +784,7 @@ impl Provider for CursorProvider {
         state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = Some(pending);
         state.invalid_reason = None;
+        state.invalid_account_key = None;
         Ok(challenge)
     }
 
@@ -847,9 +853,7 @@ impl Provider for CursorProvider {
         if let Some(reason) = &state.invalid_reason {
             return Ok(AuthState::Invalid {
                 reason: reason.clone(),
-                // Rejection clears the auth material, so the identity is gone
-                // with it.
-                account_key: None,
+                account_key: state.invalid_account_key.clone(),
             });
         }
         if let Some(auth) = &state.auth {
@@ -896,6 +900,7 @@ impl Provider for CursorProvider {
         state.pending_flow = None;
         state.auth = None;
         state.invalid_reason = None;
+        state.invalid_account_key = None;
         Ok(())
     }
 
