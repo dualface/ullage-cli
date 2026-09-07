@@ -132,6 +132,19 @@ impl<'de> Deserialize<'de> for SecretString {
 #[async_trait]
 pub trait CursorApi: Send + Sync {
     async fn exchange_user_api_key(&self, api_key: &str) -> Result<ExchangeTokens, ApiFailure>;
+    /// Polls the browser sign-in started at `loginDeepControl`. `Ok(None)` means
+    /// the browser has not finished yet, which is the normal answer until the
+    /// user approves. Test doubles that only cover the API key path inherit the
+    /// default, which reports the flow as unavailable rather than hanging.
+    async fn poll_login(
+        &self,
+        _uuid: &str,
+        _verifier: &str,
+    ) -> Result<Option<ExchangeTokens>, ApiFailure> {
+        Err(ApiFailure::protocol(
+            "this Cursor API does not serve browser sign-in",
+        ))
+    }
     async fn current_period(&self, access_token: &str) -> Result<CurrentPeriodUsage, ApiFailure>;
     async fn plan_info(&self, access_token: &str) -> Result<PlanInfoResponse, ApiFailure>;
     async fn credit_grants(&self, access_token: &str) -> Result<CreditGrantsBalance, ApiFailure>;
@@ -202,6 +215,33 @@ impl CursorApi for HttpCursorApi {
             ));
         }
         Ok(tokens)
+    }
+
+    async fn poll_login(
+        &self,
+        uuid: &str,
+        verifier: &str,
+    ) -> Result<Option<ExchangeTokens>, ApiFailure> {
+        let response = self
+            .client
+            .get(format!("{}/auth/poll", self.api_base))
+            .query(&[("uuid", uuid), ("verifier", verifier)])
+            .send()
+            .await
+            .map_err(network_failure)?;
+        // Cursor answers a sign-in nobody has approved yet with 404, so this is
+        // the pending case rather than a failure.
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let tokens: ExchangeTokens =
+            decode_response(response, "Cursor browser sign-in", true).await?;
+        if tokens.access_token.expose_secret().trim().is_empty() {
+            return Err(ApiFailure::protocol(
+                "Cursor browser sign-in returned an empty access token",
+            ));
+        }
+        Ok(Some(tokens))
     }
 
     async fn current_period(&self, access_token: &str) -> Result<CurrentPeriodUsage, ApiFailure> {

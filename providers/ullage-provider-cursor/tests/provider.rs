@@ -5,11 +5,13 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use async_trait::async_trait;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use ullage_auth::{
     AuthCompleteRequest, AuthMethod, AuthStartRequest, AuthState, Availability, BackendKind,
-    BackendScope, CredentialBackend, CredentialError, CredentialKey, CredentialStore,
-    LogoutRequest,
+    BackendScope, Credential, CredentialBackend, CredentialError, CredentialKey, CredentialStore,
+    LogoutRequest, SecretValue,
 };
 use ullage_core::{
     MeasurementUnit, Provider, ProviderError, QueryOutcome, UsageQuery, UsageWindowKind,
@@ -21,6 +23,7 @@ use ullage_provider_cursor::{
 
 struct FakeApi {
     exchanges: Mutex<VecDeque<Result<ExchangeTokens, ApiFailure>>>,
+    polls: Mutex<VecDeque<Result<Option<ExchangeTokens>, ApiFailure>>>,
     periods: Mutex<VecDeque<Result<CurrentPeriodUsage, ApiFailure>>>,
     plan: Result<PlanInfoResponse, ApiFailure>,
     grants: Result<CreditGrantsBalance, ApiFailure>,
@@ -98,6 +101,10 @@ struct SwitchingApi {
 impl CursorApi for FakeApi {
     async fn exchange_user_api_key(&self, _: &str) -> Result<ExchangeTokens, ApiFailure> {
         self.exchanges.lock().unwrap().pop_front().unwrap()
+    }
+
+    async fn poll_login(&self, _: &str, _: &str) -> Result<Option<ExchangeTokens>, ApiFailure> {
+        self.polls.lock().unwrap().pop_front().unwrap()
     }
 
     async fn current_period(&self, _: &str) -> Result<CurrentPeriodUsage, ApiFailure> {
@@ -371,6 +378,7 @@ fn fake_api(periods: Vec<Result<CurrentPeriodUsage, ApiFailure>>) -> Arc<FakeApi
             Ok(exchange("first-access")),
             Ok(exchange("second-access")),
         ])),
+        polls: Mutex::new(VecDeque::new()),
         periods: Mutex::new(periods.into()),
         plan: Ok(PlanInfoResponse {
             plan_info: Some(PlanInfo {
@@ -393,7 +401,7 @@ fn fake_api(periods: Vec<Result<CurrentPeriodUsage, ApiFailure>>) -> Arc<FakeApi
 
 fn authenticate(provider: &CursorProvider) {
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
-        method: Some(AuthMethod::BrowserOAuth),
+        method: Some(AuthMethod::ApiToken),
         redirect_uri: None,
     }))
     .unwrap();
@@ -473,6 +481,99 @@ fn query_ignores_a_custom_display_label() {
         unreachable!("query succeeded with complete outcome");
     };
     assert_eq!(data.account_label.as_deref(), Some("user@example.com"));
+}
+
+/// A Cursor session token with the given expiry. Only the payload is read, so
+/// the header and signature are filler.
+fn session_token(expires_in_seconds: i64) -> String {
+    let exp = Utc::now().timestamp() + expires_in_seconds;
+    let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
+    format!("header.{payload}.signature")
+}
+
+#[test]
+fn browser_sign_in_polls_then_stores_a_session_that_needs_no_exchange() {
+    let store = Arc::new(CredentialStore::new(MemoryCredentialBackend::default()));
+    let api = fake_api(Vec::new());
+    let token = session_token(60 * 60);
+    api.polls
+        .lock()
+        .unwrap()
+        .extend([Ok(None), Ok(Some(exchange(&token)))]);
+    let provider = CursorProvider::with_api_and_store(api.clone(), store.clone()).unwrap();
+
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
+    assert_eq!(challenge.method, AuthMethod::DeviceCode);
+    assert!(challenge.input.is_none());
+    let login_url = challenge.verification_uri.clone().unwrap();
+    assert!(login_url.starts_with("https://cursor.com/loginDeepControl?challenge="));
+    assert!(login_url.contains("&mode=login&redirectTarget=cli"));
+
+    let complete = |flow_id: String| {
+        run_ready(provider.complete_auth(AuthCompleteRequest {
+            flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        }))
+    };
+    assert!(matches!(
+        complete(challenge.flow_id.clone()).unwrap(),
+        AuthState::Pending { ref flow_id, .. } if *flow_id == challenge.flow_id
+    ));
+    let authenticated = complete(challenge.flow_id.clone()).unwrap();
+    assert!(matches!(
+        authenticated,
+        AuthState::Authenticated {
+            account_label: Some(ref label),
+            expires_at: Some(_),
+        } if label == "user@example.com"
+    ));
+    drop(provider);
+
+    // The stored session is used as-is. The fake would hand out an API key
+    // exchange here, so reaching for one would change the access token.
+    let restored = CursorProvider::with_api_and_store(api.clone(), store.clone()).unwrap();
+    assert!(matches!(
+        run_ready(restored.auth_status()).unwrap(),
+        AuthState::Authenticated {
+            expires_at: Some(_),
+            ..
+        }
+    ));
+    assert_eq!(api.exchanges.lock().unwrap().len(), 2);
+    // Nothing can renew a browser session, so an expired one asks for a new one.
+    assert!(matches!(
+        run_ready(restored.refresh_auth()).unwrap(),
+        AuthState::Authenticated { .. }
+    ));
+    drop(restored);
+
+    store
+        .set(
+            &CredentialKey::new("cursor", "active").unwrap(),
+            expired_session_credential(),
+        )
+        .unwrap();
+    let stale = CursorProvider::with_api_and_store(api, store).unwrap();
+    assert!(matches!(
+        run_ready(stale.auth_status()).unwrap(),
+        AuthState::Invalid { .. }
+    ));
+}
+
+fn expired_session_credential() -> Credential {
+    let mut credential = Credential::new();
+    credential
+        .insert(
+            "access_token",
+            SecretValue::new(session_token(-60).as_bytes()),
+        )
+        .unwrap();
+    credential
 }
 
 #[test]
@@ -680,6 +781,7 @@ fn classifies_invalid_api_key_and_rejects_stale_flow() {
         exchanges: Mutex::new(VecDeque::from([Err(ApiFailure::authentication(
             "invalid API key",
         ))])),
+        polls: Mutex::new(VecDeque::new()),
         periods: Mutex::new(VecDeque::new()),
         plan: Ok(PlanInfoResponse::default()),
         grants: Ok(CreditGrantsBalance::default()),

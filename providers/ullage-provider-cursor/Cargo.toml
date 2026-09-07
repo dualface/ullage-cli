@@ -7,11 +7,17 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+base64 = "0.22"
 chrono.workspace = true
+getrandom = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio.workspace = true
 ullage-auth.workspace = true
 ullage-core.workspace = true
 zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+base64 = "0.22"
