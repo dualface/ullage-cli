@@ -344,7 +344,7 @@ final class LoginWizardModel {
         busy = true
         defer { busy = false }
         do {
-            let client = try manager.client()
+            let client = try manager.client(timeout: Self.pollTimeout)
             // The previous attempt may have succeeded on a reply that never
             // arrived. Starting a new flow would hide that credential behind a
             // pending one and leave Cancel free to delete it.
@@ -353,6 +353,12 @@ final class LoginWizardModel {
                 account: account.id
             )
             if case .authenticated = state {
+                // Cancelled from here, not from `handle`: that runs inside the
+                // polling task itself and must not cancel itself mid-setup.
+                // Left running, its next failure on the now-consumed flow would
+                // overwrite the result of a sign-in that worked.
+                pollingTask?.cancel()
+                pollingTask = nil
                 try await handle(state)
                 return
             }
@@ -510,7 +516,9 @@ final class LoginWizardModel {
         guard let account, !authenticated else { return }
         let client: LocalControlClient
         do {
-            client = try manager.client()
+            // Reading the sign-in state can make the daemon refresh a token,
+            // which takes as long as any other provider call.
+            client = try manager.client(timeout: Self.pollTimeout)
         } catch {
             message = "Temporary account could not be removed: \(error.localizedDescription)"
             return

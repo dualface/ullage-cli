@@ -166,6 +166,28 @@ final class LoginCallbackWizardTests: XCTestCase {
         await model.cancel()
     }
 
+    /// A device-code poll left running after Retry resumed a stored sign-in
+    /// would report the now-consumed flow as failed and overwrite the result.
+    @MainActor
+    func testResumingASignInStopsTheDeviceCodePoll() async throws {
+        let recorder = ControlRecorder()
+        let model = try makeModel(
+            recorder: recorder,
+            provider: "grok",
+            authenticationMethod: "device_code",
+            probeSucceeds: true
+        ) { _ in CallbackListenerFixture(redirectURI: self.redirectURI, outcome: nil) }
+        model.provider = "grok"
+
+        await model.begin()
+        await model.retry()
+        XCTAssertTrue(model.setupCompleted)
+
+        let connected = model.message
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(model.message, connected, "a stale poll overwrote the result")
+    }
+
     /// Retry has to wait for the previous endpoint to actually let go of the
     /// port; closing it only asks the accept loop to stop.
     @MainActor
