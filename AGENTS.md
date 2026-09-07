@@ -33,3 +33,10 @@ the current task.
   `.app` to `pro2026:~/Desktop/` after notarization succeeds, then quit any
   running `Ullage`/`UllageMac` instance and `open` the Desktop app so the new
   build starts automatically.
+- Replacing the bundle does not replace the running daemon. `ullage-daemon` is
+  kept alive by launchd through the Login Item, so it goes on serving the
+  binary it was started from and the new build talks to stale daemon code.
+  After installing, restart it explicitly:
+  `launchctl kickstart -k gui/$(id -u)/com.ullage.mac.daemon`, and confirm the
+  process start time is current before testing anything that reaches the
+  daemon.
