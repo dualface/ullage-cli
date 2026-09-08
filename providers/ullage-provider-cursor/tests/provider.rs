@@ -535,7 +535,7 @@ fn browser_sign_in_polls_then_stores_a_session_that_needs_no_exchange() {
             account_key: Some(ref key),
             expires_at: Some(_),
             ..
-        } if key == "user|abc123"
+        } if *key == ullage_auth::account_identity("user|abc123").unwrap()
     ));
     drop(provider);
 
@@ -571,7 +571,7 @@ fn browser_sign_in_polls_then_stores_a_session_that_needs_no_exchange() {
         AuthState::Invalid {
             account_key: Some(ref key),
             ..
-        } if key == "user|abc123"
+        } if *key == ullage_auth::account_identity("user|abc123").unwrap()
     ));
 }
 
@@ -608,7 +608,7 @@ fn a_rejected_session_still_reports_the_identity_it_belonged_to() {
         AuthState::Invalid {
             account_key: Some(ref key),
             ..
-        } if key == "user@example.com"
+        } if *key == ullage_auth::account_identity("user@example.com").unwrap()
     ));
 }
 

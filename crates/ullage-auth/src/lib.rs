@@ -16,6 +16,24 @@ pub use file_store::{
 };
 pub use native_store::NativeStore;
 pub use redirect::validate_loopback_http_redirect_uri;
+
+/// Opaque form of a provider's account identity.
+///
+/// The raw value is an email address or a provider account id, which names a
+/// person. Nothing reads it: accounts are only ever compared for equality, so
+/// hashing keeps that comparison working while keeping the identity itself out
+/// of the control protocol, logs and terminal output. Trimming and lowercasing
+/// first makes the comparison insensitive to how a provider spells it back.
+///
+/// `None` for a value that is empty once trimmed, which names no account and
+/// must therefore never match another.
+pub fn account_identity(value: &str) -> Option<String> {
+    let value = value.trim().to_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+    Some(format!("{:x}", sha2::Sha256::digest(value.as_bytes())))
+}
 pub use store::{
     Availability, BackendKind, BackendScope, CredentialBackend, CredentialError, CredentialStore,
     RefreshError, RefreshFailure, RefreshFailureKind, ReplaceOutcome,
@@ -24,10 +42,31 @@ pub use store::{
 pub use windows_identity::{current_windows_user_scope, new_windows_service_nonce};
 
 #[cfg(test)]
+mod identity_tests {
+    use super::account_identity;
+
+    #[test]
+    fn identity_hides_the_value_while_still_matching_the_same_account() {
+        let key = account_identity("User@Example.Test").unwrap();
+        // Spelling differences a provider may introduce must still match.
+        assert_eq!(account_identity(" user@example.test ").as_ref(), Some(&key));
+        // And the address itself must not survive into what anything can read.
+        assert!(!key.contains("example"));
+        assert_eq!(key.len(), 64);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+
+        assert_ne!(account_identity("other@example.test").unwrap(), key);
+        assert_eq!(account_identity("   "), None);
+        assert_eq!(account_identity(""), None);
+    }
+}
+
+#[cfg(test)]
 mod credential_store_tests;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

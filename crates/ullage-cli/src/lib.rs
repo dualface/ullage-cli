@@ -2972,6 +2972,8 @@ fn redact_revealable_values(result: &mut ControlResult) {
             }
         }
         ControlResult::AuthState(state) => match state {
+            // `account_key` needs no redaction: it is already a digest, which
+            // is all anything compares.
             AuthState::Authenticated { account_label, .. } => {
                 if account_label.is_some() {
                     *account_label = Some("[redacted]".into());

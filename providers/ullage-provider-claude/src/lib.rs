@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
-    LogoutRequest, validate_loopback_http_redirect_uri,
+    LogoutRequest, account_identity, validate_loopback_http_redirect_uri,
 };
 use ullage_core::{
     Capability, MeasurementUnit, PartialFailure, Provider, ProviderDescriptor, ProviderError,
@@ -376,7 +376,7 @@ impl Provider for ClaudeProvider {
                         // A credential that can no longer be refreshed still
                         // belongs to this account, so a fresh sign-in as the
                         // same identity supersedes it.
-                        account_key: credential.account_key.clone(),
+                        account_key: credential.account_key.as_deref().and_then(account_identity),
                     })
                 }
                 Err(error) => Err(error),
@@ -708,7 +708,7 @@ fn credential_from_response(
 fn authenticated_state(credential: &ClaudeCredential) -> AuthState {
     AuthState::Authenticated {
         account_label: credential.account_label.clone(),
-        account_key: credential.account_key.clone(),
+        account_key: credential.account_key.as_deref().and_then(account_identity),
         expires_at: credential.expires_at,
     }
 }
@@ -1300,7 +1300,7 @@ mod tests {
             AuthState::Authenticated {
                 account_key: Some(ref key),
                 ..
-            } if key == "acct-1"
+            } if *key == account_identity("acct-1").unwrap()
         ));
     }
 

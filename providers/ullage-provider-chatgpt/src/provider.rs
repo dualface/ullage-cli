@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
-    LogoutRequest,
+    LogoutRequest, account_identity,
 };
 use ullage_core::{
     Capability, Provider, ProviderDescriptor, ProviderError, ProviderId, ProviderResult,
@@ -610,7 +610,10 @@ where
         let Some(session) = self.store.load().map_err(ProviderError::from)? else {
             return Ok(AuthState::NotAuthenticated);
         };
-        let account_key = session.selected_workspace_id.clone();
+        let account_key = session
+            .selected_workspace_id
+            .as_deref()
+            .and_then(account_identity);
         if let Some(reason) = session.invalid_reason.clone() {
             return Ok(AuthState::Invalid {
                 reason,
@@ -762,7 +765,10 @@ fn authenticated_state(session: &ChatGptSession) -> AuthState {
         account_label,
         // The label above is a workspace name, which two different accounts can
         // share; the workspace ID is what actually identifies this sign-in.
-        account_key: session.selected_workspace_id.clone(),
+        account_key: session
+            .selected_workspace_id
+            .as_deref()
+            .and_then(account_identity),
         expires_at: session.tokens.expires_at,
     }
 }

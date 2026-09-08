@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
     Credential, CredentialError, CredentialKey, CredentialStore, LogoutRequest, SecretValue,
+    account_identity,
 };
 use ullage_core::{
     Capability, PartialFailure, Provider, ProviderDescriptor, ProviderError, ProviderId,
@@ -515,7 +516,7 @@ impl CursorProvider {
         });
         Ok((
             AuthState::Authenticated {
-                account_key,
+                account_key: account_key.as_deref().and_then(account_identity),
                 account_label,
                 expires_at,
             },
@@ -874,7 +875,10 @@ impl Provider for CursorProvider {
         if let Some(reason) = &state.invalid_reason {
             return Ok(AuthState::Invalid {
                 reason: reason.clone(),
-                account_key: state.invalid_account_key.clone(),
+                account_key: state
+                    .invalid_account_key
+                    .as_deref()
+                    .and_then(account_identity),
             });
         }
         if let Some(auth) = &state.auth {
@@ -1006,12 +1010,12 @@ fn session_auth_state(auth: &AuthMaterial) -> AuthState {
             reason: "the Cursor browser sign-in expired".into(),
             // The session expired, but it is still this account's session, so a
             // fresh sign-in as the same identity supersedes it.
-            account_key: auth.account_key.clone(),
+            account_key: auth.account_key.as_deref().and_then(account_identity),
         };
     }
     AuthState::Authenticated {
         account_label: auth.account_label.clone(),
-        account_key: auth.account_key.clone(),
+        account_key: auth.account_key.as_deref().and_then(account_identity),
         expires_at: auth.expires_at,
     }
 }

@@ -10,7 +10,7 @@ use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use ullage_auth::{AuthChallenge, AuthInputRequest, AuthMethod, AuthState};
+use ullage_auth::{AuthChallenge, AuthInputRequest, AuthMethod, AuthState, account_identity};
 use ullage_core::{ProviderError, ProviderResult};
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +73,7 @@ impl OAuthToken {
             account_label: self.account_label.clone(),
             // x.ai reports an email or subject, which names the signed-in user
             // rather than anything the user chose.
-            account_key: self.account_label.clone(),
+            account_key: self.account_label.as_deref().and_then(account_identity),
             expires_at: self.expires_at,
         }
     }
