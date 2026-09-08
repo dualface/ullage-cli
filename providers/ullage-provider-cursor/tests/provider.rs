@@ -487,7 +487,9 @@ fn query_ignores_a_custom_display_label() {
 /// the header and signature are filler.
 fn session_token(expires_in_seconds: i64) -> String {
     let exp = Utc::now().timestamp() + expires_in_seconds;
-    let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
+    // Shaped like the real one: `sub` names the signed-in user, and no email
+    // appears anywhere.
+    let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp},"sub":"user|abc123"}}"#));
     format!("header.{payload}.signature")
 }
 
@@ -525,13 +527,15 @@ fn browser_sign_in_polls_then_stores_a_session_that_needs_no_exchange() {
         AuthState::Pending { ref flow_id, .. } if *flow_id == challenge.flow_id
     ));
     let authenticated = complete(challenge.flow_id.clone()).unwrap();
+    // Cursor's browser tokens carry no email, so the identity has to come from
+    // the token's subject or the account cannot be compared with any other.
     assert!(matches!(
         authenticated,
         AuthState::Authenticated {
-            account_label: Some(ref label),
+            account_key: Some(ref key),
             expires_at: Some(_),
             ..
-        } if label == "user@example.com"
+        } if key == "user|abc123"
     ));
     drop(provider);
 
@@ -567,7 +571,7 @@ fn browser_sign_in_polls_then_stores_a_session_that_needs_no_exchange() {
         AuthState::Invalid {
             account_key: Some(ref key),
             ..
-        } if key == "user@example.com"
+        } if key == "user|abc123"
     ));
 }
 
@@ -577,12 +581,6 @@ fn expired_session_credential() -> Credential {
         .insert(
             "access_token",
             SecretValue::new(session_token(-60).as_bytes()),
-        )
-        .unwrap();
-    credential
-        .insert(
-            "account_label",
-            SecretValue::new(b"user@example.com".as_slice()),
         )
         .unwrap();
     credential

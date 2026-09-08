@@ -79,6 +79,9 @@ struct AuthMaterial {
     api_key: Option<Zeroizing<String>>,
     access_token: Zeroizing<String>,
     account_label: Option<String>,
+    /// Identity of the signed-in account, which unlike the label above the
+    /// browser sign-in can produce: its tokens carry no email.
+    account_key: Option<String>,
     expires_at: Option<DateTime<Utc>>,
 }
 
@@ -192,6 +195,7 @@ impl CursorProvider {
                 let access_token = exchange.access_token.take();
                 AuthMaterial {
                     expires_at: token_expiry(&access_token),
+                    account_key: token_subject(&access_token, saved_label.as_deref()),
                     api_key: Some(Zeroizing::new(api_key)),
                     access_token,
                     account_label: saved_label,
@@ -204,6 +208,7 @@ impl CursorProvider {
                     Zeroizing::new(credential_string(stored.credential(), "access_token")?);
                 AuthMaterial {
                     expires_at: token_expiry(&access_token),
+                    account_key: token_subject(&access_token, saved_label.as_deref()),
                     api_key: None,
                     access_token,
                     account_label: saved_label,
@@ -500,15 +505,17 @@ impl CursorProvider {
         state.invalid_reason = None;
         state.invalid_account_key = None;
         let expires_at = token_expiry(&access_token);
+        let account_key = token_subject(&access_token, account_label.as_deref());
         state.auth = Some(AuthMaterial {
             api_key,
             access_token,
             account_label: account_label.clone(),
+            account_key: account_key.clone(),
             expires_at,
         });
         Ok((
             AuthState::Authenticated {
-                account_key: account_label.clone(),
+                account_key,
                 account_label,
                 expires_at,
             },
@@ -587,7 +594,7 @@ impl CursorProvider {
                 state.generation = state.generation.wrapping_add(1);
                 state.session_id = state.session_id.wrapping_add(1);
                 state.pending_flow = None;
-                state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_label);
+                state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_key);
                 state.invalid_reason = Some(error.message.clone());
             }
             return Ok(ExchangeFailureResolution::Failed(
@@ -648,7 +655,7 @@ impl CursorProvider {
         state.generation = state.generation.wrapping_add(1);
         state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = None;
-        state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_label);
+        state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_key);
         state.invalid_reason = Some(error.message.clone());
         Err(error)
     }
@@ -999,14 +1006,12 @@ fn session_auth_state(auth: &AuthMaterial) -> AuthState {
             reason: "the Cursor browser sign-in expired".into(),
             // The session expired, but it is still this account's session, so a
             // fresh sign-in as the same identity supersedes it.
-            account_key: auth.account_label.clone(),
+            account_key: auth.account_key.clone(),
         };
     }
     AuthState::Authenticated {
         account_label: auth.account_label.clone(),
-        // Cursor reports the signed-in email, which the exchange fixes rather
-        // than the user.
-        account_key: auth.account_label.clone(),
+        account_key: auth.account_key.clone(),
         expires_at: auth.expires_at,
     }
 }
@@ -1030,10 +1035,27 @@ fn login_deep_link(uuid: &str, verifier: &str) -> String {
 /// a fixed lifetime and no way to renew one, so this is what tells a client when
 /// signing in again becomes necessary.
 fn token_expiry(access_token: &str) -> Option<DateTime<Utc>> {
+    DateTime::from_timestamp(token_claim(access_token, "exp")?.as_i64()?, 0)
+}
+
+/// Identity of the signed-in account, taken from the session token's `sub`
+/// claim. The browser sign-in returns tokens without an email, so the exchanged
+/// address cannot be the identity; `sub` is issued for both paths, which also
+/// lets an API key account and a browser account of one person match. The email
+/// remains the fallback for a token that carries no subject.
+fn token_subject(access_token: &str, email: Option<&str>) -> Option<String> {
+    token_claim(access_token, "sub")
+        .and_then(|claim| claim.as_str().map(str::to_owned))
+        .or_else(|| email.map(str::to_owned))
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn token_claim(access_token: &str, name: &str) -> Option<serde_json::Value> {
     let payload = access_token.split('.').nth(1)?;
     let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
-    DateTime::from_timestamp(claims.get("exp")?.as_i64()?, 0)
+    claims.get(name).cloned()
 }
 
 fn random_url_token() -> ProviderResult<String> {
