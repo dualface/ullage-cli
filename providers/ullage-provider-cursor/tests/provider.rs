@@ -372,6 +372,17 @@ fn exchange(token: &str) -> ExchangeTokens {
     }
 }
 
+/// An API key exchange that answers with a real session token, the way Cursor
+/// does. Its subject is the one the browser fixture uses, because both paths
+/// sign in the same person.
+fn jwt_exchange() -> ExchangeTokens {
+    ExchangeTokens {
+        access_token: SecretString::new(session_token(60 * 60)),
+        refresh_token: Some(SecretString::new("redacted-refresh-token")),
+        email: Some("USER@EXAMPLE.COM".into()),
+    }
+}
+
 fn fake_api(periods: Vec<Result<CurrentPeriodUsage, ApiFailure>>) -> Arc<FakeApi> {
     Arc::new(FakeApi {
         exchanges: Mutex::new(VecDeque::from([
@@ -584,6 +595,43 @@ fn expired_session_credential() -> Credential {
         )
         .unwrap();
     credential
+}
+
+#[test]
+fn one_person_is_the_same_account_through_an_api_key_or_the_browser() {
+    // Two credential shapes for one person have to recognise each other, or a
+    // browser sign-in would sit beside the API key account it replaces.
+    let api_key_api = fake_api(Vec::new());
+    *api_key_api.exchanges.lock().unwrap() = VecDeque::from([Ok(jwt_exchange())]);
+    let api_key_account = CursorProvider::with_api(api_key_api);
+    authenticate(&api_key_account);
+
+    let browser_api = fake_api(Vec::new());
+    browser_api
+        .polls
+        .lock()
+        .unwrap()
+        .push_back(Ok(Some(exchange(&session_token(60 * 60)))));
+    let browser_account = CursorProvider::with_api(browser_api);
+    let challenge = run_ready(browser_account.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
+    run_ready(browser_account.complete_auth(AuthCompleteRequest {
+        flow_id: challenge.flow_id,
+        authorization_code: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
+
+    let identity = |provider: &CursorProvider| match run_ready(provider.auth_status()).unwrap() {
+        AuthState::Authenticated { account_key, .. } => account_key,
+        other => panic!("unexpected state: {other:?}"),
+    };
+    let key = identity(&api_key_account);
+    assert!(key.is_some());
+    assert_eq!(identity(&browser_account), key);
 }
 
 #[test]

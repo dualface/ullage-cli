@@ -543,8 +543,6 @@ fn probe_error_diagnostic(diagnostics: bool, error: &ProbeError) -> Option<Strin
     }
 }
 
-/// `AuthState::Invalid.reason` is provider text. Keep it only when this call
-/// opted into diagnostics; otherwise replace it with the stable sanitized kind.
 /// The identity an authentication state names, trimmed and non-empty. An
 /// expired or rejected credential still belongs to the account that created it,
 /// so `Invalid` counts here as well as `Authenticated`.
@@ -558,6 +556,8 @@ fn identity_of(state: &ullage_auth::AuthState) -> Option<String> {
     (!key.is_empty()).then(|| key.to_owned())
 }
 
+/// `AuthState::Invalid.reason` is provider text. Keep it only when this call
+/// opted into diagnostics; otherwise replace it with the stable sanitized kind.
 fn sanitize_auth_state(diagnostics: bool, state: ullage_auth::AuthState) -> ullage_auth::AuthState {
     match state {
         ullage_auth::AuthState::Invalid { .. } if !diagnostics => ullage_auth::AuthState::Invalid {
