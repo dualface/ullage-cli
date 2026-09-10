@@ -119,7 +119,7 @@ final class MetricFilterEditorTests: XCTestCase {
         let usage = try XCTUnwrap(UllageFixtures.snapshot(named: "chatgpt").usage.data)
         XCTAssertEqual(
             metricFilterCandidates(for: usage),
-            ["Codex", "requests", "GPT-5.3-Codex-Spark", "available count", "credit balance"]
+            ["Codex", "requests", "GPT-5.3", "available count", "credit balance"]
         )
     }
 }

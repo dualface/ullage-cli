@@ -378,18 +378,17 @@ private struct TabBar: View {
 
     /// A dot on the tab when that account has a row in its last two tiers, so
     /// the account worth opening is visible without switching tabs.
+    ///
+    /// The tier reads the unfiltered row set: a stored metric filter only
+    /// narrows what is rendered, it never hides a warning.
     private func warningTier(for account: Account) -> RemainingTier? {
         guard let usage = store.snapshot(for: account.id)?.usage.data else { return nil }
-        let ratios = visibleOverviewItems(
+        return overviewWarningTier(
             for: usage,
             accountID: account.id,
             hiddenIDs: settings.hiddenOverviewItemIDs,
-            shownIDs: settings.shownOverviewItemIDs,
-            filter: MetricFilter(persistedNames: account.metrics)
-        ).compactMap(\.row.remainingRatio)
-        guard let lowest = ratios.min() else { return nil }
-        let tier = RemainingTier(ratio: lowest)
-        return tier == .low || tier == .critical ? tier : nil
+            shownIDs: settings.shownOverviewItemIDs
+        )
     }
 
     private func tab(

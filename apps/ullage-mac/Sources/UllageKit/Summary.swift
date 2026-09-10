@@ -247,6 +247,29 @@ public func visibleOverviewItems(
     return items
 }
 
+/// The lowest remaining tier across an account's visible Overview rows,
+/// reported only when it deserves the tab warning dot.
+///
+/// The projection is deliberately unfiltered: a stored metric filter narrows
+/// what the UI renders, but it must not hide a warning or disagree with the
+/// status badges, which read the same unfiltered summary.
+public func overviewWarningTier(
+    for usage: SubscriptionUsage,
+    accountID: String,
+    hiddenIDs: Set<String>,
+    shownIDs: Set<String> = []
+) -> RemainingTier? {
+    let ratios = visibleOverviewItems(
+        for: usage,
+        accountID: accountID,
+        hiddenIDs: hiddenIDs,
+        shownIDs: shownIDs
+    ).compactMap(\.row.remainingRatio)
+    guard let lowest = ratios.min() else { return nil }
+    let tier = RemainingTier(ratio: lowest)
+    return tier == .low || tier == .critical ? tier : nil
+}
+
 private struct OverviewIdentityBase: Hashable {
     let windowKey: String
     let measurementName: String
@@ -791,6 +814,7 @@ private func metricDisplayName(_ originalName: String) -> String {
     var name = originalName
     if name.hasPrefix("product:") { name.removeFirst("product:".count) }
     if name.hasSuffix("_usage") { name.removeLast("_usage".count) }
+    if name.hasSuffix("-Codex-Spark") { name.removeLast("-Codex-Spark".count) }
     if name.isEmpty { return "usage" }
     if let brand = brandNames[name] { return brand }
     return name.replacingOccurrences(of: "_", with: " ")

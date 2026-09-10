@@ -36,7 +36,7 @@ private func date(_ value: String) throws -> Date {
             remainingRatio: 0.69, disabled: false
         ),
         SummaryRow(
-            window: "weekly · GPT-5.3-Codex-Spark", metric: "GPT-5.3-Codex-Spark",
+            window: "weekly · GPT-5.3", metric: "GPT-5.3",
             value: .remains(58), resetsAt: try date("2026-09-07T00:00:00Z"),
             remainingRatio: 0.58, disabled: false
         ),
@@ -160,10 +160,10 @@ private func date(_ value: String) throws -> Date {
     #expect(chatGPTRows.map(\.window) == [
         "5h",
         "weekly · Codex",
-        "weekly · GPT-5.3-Codex-Spark",
+        "weekly · GPT-5.3",
         "Rate limit reset credits",
     ])
-    #expect(chatGPTRows.map(\.metric) == ["Codex", "Codex", "GPT-5.3-Codex-Spark", "available count"])
+    #expect(chatGPTRows.map(\.metric) == ["Codex", "Codex", "GPT-5.3", "available count"])
     #expect(chatGPTRows.map(\.remainingRatio) == [0.06, 0.69, 0.58, nil])
 
     let claudeRows = overviewRows(for: try usage("claude"))
@@ -886,4 +886,29 @@ private func date(_ value: String) throws -> Date {
         menuBarLiquidLevels(accounts: [plain], snapshots: [grok], pinnedMetricID: nil)
             == menuBarLiquidLevels(accounts: [filtered], snapshots: [grok], pinnedMetricID: nil)
     )
+}
+
+@Test func sparkMeasurementsUseTheDurableDisplayName() throws {
+    let chatGPT = try usage("chatgpt")
+    let summary = summarize(chatGPT)
+    #expect(summary.rows.filter { $0.metric.hasPrefix("GPT-5.3") }.map(\.metric) == ["GPT-5.3"])
+    #expect(overviewRows(for: chatGPT).map(\.metric).contains("GPT-5.3"))
+}
+
+@Test func storedMetricFilterDoesNotChangeTheTabWarningTier() throws {
+    let snapshot = try fixture("chatgpt")
+    let chatGPT = try #require(snapshot.usage.data)
+    let filter = try MetricFilter(names: ["requests"])
+    let filteredRatios = visibleOverviewItems(
+        for: chatGPT,
+        accountID: snapshot.accountId,
+        hiddenIDs: [],
+        filter: filter
+    ).compactMap(\.row.remainingRatio)
+    // The filter hides the lowest-remaining row, so a warning computed from the
+    // filtered rows would only see the 40% row and stay silent.
+    #expect(filteredRatios == [0.4])
+    let lowestFiltered = try #require(filteredRatios.min())
+    #expect(RemainingTier(ratio: lowestFiltered) == .caution)
+    #expect(overviewWarningTier(for: chatGPT, accountID: snapshot.accountId, hiddenIDs: []) == .critical)
 }
