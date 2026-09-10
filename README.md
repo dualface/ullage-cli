@@ -375,10 +375,18 @@ GET  /v1/providers
 GET  /v1/accounts
 GET  /v1/accounts/{id}
 GET  /v1/usage?account={id}
+GET  /v1/usage?account={id}&metric={display-name}
 POST /v1/accounts/{id}/probe?wait=false
 ```
 
-`/v1/usage` reads cached snapshots and does not contact providers. Probe
+`/v1/usage` reads cached snapshots and does not contact providers. Repeat
+`metric=` to keep the union of several display names. Matching is exact and
+case-insensitive and ignores the window a row belongs to. Only display rows are
+filtered: hidden bookkeeping such as `limit_reached` still reaches the client,
+so a reached limit stays visible. A valid but unknown name returns `200` with
+no visible measurements; an empty, over-long, over-count, or control-character
+name returns `400 invalid_metric`. `metric` is accepted on `/v1/usage` only;
+other routes reject it as `400 bad_request`. Probe
 requests for the same account within `http.probe_min_interval_seconds`
 (default 60) return `429` with `Retry-After`. Authentication, account mutation,
 and workspace control messages stay on the private control socket.
@@ -485,6 +493,7 @@ ullage account show <account-id>
 ullage account enable <account-id>
 ullage account disable <account-id>
 ullage account label <account-id> [label]
+ullage account metrics <account-id> [metric]...
 ullage account remove <account-id>
 ```
 
@@ -492,6 +501,12 @@ The same provider may have multiple accounts. Credentials and snapshots are
 isolated per account. `account label` renames an account in place; omit the
 label to clear it. Interactive login also asks for a label after a successful
 authentication.
+
+`account list` shows a `METRICS` column and `account show` a `METRICS` line,
+both reading `-` when nothing is stored. `account metrics` replaces the stored
+filter; omit every name to clear it. Names follow the same display-name rules
+as `--metric`: exact, case-insensitive matches that ignore the window a row
+belongs to. An invalid name exits `64` without contacting the daemon.
 
 ## Authentication
 
@@ -537,11 +552,29 @@ on the daemon response is rejected as invalid.
 ullage probe <account-id>
 ullage probe <account-id> --no-wait
 ullage show <account-id>
+ullage show <account-id> --metric usage
 ullage show --all
+ullage show --all --no-metric-filter
 ```
 
 `probe` queries the provider and persists a snapshot. `show` reads persisted
 snapshots and does not call the provider.
+
+`--metric <display-name>` keeps only the summary rows whose display name matches
+exactly, ignoring case and the window a row belongs to; repeat the flag to keep
+the union of several names. `--no-metric-filter` ignores the account's stored
+filter for one invocation. Without either flag, the readable summary applies the
+account's stored filter: `show --all` follows each account's own list, and
+`probe` applies the stored filter of the account it queried. An invalid metric
+name exits `64` without contacting the daemon. Both flags affect the readable
+summary only: `--raw` and JSON output keep every measurement.
+
+When a filter hides every row but the account still has summarizable metrics,
+the account heading and the `updated` line stay, a
+`! no rows match the metric filter: <names>` line names the requested metrics,
+and the stale, limit, and partial notices still print; the raw table is not used
+as a fallback. An account with no summarizable measurements still falls back to
+raw output as before.
 
 Table output defaults to a readable summary: one line per usable measurement,
 with the window, the metric, how much quota is left, when the window resets,
