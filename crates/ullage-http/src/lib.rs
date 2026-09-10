@@ -1,6 +1,8 @@
 //! Local HTTP query interface for the Ullage daemon.
 
 mod bind;
+mod metric;
+mod query;
 mod server;
 
 pub use bind::{
