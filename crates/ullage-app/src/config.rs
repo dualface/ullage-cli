@@ -4,7 +4,7 @@ use std::{fs::File, io::Read};
 
 use serde::{Deserialize, Serialize};
 use ullage_auth::CredentialKey;
-use ullage_core::{ProviderId, UsageQuery};
+use ullage_core::{ProviderId, UsageQuery, summary::MetricFilter};
 use ullage_daemon::{AccountConfig, AccountId, BackoffConfig, DaemonConfig, ProviderLimit};
 use ullage_http::parse_http_bind;
 
@@ -125,6 +125,9 @@ pub struct AccountSettings {
     pub jitter_seconds: u64,
     pub backoff_initial_seconds: u64,
     pub backoff_maximum_seconds: u64,
+    /// Display metric names seeded into a newly created account; empty means no
+    /// filter.
+    pub metrics: Vec<String>,
 }
 
 impl Default for AccountSettings {
@@ -139,13 +142,20 @@ impl Default for AccountSettings {
             jitter_seconds: 5,
             backoff_initial_seconds: 30,
             backoff_maximum_seconds: 1800,
+            metrics: Vec::new(),
         }
     }
 }
 
 impl AccountSettings {
-    pub fn build(&self) -> AccountConfig {
-        AccountConfig {
+    pub fn build(&self) -> Result<AccountConfig, String> {
+        let metrics = MetricFilter::new(self.metrics.clone()).map_err(|error| {
+            format!(
+                "configured account metrics are invalid for account {}: {error}",
+                self.id
+            )
+        })?;
+        Ok(AccountConfig {
             id: AccountId::new(&self.id),
             provider: ProviderId::new(&self.provider),
             query: UsageQuery {
@@ -159,7 +169,8 @@ impl AccountSettings {
                 initial: Duration::from_secs(self.backoff_initial_seconds),
                 maximum: Duration::from_secs(self.backoff_maximum_seconds),
             },
-        }
+            metrics: metrics.names().to_vec(),
+        })
     }
 }
 
@@ -287,12 +298,22 @@ fn validate(config: &AppConfig) -> Result<(), String> {
         if account.id.trim().is_empty()
             || !PROVIDERS.contains(&account.provider.as_str())
             || CredentialKey::new(&account.provider, &account.id).is_err()
-            || account.id.chars().any(is_unsafe_identity_character)
+            || account
+                .id
+                .chars()
+                .any(ullage_core::is_unsafe_identity_character)
             || account.label.as_deref().is_some_and(|label| {
-                label.trim().is_empty() || label.chars().any(is_unsafe_identity_character)
+                label.trim().is_empty()
+                    || label.chars().any(ullage_core::is_unsafe_identity_character)
             })
         {
             return Err("configured account identity is invalid".into());
+        }
+        if let Err(error) = MetricFilter::new(account.metrics.clone()) {
+            return Err(format!(
+                "configured account metrics are invalid for account {}: {error}",
+                account.id
+            ));
         }
         if !ids.insert(&account.id) {
             return Err("configured account ids must be unique".into());
@@ -310,14 +331,6 @@ fn validate(config: &AppConfig) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn is_unsafe_identity_character(character: char) -> bool {
-    character.is_control()
-        || matches!(
-            character,
-            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-        )
 }
 
 pub fn default_config_path() -> Result<PathBuf, String> {
@@ -373,7 +386,12 @@ mod tests {
         let config = load(&path).await.unwrap();
         assert_eq!(config.accounts[0].id, "claude-a");
         assert_eq!(
-            config.accounts[0].build().query.account_label.as_deref(),
+            config.accounts[0]
+                .build()
+                .unwrap()
+                .query
+                .account_label
+                .as_deref(),
             Some("a@example.test")
         );
         assert!(!config.credentials.file_fallback);
@@ -387,6 +405,50 @@ mod tests {
             .unwrap();
         make_private(&path);
         assert!(load(&path).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn loads_metric_filters_and_rejects_invalid_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        tokio::fs::write(
+            &path,
+            br#"{"version":1,"accounts":[{"id":"claude-a","provider":"claude","metrics":[" Usage ","Codex","usage"]}]}"#,
+        )
+        .await
+        .unwrap();
+        make_private(&path);
+        let config = load(&path).await.unwrap();
+        assert_eq!(
+            config.accounts[0].metrics,
+            vec![" Usage ", "Codex", "usage"],
+            "parsing keeps the raw spelling"
+        );
+        assert_eq!(
+            config.accounts[0].build().unwrap().metrics,
+            vec!["Usage", "Codex"],
+            "building normalizes the filter"
+        );
+
+        // A configuration written before metrics existed stays valid.
+        tokio::fs::write(
+            &path,
+            br#"{"version":1,"accounts":[{"id":"claude-a","provider":"claude"}]}"#,
+        )
+        .await
+        .unwrap();
+        make_private(&path);
+        assert!(load(&path).await.unwrap().accounts[0].metrics.is_empty());
+
+        for metrics in [r#"[""]"#, r#"["safe","\u0007bad"]"#, r#"["\u202ebad"]"#] {
+            let bytes = format!(
+                r#"{{"version":1,"accounts":[{{"id":"claude-a","provider":"claude","metrics":{metrics}}}]}}"#
+            );
+            tokio::fs::write(&path, bytes).await.unwrap();
+            make_private(&path);
+            let error = load(&path).await.unwrap_err();
+            assert!(error.contains("metrics"), "{metrics}: {error}");
+        }
     }
 
     #[tokio::test]

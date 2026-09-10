@@ -54,6 +54,10 @@ pub struct AccountConfig {
     pub timeout: Duration,
     pub jitter: Duration,
     pub backoff: BackoffConfig,
+    /// Display metric names the account's summary view keeps; empty means no
+    /// filter.
+    #[serde(default)]
+    pub metrics: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -239,6 +243,8 @@ pub enum DaemonError {
     InvalidTimeout(AccountId),
     #[error("account backoff is invalid: {0}")]
     InvalidBackoff(AccountId),
+    #[error("account metric filter is invalid: {0}")]
+    InvalidAccountMetrics(AccountId),
     #[error("account is already configured: {0}")]
     DuplicateAccount(AccountId),
     #[error("account control selector is already configured for provider {provider}")]

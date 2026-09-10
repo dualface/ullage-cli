@@ -7,16 +7,22 @@ use serde::Deserialize;
 use ullage_auth::{AuthStartRequest, LogoutRequest, validate_loopback_http_redirect_uri};
 use ullage_core::{RegisteredProvider, SubscriptionUsage, UsageQuery};
 use ullage_protocol::{
-    Account, AccountError, AccountId as ProtocolAccountId, AccountStatusPayload,
-    CONTROL_PROTOCOL_VERSION, ControlCommand, ControlError, ControlRequest, ControlResponse,
-    ControlResult, CredentialBackendId, DaemonStatusPayload, ProbePayload, SanitizedErrorPayload,
-    SnapshotPayload,
+    Account, AccountError, AccountId as ProtocolAccountId, CONTROL_PROTOCOL_VERSION,
+    ControlCommand, ControlError, ControlRequest, ControlResponse, ControlResult,
+    CredentialBackendId, ProbePayload,
 };
 
 use crate::model::sanitize_provider_error;
 use crate::{
     AccountConfig, AccountId, BackoffConfig, DaemonEngine, DaemonError, DaemonStatus, ProbeError,
-    ProbeTrigger, SanitizedError, SnapshotRecord,
+    ProbeTrigger, SnapshotRecord,
+};
+
+mod payload;
+
+use self::payload::{
+    account_control_error, account_metrics, account_payload, probe_control_error, snapshot_payload,
+    status_payload,
 };
 use crate::{DeviceCredential, DeviceStore, PairDeviceError};
 
@@ -292,6 +298,7 @@ impl ControlService {
                         Ok(usage) => ControlResult::Probe(ProbePayload {
                             account_id: account_id.to_string(),
                             usage,
+                            metrics: account_metrics(&self.engine, &account_id).await,
                         }),
                         Err(error) => {
                             diagnostic = probe_error_diagnostic(diagnostics, &error);
@@ -319,19 +326,24 @@ impl ControlService {
                         Err(()) => {
                             ControlResult::Error(ControlError::AccountNotFound { account_id })
                         }
-                        Ok(snapshot) => ControlResult::Snapshots(
-                            snapshot.into_iter().map(snapshot_payload).collect(),
-                        ),
+                        Ok(snapshot) => ControlResult::Snapshots({
+                            let metrics = account_metrics(&self.engine, &id).await;
+                            snapshot
+                                .into_iter()
+                                .map(|snapshot| snapshot_payload(snapshot, &metrics))
+                                .collect()
+                        }),
                     }
                 }
-                None => ControlResult::Snapshots(
-                    self.engine
-                        .show_all()
-                        .await
-                        .into_iter()
-                        .map(snapshot_payload)
-                        .collect(),
-                ),
+                None => {
+                    let mut snapshots = Vec::new();
+                    for config in self.engine.account_configs().await {
+                        if let Some(snapshot) = self.engine.show(&config.id).await {
+                            snapshots.push(snapshot_payload(snapshot, &config.metrics));
+                        }
+                    }
+                    ControlResult::Snapshots(snapshots)
+                }
             },
             ControlCommand::QueryUsage { provider, query } => {
                 if !self.engine.registry().contains(&provider) {
@@ -465,6 +477,7 @@ impl ControlService {
                         timeout: CONTROL_ACCOUNT_TIMEOUT,
                         jitter: CONTROL_ACCOUNT_JITTER,
                         backoff: BackoffConfig::default(),
+                        metrics: Vec::new(),
                     };
                     match self.engine.add_account(config.clone()).await {
                         Ok(()) => ControlResult::Account(account_payload(config)),
@@ -502,6 +515,14 @@ impl ControlService {
                     Ok(Some(config)) => ControlResult::Account(account_payload(config)),
                     Ok(None) => ControlResult::Error(AccountError::NotFound(account).into()),
                     Err(DaemonError::Storage(_)) => ControlResult::Error(ControlError::Storage),
+                    Err(error) => ControlResult::Error(account_control_error(error, id)),
+                }
+            }
+            ControlCommand::SetAccountMetrics { account, metrics } => {
+                let id = AccountId::new(account.as_str());
+                match self.engine.set_account_metrics(&id, metrics).await {
+                    Ok(Some(config)) => ControlResult::Account(account_payload(config)),
+                    Ok(None) => ControlResult::Error(AccountError::NotFound(account).into()),
                     Err(error) => ControlResult::Error(account_control_error(error, id)),
                 }
             }
@@ -565,101 +586,6 @@ fn sanitize_auth_state(diagnostics: bool, state: ullage_auth::AuthState) -> ulla
             account_key: None,
         },
         state => state,
-    }
-}
-
-fn account_payload(config: AccountConfig) -> Account {
-    Account {
-        id: ProtocolAccountId::new(config.id.to_string()),
-        provider: config.provider,
-        label: config.query.account_label,
-        enabled: config.enabled,
-    }
-}
-
-fn account_control_error(error: DaemonError, requested: AccountId) -> ControlError {
-    match error {
-        DaemonError::DuplicateAccount(account) => {
-            AccountError::Duplicate(ProtocolAccountId::new(account.to_string())).into()
-        }
-        DaemonError::DuplicateAccountSelector { .. } => {
-            AccountError::Duplicate(ProtocolAccountId::new(requested.to_string())).into()
-        }
-        DaemonError::Storage(_) => ControlError::Storage,
-        DaemonError::Cancelled => ControlError::Cancelled,
-        DaemonError::InvalidGlobalConcurrency
-        | DaemonError::InvalidProviderConcurrency
-        | DaemonError::InvalidProviderLimit(_)
-        | DaemonError::InvalidInterval(_)
-        | DaemonError::InvalidTimeout(_)
-        | DaemonError::InvalidBackoff(_) => ControlError::UnsupportedCommand,
-    }
-}
-
-fn probe_control_error(error: ProbeError) -> ControlError {
-    match error {
-        ProbeError::Provider(error) => ControlError::Provider(sanitize_provider_error(error)),
-        ProbeError::Registry(error) => ControlError::Registry(error),
-        ProbeError::AccountNotFound(account_id) => ControlError::AccountNotFound {
-            account_id: account_id.to_string(),
-        },
-        ProbeError::Timeout => ControlError::Timeout,
-        ProbeError::Cancelled => ControlError::Cancelled,
-        ProbeError::Storage(_) => ControlError::Storage,
-    }
-}
-
-fn status_payload(
-    status: DaemonStatus,
-    credential_backend: CredentialBackendId,
-) -> DaemonStatusPayload {
-    DaemonStatusPayload {
-        shutting_down: status.shutting_down,
-        credential_backend,
-        accounts: status
-            .accounts
-            .into_iter()
-            .map(|account| AccountStatusPayload {
-                account_id: account.id.to_string(),
-                provider: account.provider,
-                enabled: account.enabled,
-                in_flight: account.in_flight,
-                consecutive_failures: account.consecutive_failures,
-                next_probe_at: account.next_probe_at,
-                has_snapshot: account.has_snapshot,
-                stale: account.stale,
-                last_error: account.last_error.map(sanitized_error_payload),
-            })
-            .collect(),
-    }
-}
-
-fn snapshot_payload(snapshot: SnapshotRecord) -> SnapshotPayload {
-    SnapshotPayload {
-        account_id: snapshot.account_id.to_string(),
-        usage: snapshot.usage,
-        last_success_at: snapshot.last_success_at,
-        stale: snapshot.stale,
-        last_error: snapshot.last_error.map(sanitized_error_payload),
-        last_error_at: snapshot.last_error_at,
-    }
-}
-
-fn sanitized_error_payload(error: SanitizedError) -> SanitizedErrorPayload {
-    match error {
-        SanitizedError::AuthenticationInvalid => SanitizedErrorPayload::AuthenticationInvalid,
-        SanitizedError::RateLimited {
-            retry_after_seconds,
-        } => SanitizedErrorPayload::RateLimited {
-            retry_after_seconds,
-        },
-        SanitizedError::Network => SanitizedErrorPayload::Network,
-        SanitizedError::ProtocolIncompatible => SanitizedErrorPayload::ProtocolIncompatible,
-        SanitizedError::UnsupportedCapability => SanitizedErrorPayload::UnsupportedCapability,
-        SanitizedError::Timeout => SanitizedErrorPayload::Timeout,
-        SanitizedError::Cancelled => SanitizedErrorPayload::Cancelled,
-        SanitizedError::ProviderNotFound => SanitizedErrorPayload::ProviderNotFound,
-        SanitizedError::Storage => SanitizedErrorPayload::Storage,
     }
 }
 

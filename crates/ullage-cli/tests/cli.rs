@@ -103,6 +103,7 @@ fn snapshot(account_id: &str, usage: QueryOutcome<SubscriptionUsage>) -> Snapsho
         stale: false,
         last_error: None,
         last_error_at: None,
+        metrics: Vec::new(),
     }
 }
 
@@ -133,6 +134,7 @@ fn maps_the_complete_command_surface_to_control_requests() {
                 provider: provider.clone(),
                 label: label.clone(),
                 enabled: true,
+                metrics: Vec::new(),
             }),
             ControlCommand::ListAccounts => ControlResult::Accounts(Vec::new()),
             ControlCommand::ShowAccount { account } => ControlResult::Account(Account {
@@ -140,6 +142,7 @@ fn maps_the_complete_command_surface_to_control_requests() {
                 provider: ProviderId::new("claude"),
                 label: None,
                 enabled: true,
+                metrics: Vec::new(),
             }),
             ControlCommand::SetAccountEnabled { account, enabled } => {
                 ControlResult::Account(Account {
@@ -147,6 +150,7 @@ fn maps_the_complete_command_surface_to_control_requests() {
                     provider: ProviderId::new("claude"),
                     label: None,
                     enabled: *enabled,
+                    metrics: Vec::new(),
                 })
             }
             ControlCommand::SetAccountLabel { account, label } => ControlResult::Account(Account {
@@ -154,7 +158,17 @@ fn maps_the_complete_command_surface_to_control_requests() {
                 provider: ProviderId::new("claude"),
                 label: label.clone(),
                 enabled: true,
+                metrics: Vec::new(),
             }),
+            ControlCommand::SetAccountMetrics { account, metrics } => {
+                ControlResult::Account(Account {
+                    id: account.clone(),
+                    provider: ProviderId::new("claude"),
+                    label: None,
+                    enabled: true,
+                    metrics: metrics.clone(),
+                })
+            }
             ControlCommand::RemoveAccount { .. } | ControlCommand::Logout { .. } => {
                 ControlResult::Ack
             }
@@ -181,6 +195,7 @@ fn maps_the_complete_command_surface_to_control_requests() {
                 usage: QueryOutcome::Complete {
                     data: empty_usage(),
                 },
+                metrics: Vec::new(),
             }),
             ControlCommand::Probe { wait: false, .. } => ControlResult::Ack,
             ControlCommand::Show { .. } => ControlResult::Snapshots(Vec::new()),
@@ -308,7 +323,8 @@ fn compact_json_is_a_stable_snapshot() {
             "\"account_label\":\"[redacted]\",\"plan\":\"pro\",",
             "\"subscription_expires_at\":null,\"observed_at\":\"2026-08-27T12:00:00Z\",",
             "\"windows\":[]}},\"last_success_at\":\"2026-08-27T12:00:00Z\",",
-            "\"stale\":false,\"last_error\":null,\"last_error_at\":null}]}\n"
+            "\"stale\":false,\"last_error\":null,\"last_error_at\":null,",
+            "\"metrics\":[]}]}\n"
         )
     );
 }
@@ -459,6 +475,7 @@ fn rejects_business_results_the_daemon_cannot_produce() {
                 provider: provider.clone(),
                 label: label.clone(),
                 enabled: false,
+                metrics: Vec::new(),
             }),
         ))
     }
@@ -921,12 +938,14 @@ fn rejects_results_for_a_different_account_or_provider() {
                 provider: ProviderId::new("other-provider"),
                 label: None,
                 enabled: true,
+                metrics: Vec::new(),
             }),
             ControlCommand::Probe { .. } => ControlResult::Probe(ProbePayload {
                 account_id: "other".into(),
                 usage: QueryOutcome::Complete {
                     data: empty_usage(),
                 },
+                metrics: Vec::new(),
             }),
             ControlCommand::Show { .. } => ControlResult::Snapshots(vec![snapshot(
                 "other",
@@ -967,6 +986,7 @@ fn rejects_an_added_account_with_a_different_label() {
                 provider: provider.clone(),
                 label: Some("personal".into()),
                 enabled: true,
+                metrics: Vec::new(),
             }),
         ))
     }
@@ -1023,6 +1043,7 @@ fn rejects_duplicate_ids_in_list_and_daemon_status_results() {
                     provider: ProviderId::new("claude"),
                     label: None,
                     enabled: true,
+                    metrics: Vec::new(),
                 };
                 ControlResult::Accounts(vec![account.clone(), account])
             }
@@ -1084,6 +1105,7 @@ fn rejects_impossible_snapshot_and_status_state_combinations() {
             } => ControlResult::Snapshots(vec![SnapshotPayload {
                 last_error: Some(SanitizedErrorPayload::Network),
                 last_error_at: Some(Utc.with_ymd_and_hms(2026, 8, 27, 12, 1, 0).unwrap()),
+                metrics: Vec::new(),
                 ..snapshot(
                     "primary",
                     QueryOutcome::Complete {
@@ -1096,6 +1118,7 @@ fn rejects_impossible_snapshot_and_status_state_combinations() {
                     stale: true,
                     last_error: Some(SanitizedErrorPayload::Network),
                     last_error_at: None,
+                    metrics: Vec::new(),
                     ..snapshot(
                         "primary",
                         QueryOutcome::Complete {
@@ -1211,6 +1234,7 @@ fn reveal_never_exposes_error_details_in_json_output() {
                 stale: true,
                 last_error: Some(SanitizedErrorPayload::Network),
                 last_error_at: Some(Utc.with_ymd_and_hms(2026, 8, 27, 12, 1, 0).unwrap()),
+                metrics: Vec::new(),
                 ..snapshot(
                     "primary",
                     QueryOutcome::Complete {
@@ -1260,6 +1284,7 @@ fn rejects_wrong_account_state_and_mismatched_errors() {
                     provider: ProviderId::new("claude"),
                     label: None,
                     enabled: !enabled,
+                    metrics: Vec::new(),
                 })
             }
             ControlCommand::ShowAccount { .. } => ControlResult::Error(ControlError::Account(
@@ -1418,6 +1443,7 @@ fn rejects_c0_controls_in_forged_account_results_for_every_output_format() {
                 provider: ProviderId::new("claude"),
                 label: Some("person@example.test".into()),
                 enabled: true,
+                metrics: Vec::new(),
             }]),
         ))
     }
@@ -2021,6 +2047,7 @@ impl ControlClient for LoginClient {
                     provider: provider.clone(),
                     label: label.clone(),
                     enabled: true,
+                    metrics: Vec::new(),
                 };
                 accounts.push(account.clone());
                 ControlResult::Account(account)
@@ -2102,6 +2129,7 @@ impl ControlClient for LoginClient {
                 usage: QueryOutcome::Complete {
                     data: empty_usage(),
                 },
+                metrics: Vec::new(),
             }),
             ControlCommand::AuthStatus { .. } => {
                 if *self.signed_in.lock().unwrap() {
@@ -2203,6 +2231,7 @@ fn interactive_login_offers_existing_accounts_and_keeps_their_label() {
         provider: ProviderId::new("claude"),
         label: Some("work".into()),
         enabled: true,
+        metrics: Vec::new(),
     });
     // Provider 1, account entry 2 (the existing one), pasted code, keep the
     // current label even though the provider returned a different identity.
@@ -2488,6 +2517,7 @@ fn account_list_result(request: &ControlRequest) -> Result<ControlResponse, Clie
             provider: ProviderId::new("claude"),
             label: None,
             enabled: true,
+            metrics: Vec::new(),
         }]),
     ))
 }
@@ -2588,6 +2618,7 @@ fn show_separates_multiple_accounts_with_section_headers() {
                     stale: true,
                     last_error: Some(SanitizedErrorPayload::Network),
                     last_error_at: Some(Utc.with_ymd_and_hms(2026, 8, 27, 12, 1, 0).unwrap()),
+                    metrics: Vec::new(),
                 },
             ]),
         ))
@@ -3354,6 +3385,7 @@ fn diagnose_surfaces_partial_failures_on_probe() {
                         message: "provider network request failed".into(),
                     }],
                 },
+                metrics: Vec::new(),
             }),
         ))
     }
@@ -3699,6 +3731,7 @@ fn the_raw_fallback_still_carries_stale_partial_and_limit_notices() {
                 stale: true,
                 last_error: Some(SanitizedErrorPayload::Network),
                 last_error_at: Some(Utc.with_ymd_and_hms(2026, 8, 27, 12, 1, 0).unwrap()),
+                metrics: Vec::new(),
             }]),
         ))
     }
@@ -3769,6 +3802,7 @@ fn probe_shares_the_summary_view_and_its_raw_escape_hatch() {
                 usage: QueryOutcome::Complete {
                     data: summarizable_usage(),
                 },
+                metrics: Vec::new(),
             }),
         ))
     }

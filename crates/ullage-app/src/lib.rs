@@ -414,7 +414,7 @@ async fn merge_configured_accounts(
     configured_accounts: &[AccountSettings],
 ) -> Result<(), String> {
     for account in configured_accounts {
-        let account = account.build();
+        let account = account.build()?;
         if engine.account_config(&account.id).await.is_none()
             && !engine.account_was_removed(&account.id).await
         {
@@ -625,5 +625,46 @@ mod tests {
             .unwrap();
         assert!(restarted.account_config(&id).await.is_none());
         assert!(restarted.account_was_removed(&id).await);
+    }
+
+    #[tokio::test]
+    async fn configured_metrics_seed_new_accounts_once() {
+        let store = Arc::new(ullage_daemon::MemorySnapshotStore::default());
+        let configured = vec![AccountSettings {
+            id: "seeded-claude".into(),
+            provider: "claude".into(),
+            metrics: vec!["Usage".into(), "Codex".into()],
+            ..AccountSettings::default()
+        }];
+        let engine = DaemonEngine::new(
+            ullage_daemon::DaemonConfig::default(),
+            Arc::new(ProviderRegistry::default()),
+            Arc::new(SystemClock),
+            store.clone(),
+        )
+        .await
+        .unwrap();
+        merge_configured_accounts(&engine, &configured)
+            .await
+            .unwrap();
+        let id = ullage_daemon::AccountId::new("seeded-claude");
+        assert_eq!(
+            engine.account_config(&id).await.unwrap().metrics,
+            vec!["Usage", "Codex"]
+        );
+
+        // The stored value wins over the seed on the next merge.
+        engine
+            .set_account_metrics(&id, vec!["Credits".into()])
+            .await
+            .unwrap()
+            .unwrap();
+        merge_configured_accounts(&engine, &configured)
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.account_config(&id).await.unwrap().metrics,
+            vec!["Credits"]
+        );
     }
 }

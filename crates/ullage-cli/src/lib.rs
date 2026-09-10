@@ -28,15 +28,17 @@ static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 mod login;
 pub mod prompt;
 mod service;
-mod summary;
 mod table;
 
-use summary::{UsageSummary, summarize};
+#[cfg(test)]
+mod summary_render_tests;
+
 use table::{
     Cell, Palette, Style, SummaryLayout, measure_summary_layout, relative_past, render_line,
     render_pairs, render_section_header, render_summary_rows, render_summary_rows_aligned,
     render_table,
 };
+use ullage_core::summary::{UsageSummary, summarize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -1883,6 +1885,7 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
                         | AccountCommand::Remove { .. }
                 }
         ),
+        ControlError::InvalidAccountMetrics => false,
         ControlError::UnsupportedCommand => false,
     }
 }
@@ -2021,6 +2024,7 @@ fn result_exit_code(result: &ControlResult) -> ExitCode {
         ControlResult::Error(ControlError::Provider(ProviderError::Network { .. })) => {
             ExitCode::NetworkFailure
         }
+        ControlResult::Error(ControlError::InvalidAccountMetrics) => ExitCode::Usage,
         ControlResult::ProtocolMismatch { .. } => ExitCode::ProtocolError,
         ControlResult::Error(_) => ExitCode::Failure,
         _ => ExitCode::Success,
@@ -2049,6 +2053,7 @@ fn control_error_kind(error: &ControlError) -> &'static str {
         ControlError::Timeout => "timeout",
         ControlError::Cancelled => "cancelled",
         ControlError::Storage => "storage",
+        ControlError::InvalidAccountMetrics => "invalid_account_metrics",
         ControlError::UnsupportedCommand => "unsupported_command",
     }
 }
@@ -3083,6 +3088,7 @@ mod snapshot_render_tests {
             stale: false,
             last_error: None,
             last_error_at: None,
+            metrics: Vec::new(),
         }
     }
 
@@ -3129,6 +3135,7 @@ mod snapshot_render_tests {
             stale: false,
             last_error: None,
             last_error_at: None,
+            metrics: Vec::new(),
         }];
         let output = render_snapshots(&snapshots, false, true, false, &palette());
         assert!(
@@ -3149,6 +3156,7 @@ mod snapshot_render_tests {
                 stale: false,
                 last_error: None,
                 last_error_at: None,
+                metrics: Vec::new(),
             }],
             false,
             false,
@@ -3218,6 +3226,7 @@ mod snapshot_render_tests {
             stale: false,
             last_error: None,
             last_error_at: None,
+            metrics: Vec::new(),
         }];
         let output = render_snapshots(&snapshots, false, false, true, &palette());
         assert!(!output.contains('\u{1b}'), "{output}");

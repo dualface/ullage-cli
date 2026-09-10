@@ -51,7 +51,8 @@ direction rather than every composition-root edge; the complete direct workspace
 
 The CLI exposes daemon lifecycle, provider, account, authentication, probe,
 snapshot, and device-administration commands. `ullage device pair`,
-`list`, and `revoke` map directly to the version 9 device control commands. The
+`list`, and `revoke` map directly to the device control commands introduced in protocol
+version 9. The
 retired `ullage http token` command is not part of the command surface; HTTP
 clients obtain a per-device token only by exchanging a one-use pairing code.
 
@@ -259,7 +260,7 @@ Keychain entry without discarding the new credential when an old-item ACL denies
 paired device name and local pairing time are kept in `UserDefaults` for display. Non-loopback access declares
 `NSLocalNetworkUsageDescription`, so macOS can request Local Network permission with an explanation.
 The executable-owned `UsageDataSource` boundary selects `LocalControlClient`, the remote
-`DaemonClient`, or bundled mock fixtures. Both daemon transports use the version 9 result envelope. Probes
+`DaemonClient`, or bundled mock fixtures. Both daemon transports use the version 10 result envelope. Probes
 distinguish acknowledged and completed responses. The headless `--dump` path reuses the same summary projection as the menu
 bar UI, while `--render-iconset` reuses the executable's canonical mark geometry without entering
 the AppKit application loop. Runtime application-icon color follows the stored `iconPalette`
@@ -341,6 +342,10 @@ values and provider refresh errors are redacted from `Debug` and `Display` outpu
 - Protocol version 9 adds `CreatePairCode`, `ListDevices`, and `RevokeDevice`. Pair-code responses
   contain only the short-lived code and expiry; device-list payloads contain display metadata but
   never a device token or token hash. `DeviceNotFound` is the stable unknown-device error.
+- Protocol version 10 adds `SetAccountMetrics` and carries each account's optional display metric
+  filter on account, snapshot, and probe payloads. Filter names are trimmed, case-insensitive,
+  deduplicated, and rejected when empty, longer than 128 characters, more than 64 entries, or
+  containing control or bidirectional characters; `InvalidAccountMetrics` is the stable error.
 
 ## Runtime configuration
 
@@ -350,10 +355,13 @@ other Unix systems use `$XDG_CONFIG_HOME/ullage/config.json` or `~/.config/ullag
 Windows uses `%APPDATA%\Ullage\config.json`. Version 1 contains daemon concurrency, optional
 initial account selectors, optional `credentials.file_fallback` (default false), and optional
 `http` settings (`enabled` default false, `bind` default `127.0.0.1:7878`, `allowed_origins`
-default empty, `probe_min_interval_seconds` default 60). Provider OAuth and billing endpoints are
+default empty, `probe_min_interval_seconds` default 60). Each account selector may also carry an
+optional `metrics` list of display metric names; it seeds a newly created account's summary-view
+filter, while the persisted value in `state.json` wins for an account that already exists. Provider
+OAuth and billing endpoints are
 compiled into the adapters and cannot be redirected through local configuration. Unknown
 fields, unsupported versions, duplicate account IDs/selectors, unsafe control characters, unknown
-providers, zero timing values, symbolic links, and files above 1 MiB are rejected. Secret
+providers, invalid metric filters, zero timing values, symbolic links, and files above 1 MiB are rejected. Secret
 credential values are not part of the schema and are therefore rejected rather than copied into configuration.
 When file fallback is enabled and the native backend is unavailable, plaintext
 files are written under `$XDG_DATA_HOME/ullage/credentials` or
@@ -387,7 +395,8 @@ page for Claude). The macOS app is the first client to send the field; for
 ChatGPT it passes the address of the loopback endpoint it has already bound
 (see "Ullage Mac"). Grok's compiled-in redirect URI is used only when a client
 explicitly requests browser OAuth; the app no longer drives that path.
-Control protocol version 9 adds device pairing and revocation. Version 8 added
+Control protocol version 10 adds `SetAccountMetrics` and the per-account display metric filter on
+account, snapshot, and probe payloads. Version 9 added device pairing and revocation. Version 8 added
 `credential_backend` on daemon status. Version 7 added the diagnostics opt-in
 (`diagnostics` / `diagnostic`) and `SetAccountLabel`.
 
@@ -396,7 +405,7 @@ Control protocol version 9 adds device pairing and revocation. Version 8 added
 `ullage-http` is an optional second transport beside the Unix socket / Windows named pipe. It is
 off unless `http.enabled` is true. The crate maps query routes onto existing `ControlCommand`
 values and calls `ControlService::handle()`; pairing calls the same `DeviceStore` through
-`ControlService`. `CONTROL_PROTOCOL_VERSION` is 9.
+`ControlService`. `CONTROL_PROTOCOL_VERSION` is 10.
 
 Endpoints: `POST /v1/pair`, `GET /v1/status`, `/v1/providers`, `/v1/accounts`,
 `/v1/accounts/{id}`, `/v1/usage` (optional `?account=`), and

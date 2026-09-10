@@ -403,6 +403,7 @@ fn account(id: &str, provider: &str, label: &str) -> AccountConfig {
             initial: Duration::from_secs(1),
             maximum: Duration::from_secs(8),
         },
+        metrics: Vec::new(),
     }
 }
 
@@ -1009,6 +1010,7 @@ async fn sensitive_material_is_absent_from_cli_errors_debug_and_fixtures() {
         stale: false,
         last_error: None,
         last_error_at: None,
+        metrics: Vec::new(),
     }]);
     let output = run_from(
         ["ullage", "--output", "json", "show", "primary"],

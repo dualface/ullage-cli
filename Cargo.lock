@@ -2231,6 +2231,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ullage-auth",
+ "ullage-core",
  "ullage-protocol",
  "unicode-width",
  "winapi",

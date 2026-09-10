@@ -13,7 +13,7 @@ pub use ullage_core::{
     UsageQuery, UsageWindow, UsageWindowKind,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u16 = 9;
+pub const CONTROL_PROTOCOL_VERSION: u16 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -35,6 +35,10 @@ pub struct Account {
     pub provider: ProviderId,
     pub label: Option<String>,
     pub enabled: bool,
+    /// Display metric names the account's summary view keeps; empty means no
+    /// filter.
+    #[serde(default)]
+    pub metrics: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +104,10 @@ pub enum ControlCommand {
     SetAccountLabel {
         account: AccountId,
         label: Option<String>,
+    },
+    SetAccountMetrics {
+        account: AccountId,
+        metrics: Vec<String>,
     },
     RemoveAccount {
         account: AccountId,
@@ -225,6 +233,9 @@ pub enum ControlResult {
 pub struct ProbePayload {
     pub account_id: String,
     pub usage: QueryOutcome<SubscriptionUsage>,
+    /// Display metric names stored for the account when the probe ran.
+    #[serde(default)]
+    pub metrics: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,6 +268,8 @@ pub enum ControlError {
     DeviceNotFound {
         device_id: String,
     },
+    /// The supplied display metric filter was rejected by validation.
+    InvalidAccountMetrics,
     Timeout,
     Cancelled,
     Storage,
@@ -337,6 +350,9 @@ pub struct SnapshotPayload {
     pub stale: bool,
     pub last_error: Option<SanitizedErrorPayload>,
     pub last_error_at: Option<DateTime<Utc>>,
+    /// Display metric names stored for the account when the snapshot was read.
+    #[serde(default)]
+    pub metrics: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,6 +467,10 @@ mod tests {
                 wait: true,
             },
             ControlCommand::Show { account_id: None },
+            ControlCommand::SetAccountMetrics {
+                account: AccountId::new("account-1"),
+                metrics: vec!["usage".into(), "Codex".into()],
+            },
         ];
         for (index, command) in commands.into_iter().enumerate() {
             let request = ControlRequest::new(format!("daemon-{index}"), command);
@@ -484,6 +504,7 @@ mod tests {
             ControlError::Timeout,
             ControlError::Cancelled,
             ControlError::Storage,
+            ControlError::InvalidAccountMetrics,
             ControlError::AccountSelectorNotFound {
                 provider: ProviderId::new("test"),
                 account_label: Some("secondary".into()),
@@ -504,6 +525,86 @@ mod tests {
                 response
             );
         }
+    }
+
+    #[test]
+    fn account_and_payload_metrics_round_trip_and_default_to_empty() {
+        let account = Account {
+            id: AccountId::new("account-1"),
+            provider: ProviderId::new("claude"),
+            label: None,
+            enabled: true,
+            metrics: vec!["usage".into(), "Codex".into()],
+        };
+        let json = serde_json::to_value(&account).unwrap();
+        assert_eq!(json["metrics"], serde_json::json!(["usage", "Codex"]));
+        assert_eq!(serde_json::from_value::<Account>(json).unwrap(), account);
+
+        let legacy_account: Account = serde_json::from_value(serde_json::json!({
+            "id": "account-1",
+            "provider": "claude",
+            "label": null,
+            "enabled": true
+        }))
+        .unwrap();
+        assert!(legacy_account.metrics.is_empty());
+
+        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let usage = SubscriptionUsage {
+            provider: ProviderId::new("claude"),
+            account_label: None,
+            plan: None,
+            subscription_expires_at: None,
+            observed_at,
+            windows: Vec::new(),
+        };
+        let snapshot = SnapshotPayload {
+            account_id: "account-1".into(),
+            usage: QueryOutcome::Complete {
+                data: usage.clone(),
+            },
+            last_success_at: observed_at,
+            stale: false,
+            last_error: None,
+            last_error_at: None,
+            metrics: vec!["usage".into()],
+        };
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["metrics"], serde_json::json!(["usage"]));
+        assert_eq!(
+            serde_json::from_value::<SnapshotPayload>(json.clone()).unwrap(),
+            snapshot
+        );
+        let mut legacy = json;
+        legacy.as_object_mut().unwrap().remove("metrics");
+        assert!(
+            serde_json::from_value::<SnapshotPayload>(legacy)
+                .unwrap()
+                .metrics
+                .is_empty()
+        );
+
+        let probe = ProbePayload {
+            account_id: "account-1".into(),
+            usage: QueryOutcome::Complete { data: usage },
+            metrics: vec!["Codex".into()],
+        };
+        let json = serde_json::to_value(&probe).unwrap();
+        assert_eq!(json["metrics"], serde_json::json!(["Codex"]));
+        assert_eq!(
+            serde_json::from_value::<ProbePayload>(json.clone()).unwrap(),
+            probe
+        );
+        let mut legacy = json;
+        legacy.as_object_mut().unwrap().remove("metrics");
+        assert!(
+            serde_json::from_value::<ProbePayload>(legacy)
+                .unwrap()
+                .metrics
+                .is_empty()
+        );
     }
 
     #[test]

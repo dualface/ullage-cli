@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use unicode_width::UnicodeWidthStr;
 
 use crate::ColorMode;
-use crate::summary::{SummaryRow, SummaryValue};
+use ullage_core::summary::{SummaryRow, SummaryValue};
 
 const RESET: &str = "\x1b[0m";
 const HEADER: &str = "\x1b[1;36m";
@@ -706,7 +706,7 @@ fn pair_value_style(key: &str, cell: &Cell) -> Style {
 mod tests {
     use super::*;
     use crate::ColorMode;
-    use crate::summary::Currency;
+    use ullage_core::summary::Currency;
 
     #[test]
     fn cjk_and_fullwidth_characters_use_two_columns() {

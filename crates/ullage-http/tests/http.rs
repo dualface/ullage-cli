@@ -170,6 +170,7 @@ impl Harness {
                     timeout: Duration::from_secs(5),
                     jitter: Duration::ZERO,
                     backoff: BackoffConfig::default(),
+                    metrics: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -480,7 +481,7 @@ async fn authenticates_with_bearer_token_and_maps_control_errors() {
     assert_eq!(status.status, 200);
     assert!(status.body.contains("daemon_status"), "{}", status.body);
     assert!(
-        status.body.contains("\"version\":9") || status.body.contains("\"version\": 9"),
+        status.body.contains("\"version\":10") || status.body.contains("\"version\": 10"),
         "{}",
         status.body
     );

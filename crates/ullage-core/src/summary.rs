@@ -9,8 +9,16 @@
 //! in the render layer, which is the only place that emits escape sequences.
 
 use chrono::{DateTime, Utc};
-use ullage_protocol::{
+
+use crate::usage::{
     MeasurementUnit, SubscriptionUsage, UsageMeasurement, UsageWindow, UsageWindowKind,
+};
+
+mod filter;
+
+pub use filter::{
+    MAX_METRIC_NAME_CHARACTERS, MAX_METRIC_NAMES, MetricFilter, MetricFilterError,
+    filter_usage_measurements, summarize_filtered,
 };
 
 /// Measurements that carry provider bookkeeping rather than remaining quota.
@@ -278,7 +286,13 @@ fn token_is(needle: &str, value: &str) -> bool {
         .any(|part| part.eq_ignore_ascii_case(needle))
 }
 
-fn metric_display_name(name: &str) -> String {
+/// Whether a provider measurement is bookkeeping hidden from the summary view.
+pub fn is_hidden_measurement(name: &str) -> bool {
+    HIDDEN_MEASUREMENTS.contains(&name)
+}
+
+/// The human name of a provider measurement, e.g. `codex_usage` -> `Codex`.
+pub fn metric_display_name(name: &str) -> String {
     if POOL_MEASUREMENTS.contains(&name) {
         return "usage".into();
     }
@@ -295,12 +309,12 @@ fn metric_display_name(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::ProviderId;
     use chrono::TimeZone as _;
-    use ullage_protocol::ProviderId;
 
-    fn usage(windows: Vec<UsageWindow>) -> SubscriptionUsage {
+    pub(crate) fn usage(windows: Vec<UsageWindow>) -> SubscriptionUsage {
         SubscriptionUsage {
             provider: ProviderId::new("test"),
             account_label: None,
@@ -311,7 +325,7 @@ mod tests {
         }
     }
 
-    fn percent(name: &str, used: f64) -> UsageMeasurement {
+    pub(crate) fn percent(name: &str, used: f64) -> UsageMeasurement {
         UsageMeasurement {
             name: name.into(),
             used,
@@ -320,7 +334,7 @@ mod tests {
         }
     }
 
-    fn boolean(name: &str, value: bool) -> UsageMeasurement {
+    pub(crate) fn boolean(name: &str, value: bool) -> UsageMeasurement {
         UsageMeasurement {
             name: name.into(),
             used: f64::from(u8::from(value)),
@@ -332,7 +346,7 @@ mod tests {
         }
     }
 
-    fn money(name: &str, used: f64, limit: Option<f64>) -> UsageMeasurement {
+    pub(crate) fn money(name: &str, used: f64, limit: Option<f64>) -> UsageMeasurement {
         UsageMeasurement {
             name: name.into(),
             used,
@@ -341,7 +355,10 @@ mod tests {
         }
     }
 
-    fn window(kind: UsageWindowKind, measurements: Vec<UsageMeasurement>) -> UsageWindow {
+    pub(crate) fn window(
+        kind: UsageWindowKind,
+        measurements: Vec<UsageMeasurement>,
+    ) -> UsageWindow {
         UsageWindow {
             window: kind,
             resets_at: None,
@@ -821,43 +838,6 @@ mod tests {
         )]));
 
         assert!(summary.is_empty());
-    }
-
-    #[test]
-    fn grok_format_credits_percent_renders_remaining_ratio_and_progress_bar() {
-        let resets_at = DateTime::parse_from_rfc3339("2026-09-04T01:18:04.090314Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let summary = summarize(&usage(vec![UsageWindow {
-            window: UsageWindowKind::Weekly,
-            resets_at: Some(resets_at),
-            measurements: vec![
-                percent("weekly_pool", 61.0),
-                percent("product:GrokBuild", 61.0),
-            ],
-        }]));
-
-        assert_eq!(summary.rows[0].window, "weekly");
-        assert_eq!(summary.rows[0].metric, "usage");
-        assert_eq!(summary.rows[0].value, SummaryValue::Remains(39.0));
-        assert_eq!(summary.rows[0].remaining_ratio, Some(0.39));
-        assert_eq!(summary.rows[1].metric, "GrokBuild");
-        assert_eq!(summary.rows[1].value, SummaryValue::Remains(39.0));
-        assert_eq!(summary.rows[1].remaining_ratio, Some(0.39));
-
-        let rendered = crate::table::render_summary_rows(
-            &summary.rows,
-            Utc.with_ymd_and_hms(2026, 8, 30, 6, 0, 0).unwrap(),
-            &crate::table::Palette::off(),
-        );
-        assert!(
-            rendered.contains("remains") && rendered.contains("39%"),
-            "remaining percent missing from rendered summary: {rendered:?}"
-        );
-        assert!(
-            rendered.contains('[') && rendered.contains('#') && rendered.contains(']'),
-            "progress bar missing from rendered summary: {rendered:?}"
-        );
     }
 
     #[test]

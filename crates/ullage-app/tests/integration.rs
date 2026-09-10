@@ -137,6 +137,7 @@ fn account(id: &str, provider: &str, label: &str) -> AccountConfig {
         timeout: Duration::from_secs(5),
         jitter: Duration::ZERO,
         backoff: BackoffConfig::default(),
+        metrics: Vec::new(),
     }
 }
 
