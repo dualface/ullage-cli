@@ -182,7 +182,7 @@ extension AuthenticationState: Codable {
 }
 
 public final class LocalControlClient: @unchecked Sendable {
-    public static let protocolVersion: UInt16 = 9
+    public static let protocolVersion: UInt16 = 10
     public static let maximumResponseBytes = 1024 * 1024
 
     private let socketURL: URL
@@ -285,6 +285,19 @@ public final class LocalControlClient: @unchecked Sendable {
                 "command": "set_account_label",
                 "account": account,
                 "label": label ?? NSNull(),
+            ],
+            expectedResult: "account"
+        )
+    }
+
+    /// Replaces the account's display metric filter; an empty list clears it.
+    /// The service validates the names and returns the updated account.
+    public func setAccountMetrics(_ account: String, metrics: [String]) async throws -> Account {
+        try await send(
+            command: [
+                "command": "set_account_metrics",
+                "account": account,
+                "metrics": metrics,
             ],
             expectedResult: "account"
         )

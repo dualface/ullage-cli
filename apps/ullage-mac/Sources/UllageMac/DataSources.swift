@@ -29,7 +29,7 @@ struct MockDataSource: UsageDataSource {
     }
 
     func status() async throws -> DaemonStatusPayload {
-        let data = Data("{\"version\":9,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
+        let data = Data("{\"version\":10,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
         return try UllageJSON.makeDecoder().decode(DaemonStatusPayload.self, from: data)
     }
 
@@ -47,6 +47,6 @@ struct MockDataSource: UsageDataSource {
             throw DaemonError.notFound(kind: "account_not_found")
         }
         guard wait else { return .accepted }
-        return .completed(ProbePayload(accountId: snapshot.accountId, usage: snapshot.usage))
+        return .completed(ProbePayload(accountId: snapshot.accountId, usage: snapshot.usage, metrics: snapshot.metrics))
     }
 }

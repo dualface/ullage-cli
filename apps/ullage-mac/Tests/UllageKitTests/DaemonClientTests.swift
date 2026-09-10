@@ -11,17 +11,17 @@ struct DaemonClientTests {
             switch path {
             case "/v1/status":
                 #expect(request.httpMethod == "GET")
-                return response(request, body: #"{"version":9,"result":"daemon_status","payload":{"shutting_down":false,"accounts":[],"credential_backend":"macos_keychain"}}"#)
+                return response(request, body: #"{"version":10,"result":"daemon_status","payload":{"shutting_down":false,"accounts":[],"credential_backend":"macos_keychain"}}"#)
             case "/v1/accounts":
                 #expect(request.httpMethod == "GET")
-                return response(request, body: #"{"version":9,"result":"accounts","payload":[]}"#)
+                return response(request, body: #"{"version":10,"result":"accounts","payload":[]}"#)
             case "/v1/usage":
                 #expect(request.httpMethod == "GET")
-                return response(request, body: #"{"version":9,"result":"snapshots","payload":[]}"#)
+                return response(request, body: #"{"version":10,"result":"snapshots","payload":[]}"#)
             case "/v1/accounts/account fixture/probe":
                 #expect(request.httpMethod == "POST")
                 #expect(request.url?.query == "wait=true")
-                return response(request, body: #"{"version":9,"result":"probe","payload":{"account_id":"account fixture","usage":{"outcome":"future"}}}"#)
+                return response(request, body: #"{"version":10,"result":"probe","payload":{"account_id":"account fixture","usage":{"outcome":"future"}}}"#)
             default:
                 Issue.record("Unexpected path: \(path ?? "nil")")
                 return response(request, status: 404, body: "{}")
@@ -30,7 +30,8 @@ struct DaemonClientTests {
 
         let client = makeClient()
         let status = try await client.status()
-        #expect(status.version == 9)
+        #expect(DaemonClient.protocolVersion == 10)
+        #expect(status.version == 10)
         #expect(status.credentialBackend == .macOSKeychain)
         #expect(try await client.accounts().isEmpty)
         #expect(try await client.usage().isEmpty)
@@ -119,7 +120,7 @@ struct DaemonClientTests {
         }
 
         StubURLProtocol.handler = {
-            response($0, body: #"{"version":9,"result":"snapshots","payload":[]}"#)
+            response($0, body: #"{"version":10,"result":"snapshots","payload":[]}"#)
         }
         #expect(try await makeClient().usage().isEmpty)
     }
@@ -127,11 +128,11 @@ struct DaemonClientTests {
     @Test func mapsSynchronousAndAsynchronousProbeResponses() async throws {
         StubURLProtocol.handler = { request in
             if request.url?.query == "wait=false" {
-                return response(request, status: 202, body: #"{"version":9,"result":"ack"}"#)
+                return response(request, status: 202, body: #"{"version":10,"result":"ack"}"#)
             }
             return response(
                 request,
-                body: #"{"version":9,"result":"probe","payload":{"account_id":"fixture","usage":{"outcome":"future"}}}"#
+                body: #"{"version":10,"result":"probe","payload":{"account_id":"fixture","usage":{"outcome":"future"}}}"#
             )
         }
 
@@ -148,20 +149,20 @@ struct DaemonClientTests {
         StubURLProtocol.handler = { request in
             #expect(request.url?.path == "/v1/usage")
             #expect(request.url?.query == "account=fixture")
-            return response(request, body: #"{"version":9,"result":"snapshots","payload":[]}"#)
+            return response(request, body: #"{"version":10,"result":"snapshots","payload":[]}"#)
         }
         #expect(try await makeClient().usage(accountId: "fixture").isEmpty)
     }
 
     @Test func rejectsMismatchedProtocolVersions() async throws {
         StubURLProtocol.handler = {
-            response($0, body: #"{"version":10,"result":"snapshots","payload":{"future":true}}"#)
+            response($0, body: #"{"version":11,"result":"snapshots","payload":{"future":true}}"#)
         }
         do {
             _ = try await makeClient().usage()
             Issue.record("Expected success-envelope mismatch to fail")
         } catch let error as DaemonError {
-            guard case .protocolMismatch(client: 9, server: 10) = error else {
+            guard case .protocolMismatch(client: 10, server: 11) = error else {
                 Issue.record("Expected protocol mismatch, got \(error)")
                 return
             }
@@ -185,14 +186,14 @@ struct DaemonClientTests {
             response(
                 $0,
                 status: 400,
-                body: #"{"version":10,"error":"protocol_mismatch","supported_version":10}"#
+                body: #"{"version":11,"error":"protocol_mismatch","supported_version":11}"#
             )
         }
         do {
             _ = try await makeClient().status()
             Issue.record("Expected error-document mismatch to fail")
         } catch let error as DaemonError {
-            guard case .protocolMismatch(client: 9, server: 10) = error else {
+            guard case .protocolMismatch(client: 10, server: 11) = error else {
                 Issue.record("Expected protocol mismatch, got \(error)")
                 return
             }
@@ -201,7 +202,7 @@ struct DaemonClientTests {
 
     @Test func rejectsACompatiblePayloadWithTheWrongEnvelopeTag() async throws {
         StubURLProtocol.handler = {
-            response($0, body: #"{"version":9,"result":"accounts","payload":[]}"#)
+            response($0, body: #"{"version":10,"result":"accounts","payload":[]}"#)
         }
         do {
             _ = try await makeClient().usage()
@@ -245,7 +246,7 @@ struct DaemonClientTests {
                     headers: status == 429 ? ["Retry-After": "17.5"] : [:],
                     body: status == 401
                         ? #"{"error":"fixture_kind","diagnostic":"must be ignored"}"#
-                        : #"{"version":9,"kind":"fixture_kind","detail":{"diagnostic":"nested value"},"diagnostic":"must be ignored"}"#
+                        : #"{"version":10,"kind":"fixture_kind","detail":{"diagnostic":"nested value"},"diagnostic":"must be ignored"}"#
                 )
             }
             do {

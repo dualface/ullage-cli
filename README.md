@@ -92,7 +92,15 @@ auto and api, and Grok usage and GrokBuild. Each account tab can show or hide an
 control; rows without a remaining bar cannot be toggled. Catalog rows start
 visible, other progress rows start hidden. Hidden rows also drop out of the
 menu bar pin list and the default lowest-remaining floor. Hiding every visible
-row leaves an Overview hint pointing back to the account tabs. Unknown providers keep every window
+row leaves an Overview hint pointing back to the account tabs. A per-account
+metric filter narrows which display rows the account tab and Overview render:
+the account page's "Metric filter" row lists the metrics present in the
+current data with checkmarks, and Local mode saves the selection through the
+local service while Remote mode shows the stored filter read-only, since the
+daemon owns it and the HTTP connection cannot change it. Matching is an exact,
+ASCII case-insensitive display-name match that ignores the window a row
+belongs to, and clearing the filter shows every metric again. The menu bar pin
+list and the liquid floor keep using the full row set. Unknown providers keep every window
 in the shortest available time tier. A reached limit in those retained windows
 takes precedence as 0% for that account, so the liquid empties completely at
 the bottom of each breath. After the first refresh, an exclamation mark
@@ -145,7 +153,8 @@ from the application bundle. Copy `Ullage.app` to `/Applications` or
 `--dump` fetches the same accounts and usage projection as the menu bar UI and
 prints it without starting the AppKit application loop. Its Overview section
 uses the same provider-specific catalog as the popover, and a daemon dump
-omits rows hidden in Settings; `--dump --mock` always prints the full catalog.
+omits rows hidden in Settings; the per-account metric filter does not apply
+here, so every metric is printed. `--dump --mock` always prints the full catalog.
 The per-account sections continue to show all windows. `--render-iconset DIR
 [--palette KEY]` likewise renders build assets without starting that loop and
 defaults to Oxblood. `--mock` and

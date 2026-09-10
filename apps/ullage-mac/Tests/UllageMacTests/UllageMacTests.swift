@@ -1113,7 +1113,7 @@ final class UllageMacTests: XCTestCase {
         let store = UsageStore(dataSourceFactory: { source })
         store.start()
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(store.connectionState, .protocolMismatch(client: "9", server: "10"))
+        XCTAssertEqual(store.connectionState, .protocolMismatch(client: "10", server: "11"))
         store.stop()
     }
 }
@@ -1193,7 +1193,7 @@ private actor CountingDataSource: UsageDataSource {
 
     func status() async throws -> DaemonStatusPayload {
         requestCount += 1
-        let data = Data("{\"version\":9,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
+        let data = Data("{\"version\":10,\"shutting_down\":false,\"accounts\":[],\"credential_backend\":\"macos_keychain\"}".utf8)
         return try UllageJSON.makeDecoder().decode(DaemonStatusPayload.self, from: data)
     }
 
@@ -1222,5 +1222,5 @@ private struct ProtocolMismatchDataSource: UsageDataSource {
     func usage() async throws -> [SnapshotPayload] { throw mismatch }
     func probe(accountId: String, wait: Bool) async throws -> ProbeResult { throw mismatch }
 
-    private var mismatch: DaemonError { .protocolMismatch(client: 9, server: 10) }
+    private var mismatch: DaemonError { .protocolMismatch(client: 10, server: 11) }
 }

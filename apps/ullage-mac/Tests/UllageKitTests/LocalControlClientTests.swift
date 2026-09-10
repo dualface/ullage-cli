@@ -11,7 +11,7 @@ struct LocalControlClientTests {
             let object = try #require(
                 JSONSerialization.jsonObject(with: request.dropLast()) as? [String: Any]
             )
-            #expect((object["version"] as? NSNumber)?.uint16Value == 9)
+            #expect((object["version"] as? NSNumber)?.uint16Value == 10)
             let requestID = try #require(object["request_id"] as? String)
             let command = try #require(object["command"] as? [String: Any])
             #expect(command["command"] as? String == "daemon_status")
@@ -26,7 +26,8 @@ struct LocalControlClientTests {
             )
         }
         let status = try await client.status()
-        #expect(status.version == 9)
+        #expect(LocalControlClient.protocolVersion == 10)
+        #expect(status.version == 10)
         #expect(status.credentialBackend == .macOSKeychain)
     }
 
@@ -117,13 +118,13 @@ struct LocalControlClientTests {
                 JSONSerialization.jsonObject(with: request.dropLast()) as? [String: Any]
             )
             return try response(
-                version: 10,
+                version: 11,
                 requestID: try #require(object["request_id"] as? String),
                 result: "accounts",
                 payload: []
             )
         }
-        await #expect(throws: LocalControlError.protocolMismatch(client: 9, server: 10)) {
+        await #expect(throws: LocalControlError.protocolMismatch(client: 10, server: 11)) {
             _ = try await wrongVersion.accounts()
         }
 
@@ -146,6 +147,48 @@ struct LocalControlClientTests {
         }
         await #expect(throws: LocalControlError.server("storage")) {
             _ = try await serverError.accounts()
+        }
+    }
+
+    @Test func persistsAccountMetricsAndMapsValidationErrors() async throws {
+        let recorder = RequestRecorder()
+        let client = LocalControlClient { request in
+            let object = try #require(
+                JSONSerialization.jsonObject(with: request.dropLast()) as? [String: Any]
+            )
+            recorder.append(object)
+            let requestID = try #require(object["request_id"] as? String)
+            let command = try #require(object["command"] as? [String: Any])
+            let metrics = try #require(command["metrics"] as? [String])
+            if metrics.isEmpty {
+                return try response(
+                    requestID: requestID,
+                    result: "error",
+                    payload: ["kind": "invalid_account_metrics"]
+                )
+            }
+            return try response(
+                requestID: requestID,
+                result: "account",
+                payload: [
+                    "id": "account-1",
+                    "provider": "cursor",
+                    "enabled": true,
+                    "metrics": metrics,
+                ]
+            )
+        }
+
+        let updated = try await client.setAccountMetrics("account-1", metrics: ["usage", "Codex"])
+        #expect(updated.metrics == ["usage", "Codex"])
+        let recorded = try #require(recorder.values.first)
+        let recordedCommand = try #require(recorded["command"] as? [String: Any])
+        #expect(recordedCommand["command"] as? String == "set_account_metrics")
+        #expect(recordedCommand["account"] as? String == "account-1")
+        #expect(recordedCommand["metrics"] as? [String] == ["usage", "Codex"])
+
+        await #expect(throws: LocalControlError.server("invalid_account_metrics")) {
+            _ = try await client.setAccountMetrics("account-1", metrics: [])
         }
     }
 
@@ -332,7 +375,7 @@ private final class RequestRecorder: @unchecked Sendable {
 }
 
 private func response(
-    version: UInt16 = 9,
+    version: UInt16 = 10,
     requestID: String,
     result: String,
     payload: Any?

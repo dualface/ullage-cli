@@ -419,7 +419,7 @@ private func controlResponse(
         result = ["result": "ack"]
     }
     return try JSONSerialization.data(withJSONObject: [
-        "version": 9,
+        "version": 10,
         "request_id": requestID,
         "result": result,
     ]) + Data([0x0a])

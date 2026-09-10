@@ -764,3 +764,126 @@ private func date(_ value: String) throws -> Date {
     )
     #expect(empty == start)
 }
+
+@Test func metricFilterNarrowsAccountRowsAndKeepsStatusFlags() throws {
+    let chatGPT = try usage("chatgpt")
+    let full = summarize(chatGPT)
+    let codex = summarize(chatGPT, filter: try MetricFilter(names: [" codex "]))
+    #expect(codex.rows.map(\.metric) == ["Codex", "Codex"])
+    #expect(codex.rows.map(\.window) == ["5h", "weekly · Codex"])
+    #expect(codex.limitReached == full.limitReached)
+    #expect(codex.observedAt == full.observedAt)
+    #expect(codex.expiresAt == full.expiresAt)
+    #expect(summarize(chatGPT, filter: .inactive).rows == full.rows)
+
+    let missing = summarize(chatGPT, filter: try MetricFilter(names: ["missing metric"]))
+    #expect(missing.rows.isEmpty)
+    #expect(missing.limitReached == full.limitReached)
+
+    let grok = try usage("grok")
+    let synthetic = summarize(grok, filter: try MetricFilter(names: ["status", "MONTHLY CREDITS"]))
+    #expect(synthetic.rows.map(\.metric) == ["monthly credits", "status"])
+    #expect(synthetic.rows.map(\.window) == ["monthly", "On-demand usage"])
+}
+
+@Test func metricFilterSelectsRepresentativeRowsForOverview() throws {
+    let chatGPT = try usage("chatgpt")
+    #expect(overviewRows(for: chatGPT, filter: .inactive) == overviewRows(for: chatGPT))
+
+    let requests = overviewRows(for: chatGPT, filter: try MetricFilter(names: ["REQUESTS"]))
+    #expect(requests.map(\.metric) == ["requests"])
+    #expect(requests.map(\.window) == ["5h"])
+
+    let codex = overviewRows(for: chatGPT, filter: try MetricFilter(names: ["codex"]))
+    #expect(codex.map(\.metric) == ["Codex", "Codex"])
+    #expect(codex.map(\.window) == ["5h", "weekly · Codex"])
+
+    let credits = overviewRows(for: chatGPT, filter: try MetricFilter(names: ["available count", "credit balance"]))
+    #expect(credits.map(\.metric) == ["available count"])
+    #expect(credits.map(\.window) == ["Rate limit reset credits"])
+}
+
+@Test func metricFilterKeepsSyntheticAndFallbackRowsByDisplayName() throws {
+    let statusUsage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: Data(#"""
+    {
+      "provider":"test","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"five_hours"},"resets_at":null,"measurements":[
+          {"name":"enabled","used":0,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]}
+      ]
+    }
+    """#.utf8))
+    #expect(overviewRows(for: statusUsage).map(\.metric) == ["status"])
+    #expect(overviewRows(for: statusUsage, filter: try MetricFilter(names: ["status"])).map(\.metric) == ["status"])
+    #expect(overviewRows(for: statusUsage, filter: try MetricFilter(names: ["availability"])).isEmpty)
+
+    let availabilityUsage = try UllageJSON.makeDecoder().decode(SubscriptionUsage.self, from: Data(#"""
+    {
+      "provider":"test","account_label":null,"plan":null,
+      "subscription_expires_at":null,"observed_at":"2026-09-01T00:00:00Z",
+      "windows":[
+        {"window":{"kind":"five_hours"},"resets_at":null,"measurements":[
+          {"name":"allowed","used":0,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}},
+          {"name":"limit_reached","used":1,"limit":1,"unit":{"kind":"other","id":"boolean","label":"Boolean"}}
+        ]}
+      ]
+    }
+    """#.utf8))
+    #expect(overviewRows(for: availabilityUsage).map(\.metric) == ["availability"])
+    #expect(
+        overviewRows(for: availabilityUsage, filter: try MetricFilter(names: ["Availability"])).map(\.metric)
+            == ["availability"]
+    )
+    #expect(overviewRows(for: availabilityUsage, filter: try MetricFilter(names: ["status"])).isEmpty)
+}
+
+@Test func visibleOverviewItemsAndCatalogIDsApplyTheFilter() throws {
+    let snapshot = try fixture("chatgpt")
+    let chatGPT = try #require(snapshot.usage.data)
+    let filter = try MetricFilter(names: ["requests"])
+    let lowercased = try MetricFilter(names: ["Requests"])
+    #expect(
+        catalogProgressIDs(for: chatGPT, accountID: snapshot.accountId, filter: filter)
+            == catalogProgressIDs(for: chatGPT, accountID: snapshot.accountId, filter: lowercased)
+    )
+    #expect(
+        visibleOverviewItems(for: chatGPT, accountID: snapshot.accountId, hiddenIDs: [], filter: filter)
+            .map(\.row.metric) == ["requests"]
+    )
+    #expect(
+        visibleOverviewItems(
+            for: chatGPT,
+            accountID: snapshot.accountId,
+            hiddenIDs: [],
+            filter: try MetricFilter(names: ["missing"])
+        ).isEmpty
+    )
+    let identified = identifiedSummaryRows(for: chatGPT, filter: filter)
+    #expect(identified.map(\.row.metric) == ["requests"])
+    #expect(identifiedSummaryRows(for: chatGPT, filter: .inactive).count > identified.count)
+}
+
+@Test func menuBarProjectionIgnoresTheStoredMetricFilter() throws {
+    let grok = try fixture("grok")
+    let usage = try #require(grok.usage.data)
+    let plain = Account(id: grok.accountId, provider: "grok", label: nil, enabled: true)
+    let filtered = Account(
+        id: grok.accountId,
+        provider: "grok",
+        label: nil,
+        enabled: true,
+        metrics: ["usage"]
+    )
+    let hidden = Set([overviewItems(for: usage)[1].persistenceID(accountID: grok.accountId)])
+    #expect(
+        menuBarMetricOptions(accounts: [plain], snapshots: [grok], hiddenOverviewItemIDs: hidden)
+            == menuBarMetricOptions(accounts: [filtered], snapshots: [grok], hiddenOverviewItemIDs: hidden)
+    )
+    #expect(menuBarFillRatio(accounts: [plain], snapshots: [grok]) == menuBarFillRatio(accounts: [filtered], snapshots: [grok]))
+    #expect(
+        menuBarLiquidLevels(accounts: [plain], snapshots: [grok], pinnedMetricID: nil)
+            == menuBarLiquidLevels(accounts: [filtered], snapshots: [grok], pinnedMetricID: nil)
+    )
+}

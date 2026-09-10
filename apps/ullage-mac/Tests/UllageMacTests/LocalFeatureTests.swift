@@ -113,7 +113,7 @@ final class LocalFeatureTests: XCTestCase {
         let store = UsageStore(dataSourceFactory: { source })
         store.start()
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(store.connectionState, .protocolMismatch(client: "9", server: "10"))
+        XCTAssertEqual(store.connectionState, .protocolMismatch(client: "10", server: "11"))
         store.stop()
     }
 
@@ -277,7 +277,7 @@ private struct LocalMismatchDataSource: UsageDataSource {
     func usage() async throws -> [SnapshotPayload] { throw mismatch }
     func probe(accountId: String, wait: Bool) async throws -> ProbeResult { throw mismatch }
 
-    private var mismatch: LocalControlError { .protocolMismatch(client: 9, server: 10) }
+    private var mismatch: LocalControlError { .protocolMismatch(client: 10, server: 11) }
 }
 
 private final class LocalRequestRecorder: @unchecked Sendable {
@@ -327,7 +327,7 @@ private func localResponse(
         result = ["result": "ack"]
     }
     return try JSONSerialization.data(withJSONObject: [
-        "version": 9,
+        "version": 10,
         "request_id": requestID,
         "result": result,
     ]) + Data([0x0a])

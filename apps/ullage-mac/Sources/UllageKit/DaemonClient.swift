@@ -60,7 +60,7 @@ public struct PairedDeviceCredential: Decodable, Equatable, Sendable {
 }
 
 public final class DaemonClient: @unchecked Sendable {
-    public static let protocolVersion: UInt16 = 9
+    public static let protocolVersion: UInt16 = 10
     private let baseURL: URL
     private let token: String
     private let session: URLSession

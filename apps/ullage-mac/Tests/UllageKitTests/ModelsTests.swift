@@ -49,6 +49,58 @@ import Testing
     #expect(usage.windows[0].measurements[0].unit == .unknown("future_unit"))
 }
 
+@Test func accountsAndPayloadsWithoutMetricsDecodeToAnEmptyList() throws {
+    let account = try UllageJSON.makeDecoder().decode(Account.self, from: Data(#"""
+    {"id":"a","provider":"claude","label":null,"enabled":true}
+    """#.utf8))
+    #expect(account.metrics.isEmpty)
+
+    let snapshot = try UllageJSON.makeDecoder().decode(SnapshotPayload.self, from: Data(#"""
+    {
+      "account_id":"a",
+      "usage":{"outcome":"future"},
+      "last_success_at":"2026-08-31T00:00:00Z",
+      "stale":false,
+      "last_error":null,
+      "last_error_at":null
+    }
+    """#.utf8))
+    #expect(snapshot.metrics.isEmpty)
+
+    let probe = try UllageJSON.makeDecoder().decode(ProbePayload.self, from: Data(#"""
+    {"account_id":"a","usage":{"outcome":"future"}}
+    """#.utf8))
+    #expect(probe.metrics.isEmpty)
+}
+
+@Test func accountsAndSnapshotsRoundTripStoredMetrics() throws {
+    let account = Account(
+        id: "c1",
+        provider: "claude",
+        label: "Work",
+        enabled: true,
+        metrics: ["usage", "Codex"]
+    )
+    let encoded = try JSONEncoder().encode(account)
+    #expect(try JSONDecoder().decode(Account.self, from: encoded) == account)
+
+    let snapshot = SnapshotPayload(
+        accountId: "c1",
+        usage: .unknown("future"),
+        lastSuccessAt: Date(timeIntervalSince1970: 0),
+        stale: false,
+        lastError: nil,
+        lastErrorAt: nil,
+        metrics: ["usage"]
+    )
+    let snapshotData = try JSONEncoder().encode(snapshot)
+    #expect(try JSONDecoder().decode(SnapshotPayload.self, from: snapshotData) == snapshot)
+
+    let probe = ProbePayload(accountId: "c1", usage: .unknown("future"), metrics: ["usage"])
+    let probeData = try JSONEncoder().encode(probe)
+    #expect(try JSONDecoder().decode(ProbePayload.self, from: probeData) == probe)
+}
+
 @Test func accountOrderingAndTabTitlesAreStable() {
     let accounts = [
         Account(id: "c2", provider: "claude", label: nil, enabled: true),

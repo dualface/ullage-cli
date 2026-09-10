@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UllageKit
 
 /// Presents the popover content below the status item. With Liquid Glass the
 /// content sits in a transparent borderless panel whose root is glass, so the
@@ -29,7 +30,9 @@ final class PopoverController: NSObject, NSPopoverDelegate {
 
     private let store: UsageStore
     private let settings: AppSettings
+    private let mode: AppMode
     private let openSettings: () -> Void
+    private let writeAccountMetrics: @MainActor (_ account: String, _ metrics: [String]) async throws -> Account
     private var hostingController: NSHostingController<RootView>?
     private let presentation = PopoverPresentation()
     private var sizing = PopoverSizing()
@@ -48,10 +51,18 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         return panel?.isVisible ?? false
     }
 
-    init(store: UsageStore, settings: AppSettings, openSettings: @escaping () -> Void) {
+    init(
+        store: UsageStore,
+        settings: AppSettings,
+        mode: AppMode,
+        openSettings: @escaping () -> Void,
+        writeAccountMetrics: @escaping @MainActor (_ account: String, _ metrics: [String]) async throws -> Account
+    ) {
         self.store = store
         self.settings = settings
+        self.mode = mode
         self.openSettings = openSettings
+        self.writeAccountMetrics = writeAccountMetrics
         super.init()
     }
 
@@ -131,8 +142,10 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         let controller = NSHostingController(rootView: RootView(
             store: store,
             settings: settings,
+            mode: mode,
             presentation: presentation,
             openSettings: openSettings,
+            writeAccountMetrics: writeAccountMetrics,
             onPreferredHeightChanged: { [weak self] height in self?.updateContentHeight(height) }
         ))
         hostingController = controller

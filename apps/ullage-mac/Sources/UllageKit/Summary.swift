@@ -120,28 +120,32 @@ public func sanitizedErrorKind(_ error: SanitizedErrorPayload?) -> String? {
     }
 }
 
-public func summarize(_ usage: SubscriptionUsage) -> UsageSummary {
+public func summarize(_ usage: SubscriptionUsage, filter: MetricFilter = .inactive) -> UsageSummary {
     UsageSummary(
-        rows: projectedWindows(for: usage).flatMap { $0.map(\.row) },
+        rows: projectedWindows(for: usage, filter: filter).flatMap { $0.map(\.row) },
         limitReached: usage.windows.contains(where: windowHitItsLimit),
         observedAt: usage.observedAt,
         expiresAt: usage.subscriptionExpiresAt
     )
 }
 
-public func overviewRows(for usage: SubscriptionUsage) -> [SummaryRow] {
-    overviewItems(for: usage).map(\.row)
+public func overviewRows(for usage: SubscriptionUsage, filter: MetricFilter = .inactive) -> [SummaryRow] {
+    overviewItems(for: usage, filter: filter).map(\.row)
 }
 
-public func overviewItems(for usage: SubscriptionUsage) -> [OverviewItem] {
-    let windows = projectedWindows(for: usage)
+public func overviewItems(
+    for usage: SubscriptionUsage,
+    filter: MetricFilter = .inactive
+) -> [OverviewItem] {
+    let windows = projectedWindows(for: usage, filter: filter)
     var occurrences: [OverviewIdentityBase: Int] = [:]
     return overviewSelections(windows: windows, usage: usage)
         .compactMap { selection -> OverviewItem? in
             let window = usage.windows[selection.windowIndex]
             let selected = selection.projected
             let allowFallback = selection.usesRepresentative
-            guard let row = selected?.row ?? (allowFallback ? overviewFallbackRow(for: window) : nil)
+            guard let row = selected?.row ?? (allowFallback ? overviewFallbackRow(for: window) : nil),
+                  filterMatches(filter, row: row)
             else { return nil }
             let identity = OverviewIdentityBase(
                 windowKey: overviewIdentityKey(window.window),
@@ -161,8 +165,11 @@ public func overviewItems(for usage: SubscriptionUsage) -> [OverviewItem] {
         }
 }
 
-public func identifiedSummaryRows(for usage: SubscriptionUsage) -> [IdentifiedSummaryRow] {
-    let windows = projectedWindows(for: usage)
+public func identifiedSummaryRows(
+    for usage: SubscriptionUsage,
+    filter: MetricFilter = .inactive
+) -> [IdentifiedSummaryRow] {
+    let windows = projectedWindows(for: usage, filter: filter)
     var occurrences: [OverviewIdentityBase: Int] = [:]
     return zip(usage.windows.indices, windows).flatMap { windowIndex, projected -> [IdentifiedSummaryRow] in
         let window = usage.windows[windowIndex]
@@ -186,8 +193,12 @@ public func identifiedSummaryRows(for usage: SubscriptionUsage) -> [IdentifiedSu
     }
 }
 
-public func catalogProgressIDs(for usage: SubscriptionUsage, accountID: String) -> Set<String> {
-    Set(overviewItems(for: usage).compactMap { item in
+public func catalogProgressIDs(
+    for usage: SubscriptionUsage,
+    accountID: String,
+    filter: MetricFilter = .inactive
+) -> Set<String> {
+    Set(overviewItems(for: usage, filter: filter).compactMap { item in
         item.row.remainingRatio == nil ? nil : item.persistenceID(accountID: accountID)
     })
 }
@@ -206,9 +217,10 @@ public func visibleOverviewItems(
     for usage: SubscriptionUsage,
     accountID: String,
     hiddenIDs: Set<String>,
-    shownIDs: Set<String> = []
+    shownIDs: Set<String> = [],
+    filter: MetricFilter = .inactive
 ) -> [OverviewItem] {
-    let catalog = overviewItems(for: usage)
+    let catalog = overviewItems(for: usage, filter: filter)
     let catalogIDs = Set(catalog.map { $0.persistenceID(accountID: accountID) })
     var items = catalog.filter { item in
         let id = item.persistenceID(accountID: accountID)
@@ -220,7 +232,7 @@ public func visibleOverviewItems(
             shownIDs: shownIDs
         )
     }
-    for row in identifiedSummaryRows(for: usage) where row.row.remainingRatio != nil {
+    for row in identifiedSummaryRows(for: usage, filter: filter) where row.row.remainingRatio != nil {
         let id = row.persistenceID(accountID: accountID)
         if catalogIDs.contains(id) { continue }
         if overviewProgressIsVisible(
@@ -608,12 +620,15 @@ private func menuBarFillRatio(
     return minimumRatio
 }
 
-private func projectedWindows(for usage: SubscriptionUsage) -> [[ProjectedRow]] {
+private func projectedWindows(
+    for usage: SubscriptionUsage,
+    filter: MetricFilter = .inactive
+) -> [[ProjectedRow]] {
     let projected = usage.windows.map(summarizeWindow)
     let kindCounts = Dictionary(grouping: usage.windows.compactMap { windowKindKey($0.window) }, by: { $0 })
         .mapValues(\.count)
 
-    return zip(usage.windows, projected).map { window, rows in
+    let windows = zip(usage.windows, projected).map { window, rows in
         guard let key = windowKindKey(window.window), kindCounts[key, default: 0] > 1,
               let representative = representativeRow(in: rows) else { return rows }
         let qualifiedName = windowDisplayName(window.window) + " · " + representative.row.metric
@@ -631,6 +646,13 @@ private func projectedWindows(for usage: SubscriptionUsage) -> [[ProjectedRow]] 
             )
         }
     }
+    guard filter.isActive else { return windows }
+    return windows.map { rows in rows.filter { filter.matches($0.row.metric) } }
+}
+
+/// An inactive filter keeps every row; an active one keeps matching rows only.
+private func filterMatches(_ filter: MetricFilter, row: SummaryRow) -> Bool {
+    !filter.isActive || filter.matches(row.metric)
 }
 
 private func representativeRow(in rows: [ProjectedRow]) -> ProjectedRow? {

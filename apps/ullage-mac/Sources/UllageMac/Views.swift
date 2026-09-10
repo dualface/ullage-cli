@@ -10,8 +10,10 @@ enum SelectedTab: Hashable {
 struct RootView: View {
     @Bindable var store: UsageStore
     @Bindable var settings: AppSettings
+    let mode: AppMode
     let presentation: PopoverPresentation
     let openSettings: () -> Void
+    let writeAccountMetrics: @MainActor (_ account: String, _ metrics: [String]) async throws -> Account
     let onPreferredHeightChanged: (CGFloat) -> Void
     @State private var selectedTab: SelectedTab = .overview
     @State private var chromeHeight: CGFloat = 0
@@ -32,7 +34,12 @@ struct RootView: View {
                             case .overview:
                                 OverviewView(store: store, settings: settings)
                             case .account(let id):
-                                AccountView(store: store, settings: settings, accountID: id)
+                                AccountView(
+                                    store: store,
+                                    settings: settings,
+                                    accountID: id,
+                                    metricsAccess: metricFilterAccess
+                                )
                             }
                         }
                     }
@@ -86,6 +93,23 @@ struct RootView: View {
         // Whole points only: fractional measurements made the popover resize by
         // a pixel on changes that did not really alter the layout.
         onPreferredHeightChanged((chromeHeight + contentHeight + pointerInset).rounded(.up))
+    }
+
+    /// Where the metric-filter editor gets its write path, or why it is
+    /// read-only. Remote mode has no control channel, and mock data has no
+    /// daemon to persist to.
+    private var metricFilterAccess: MetricFilterAccess {
+        guard mode == .daemon else {
+            return .readOnly(reason: "Mock data is read-only.")
+        }
+        switch settings.transportMode {
+        case .local:
+            return .editable(AccountMetricsWriter(setMetrics: writeAccountMetrics))
+        case .remote:
+            return .readOnly(
+                reason: "The daemon stores this filter and remote mode cannot change it. Edit it on the daemon host."
+            )
+        }
     }
 
     /// The pointer is part of the glass panel, so the panel has to be that much
@@ -360,7 +384,8 @@ private struct TabBar: View {
             for: usage,
             accountID: account.id,
             hiddenIDs: settings.hiddenOverviewItemIDs,
-            shownIDs: settings.shownOverviewItemIDs
+            shownIDs: settings.shownOverviewItemIDs,
+            filter: MetricFilter(persistedNames: account.metrics)
         ).compactMap(\.row.remainingRatio)
         guard let lowest = ratios.min() else { return nil }
         let tier = RemainingTier(ratio: lowest)
@@ -455,7 +480,8 @@ private struct OverviewView: View {
                 for: usage,
                 accountID: account.id,
                 hiddenIDs: settings.hiddenOverviewItemIDs,
-                shownIDs: settings.shownOverviewItemIDs
+                shownIDs: settings.shownOverviewItemIDs,
+                filter: MetricFilter(persistedNames: account.metrics)
             )
             guard !items.isEmpty else { return nil }
             return OverviewCard(account: account, usage: usage, snapshot: snapshot, items: items)
@@ -465,7 +491,7 @@ private struct OverviewView: View {
     private var hasHiddenProgressRows: Bool {
         store.accounts.contains { account in
             guard let usage = store.snapshot(for: account.id)?.usage.data else { return false }
-            return overviewItems(for: usage).contains { item in
+            return overviewItems(for: usage, filter: MetricFilter(persistedNames: account.metrics)).contains { item in
                 item.row.remainingRatio != nil
                     && settings.hiddenOverviewItemIDs.contains(item.persistenceID(accountID: account.id))
             }
@@ -503,6 +529,8 @@ private struct AccountView: View {
     let store: UsageStore
     let settings: AppSettings
     let accountID: String
+    let metricsAccess: MetricFilterAccess
+    @State private var showsMetricEditor = false
 
     private var account: Account? { store.accounts.first(where: { $0.id == accountID }) }
     private var snapshot: SnapshotPayload? { store.snapshot(for: accountID) }
@@ -519,8 +547,14 @@ private struct AccountView: View {
                     timestamp: usage.observedAt
                 )
                 .padding(.horizontal, 2)
-                let identified = identifiedSummaryRows(for: usage)
-                let catalogIDs = catalogProgressIDs(for: usage, accountID: accountID)
+                MetricFilterSummaryRow(
+                    names: account.metrics,
+                    access: metricsAccess,
+                    edit: { showsMetricEditor = true }
+                )
+                let filter = MetricFilter(persistedNames: account.metrics)
+                let identified = identifiedSummaryRows(for: usage, filter: filter)
+                let catalogIDs = catalogProgressIDs(for: usage, accountID: accountID, filter: filter)
                 let grouped = groupedIdentifiedRows(identified)
                 ForEach(Array(grouped.enumerated()), id: \.element.0) { _, group in
                     let window = group.0
@@ -559,6 +593,16 @@ private struct AccountView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 2)
+            }
+        }
+        .sheet(isPresented: $showsMetricEditor) {
+            if let account, let writer = metricsAccess.writer, let usage = snapshot?.usage.data {
+                MetricFilterEditorView(
+                    account: account,
+                    usage: usage,
+                    writer: writer,
+                    onSaved: { store.refresh() }
+                )
             }
         }
     }

@@ -286,7 +286,18 @@ final class StatusItemController: NSObject {
         let controller = PopoverController(
             store: store,
             settings: settings,
-            openSettings: { [weak self] in self?.showSettings() }
+            mode: mode,
+            openSettings: { [weak self] in self?.showSettings() },
+            writeAccountMetrics: { [weak self] account, metrics in
+                guard let self else {
+                    throw LocalControlError.unavailable("the app is shutting down")
+                }
+                guard let socketURL = self.localService.socketURL else {
+                    throw LocalControlError.unavailable("App Group container is unavailable")
+                }
+                return try await LocalControlClient(socketURL: socketURL)
+                    .setAccountMetrics(account, metrics: metrics)
+            }
         )
         popoverController = controller
         return controller

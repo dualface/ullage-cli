@@ -217,7 +217,8 @@ private extension SnapshotPayload {
             lastSuccessAt: Date(),
             stale: false,
             lastError: nil,
-            lastErrorAt: nil
+            lastErrorAt: nil,
+            metrics: snapshot.metrics
         )
     }
 }

@@ -5,12 +5,33 @@ public struct Account: Codable, Equatable, Sendable {
     public let provider: String
     public let label: String?
     public let enabled: Bool
+    /// Display metric names the daemon stores for this account; empty means no
+    /// filter. Payloads without the field decode to an empty list.
+    public let metrics: [String]
 
-    public init(id: String, provider: String, label: String?, enabled: Bool) {
+    public init(
+        id: String,
+        provider: String,
+        label: String?,
+        enabled: Bool,
+        metrics: [String] = []
+    ) {
         self.id = id
         self.provider = provider
         self.label = label
         self.enabled = enabled
+        self.metrics = metrics
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, provider, label, enabled, metrics }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        provider = try container.decode(String.self, forKey: .provider)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        metrics = try container.decodeIfPresent([String].self, forKey: .metrics) ?? []
     }
 }
 
@@ -272,9 +293,12 @@ public struct SnapshotPayload: Codable, Equatable, Sendable {
     public let stale: Bool
     public let lastError: SanitizedErrorPayload?
     public let lastErrorAt: Date?
+    /// Display metric names stored for the account when the snapshot was read;
+    /// empty means no filter. Payloads without the field decode to empty.
+    public let metrics: [String]
 
     private enum CodingKeys: String, CodingKey {
-        case usage, stale
+        case usage, stale, metrics
         case accountId = "account_id"
         case lastSuccessAt = "last_success_at"
         case lastError = "last_error"
@@ -287,7 +311,8 @@ public struct SnapshotPayload: Codable, Equatable, Sendable {
         lastSuccessAt: Date,
         stale: Bool,
         lastError: SanitizedErrorPayload?,
-        lastErrorAt: Date?
+        lastErrorAt: Date?,
+        metrics: [String] = []
     ) {
         self.accountId = accountId
         self.usage = usage
@@ -295,21 +320,48 @@ public struct SnapshotPayload: Codable, Equatable, Sendable {
         self.stale = stale
         self.lastError = lastError
         self.lastErrorAt = lastErrorAt
+        self.metrics = metrics
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accountId = try container.decode(String.self, forKey: .accountId)
+        usage = try container.decode(QueryOutcome<SubscriptionUsage>.self, forKey: .usage)
+        lastSuccessAt = try container.decode(Date.self, forKey: .lastSuccessAt)
+        stale = try container.decode(Bool.self, forKey: .stale)
+        lastError = try container.decodeIfPresent(SanitizedErrorPayload.self, forKey: .lastError)
+        lastErrorAt = try container.decodeIfPresent(Date.self, forKey: .lastErrorAt)
+        metrics = try container.decodeIfPresent([String].self, forKey: .metrics) ?? []
     }
 }
 
 public struct ProbePayload: Codable, Equatable, Sendable {
     public let accountId: String
     public let usage: QueryOutcome<SubscriptionUsage>
+    /// Display metric names stored for the account when the probe ran; empty
+    /// means no filter. Payloads without the field decode to empty.
+    public let metrics: [String]
 
     private enum CodingKeys: String, CodingKey {
-        case usage
+        case usage, metrics
         case accountId = "account_id"
     }
 
-    public init(accountId: String, usage: QueryOutcome<SubscriptionUsage>) {
+    public init(
+        accountId: String,
+        usage: QueryOutcome<SubscriptionUsage>,
+        metrics: [String] = []
+    ) {
         self.accountId = accountId
         self.usage = usage
+        self.metrics = metrics
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accountId = try container.decode(String.self, forKey: .accountId)
+        usage = try container.decode(QueryOutcome<SubscriptionUsage>.self, forKey: .usage)
+        metrics = try container.decodeIfPresent([String].self, forKey: .metrics) ?? []
     }
 }
 
