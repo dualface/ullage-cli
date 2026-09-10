@@ -1077,7 +1077,11 @@ fn random_uuid() -> ProviderResult<String> {
     })?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
     Ok(format!(
         "{}-{}-{}-{}-{}",
         &hex[0..8],
