@@ -17,9 +17,11 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use ullage_core::summary::{MetricFilter, filter_usage_measurements};
 use ullage_daemon::{ControlService, PairDeviceError};
 use ullage_protocol::{
     ControlCommand, ControlError, ControlRequest, ControlResponse, ControlResult, ProviderError,
+    QueryOutcome, SubscriptionUsage,
 };
 
 use crate::bind::INVALID_BIND_MESSAGE;
@@ -392,6 +394,23 @@ async fn handle_request(
         }
     };
 
+    // Invalid metric names are their own 400 so a client can tell an illegal
+    // filter from an unknown query key; a valid but unknown name is not an
+    // error and filters to empty measurements.
+    let metric_filter = match MetricFilter::new(params.metric.clone()) {
+        Ok(filter) => filter,
+        Err(_) => {
+            return finish(
+                json_status(
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({"error":"invalid_metric"}),
+                ),
+                origin.as_deref(),
+                &state.allowed_origins,
+            );
+        }
+    };
+
     if let Route::Probe { id } = &route {
         if let Some(retry_after) = probe_retry_after(&state, id) {
             return finish(
@@ -405,13 +424,20 @@ async fn handle_request(
     let command = route_command(route, &params);
 
     let request_id = next_request_id();
-    let response = state
+    let mut response = state
         .service
         .handle_with_transport(
             ControlRequest::new(request_id, command).with_diagnostics(params.diagnose),
             ullage_daemon::ControlTransport::RemoteHttp,
         )
         .await;
+    if metric_filter.is_active() {
+        if let ControlResult::Snapshots(snapshots) = &mut response.result {
+            for snapshot in snapshots {
+                filter_usage_outcome(&mut snapshot.usage, &metric_filter);
+            }
+        }
+    }
     finish(
         map_control_response(response, params.diagnose),
         origin.as_deref(),
@@ -535,6 +561,7 @@ struct QueryParams {
     account: Option<String>,
     wait: bool,
     diagnose: bool,
+    metric: Vec<String>,
     keys: Vec<String>,
 }
 
@@ -543,18 +570,28 @@ impl QueryParams {
         let mut account = None;
         let mut wait = None;
         let mut diagnose = None;
+        let mut metric = Vec::new();
         let mut keys = Vec::new();
         if query.is_empty() {
             return Ok(Self {
                 account: None,
                 wait: true,
                 diagnose: false,
+                metric,
                 keys,
             });
         }
         for pair in query.split('&') {
             let (key, value) = pair.split_once('=').ok_or(())?;
             let key = decode_component(key)?;
+            if key == "metric" {
+                // Repeated names form the union of the metric filter. Decoding
+                // keeps control characters so `MetricFilter` answers
+                // `invalid_metric` instead of a generic parse error.
+                metric.push(decode_metric_name(value)?);
+                keys.push(key);
+                continue;
+            }
             let value = decode_component(value)?;
             match key.as_str() {
                 "account" => {
@@ -591,13 +628,14 @@ impl QueryParams {
             account,
             wait: wait.unwrap_or(true),
             diagnose: diagnose.unwrap_or(false),
+            metric,
             keys,
         })
     }
 
     fn validate_for(&self, route: &Route) -> Result<(), ()> {
         let allowed = match route {
-            Route::Usage => ["account", "diagnose"].as_slice(),
+            Route::Usage => ["account", "diagnose", "metric"].as_slice(),
             Route::Probe { .. } => ["wait", "diagnose"].as_slice(),
             Route::Pair => [].as_slice(),
             _ => ["diagnose"].as_slice(),
@@ -662,6 +700,18 @@ fn decode_component(value: &str) -> Result<String, ()> {
     Ok(decoded.into_owned())
 }
 
+/// Decodes one `metric=` value without rejecting NUL.
+///
+/// [`MetricFilter`] reports control characters as `invalid_metric`, so decoding
+/// must not turn them into a generic bad request first. UTF-8 is still
+/// enforced.
+fn decode_metric_name(value: &str) -> Result<String, ()> {
+    percent_decode_str(value)
+        .decode_utf8()
+        .map(|decoded| decoded.into_owned())
+        .map_err(|_| ())
+}
+
 fn host_is_allowed(host: Option<&str>, binds: &[SocketAddr]) -> bool {
     let Some(host) = host else {
         return false;
@@ -722,6 +772,19 @@ fn probe_retry_after(state: &HttpState, account_id: &str) -> Option<u64> {
     }
     last_probe.insert(account_id.to_owned(), now);
     None
+}
+
+/// Applies a query metric filter to the data a snapshot carries.
+///
+/// The outcome variant and its failure list stay untouched so the response
+/// keeps reporting partial failures; only the measurements are filtered, and
+/// `limit_reached` bookkeeping survives per the core filter contract.
+fn filter_usage_outcome(outcome: &mut QueryOutcome<SubscriptionUsage>, filter: &MetricFilter) {
+    match outcome {
+        QueryOutcome::Complete { data } | QueryOutcome::Partial { data, .. } => {
+            *data = filter_usage_measurements(data, filter);
+        }
+    }
 }
 
 fn map_control_response(response: ControlResponse, diagnose: bool) -> Response<Full<Bytes>> {
