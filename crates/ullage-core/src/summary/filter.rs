@@ -127,7 +127,7 @@ pub fn filter_usage_measurements(
             .any(|row| row.value == SummaryValue::CreditsUnlimited);
         let keeps_off = kept
             .iter()
-            .any(|row| row.disabled || row.value == SummaryValue::Disabled);
+            .any(|row| row.disabled || row.metric == "status");
         let keeps_on_demand = kept.iter().any(|row| {
             (row.disabled || row.value == SummaryValue::Disabled)
                 && (row.metric == "on demand" || row.metric.starts_with("on demand "))
@@ -368,6 +368,36 @@ mod tests {
             assert_eq!(actual.limit_reached, expected.limit_reached, "{names:?}");
             assert_eq!(actual.observed_at, expected.observed_at);
             assert_eq!(actual.expires_at, expected.expires_at);
+        }
+    }
+
+    /// A window switched off both at the account level and for on-demand,
+    /// without an on-demand amount: the two flags must not leak into each
+    /// other when one of their rows survives.
+    fn double_off_usage() -> SubscriptionUsage {
+        usage(vec![window(
+            UsageWindowKind::Monthly,
+            vec![
+                percent("included_usage", 25.0),
+                boolean("enabled", false),
+                boolean("on_demand_enabled", false),
+                boolean("limit_reached", true),
+            ],
+        )])
+    }
+
+    #[test]
+    fn filtered_measurements_reproduce_a_double_off_window() {
+        let source = double_off_usage();
+        let filters: [&[&str]; 4] = [&[], &["usage"], &["on demand"], &["status"]];
+        for names in filters {
+            let filter = metric_filter(names);
+            let expected = summarize_filtered(&source, &filter);
+            let filtered = filter_usage_measurements(&source, &filter);
+            let actual = summarize(&filtered);
+            assert_eq!(actual.rows, expected.rows, "filter {names:?}");
+            assert_eq!(actual.limit_reached, expected.limit_reached, "{names:?}");
+            assert!(actual.limit_reached, "a reached limit survives filtering");
         }
     }
 
