@@ -78,9 +78,17 @@ fn help_covers_exit_codes_examples_and_value_names() {
         show_long.contains("--all"),
         "show long_about should explain --all: {show_long}"
     );
+    for flag in ["--metric", "--no-metric-filter"] {
+        assert!(
+            show_long.contains(flag),
+            "show long_about should explain {flag}: {show_long}"
+        );
+    }
 
     assert_value_name(&command, &["account", "add"], "provider", "PROVIDER_ID");
     assert_value_name(&command, &["account", "show"], "account", "ACCOUNT_ID");
+    assert_value_name(&command, &["account", "metrics"], "account", "ACCOUNT_ID");
+    assert_value_name(&command, &["account", "metrics"], "metrics", "METRIC");
     assert_value_name(&command, &["account", "label"], "label", "ACCOUNT_LABEL");
     assert_value_name(&command, &["auth", "login"], "provider", "PROVIDER_ID");
     assert_value_name(&command, &["auth", "complete"], "flow_id", "FLOW_ID");
@@ -92,6 +100,7 @@ fn help_covers_exit_codes_examples_and_value_names() {
     );
     assert_value_name(&command, &["probe"], "account", "ACCOUNT_ID");
     assert_value_name(&command, &["show"], "account", "ACCOUNT_ID");
+    assert_value_name(&command, &["show"], "metric", "METRIC");
     assert_value_name(&command, &["device", "revoke"], "device_id", "DEVICE_ID");
 
     assert!(command.find_subcommand("http").is_none());

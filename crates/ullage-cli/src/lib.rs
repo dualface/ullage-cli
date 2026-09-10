@@ -38,7 +38,7 @@ use table::{
     render_pairs, render_section_header, render_summary_rows, render_summary_rows_aligned,
     render_table,
 };
-use ullage_core::summary::{UsageSummary, summarize};
+use ullage_core::summary::{MetricFilter, UsageSummary, summarize, summarize_filtered};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -134,7 +134,8 @@ const PROBE_AFTER_HELP: &str = "Examples:
   ullage probe claude-work --no-wait";
 const SHOW_AFTER_HELP: &str = "Examples:
   ullage show claude-work
-  ullage show --all";
+  ullage show --all
+  ullage show --all --metric usage --metric Codex";
 const PROBE_ABOUT: &str = "Query a provider now and persist a usage snapshot";
 const PROBE_LONG_ABOUT: &str = "Query a provider now and persist a usage snapshot.
 
@@ -145,7 +146,11 @@ usage.";
 const SHOW_ABOUT: &str = "Print persisted usage snapshots without calling the provider";
 const SHOW_LONG_ABOUT: &str = "Print persisted usage snapshots without calling the provider.
 
-Pass an account id, or --all to print every stored snapshot.";
+Pass an account id, or --all to print every stored snapshot. The readable \
+summary shows only the rows the account's stored metric filter keeps; --metric \
+overrides that filter for this invocation and --no-metric-filter ignores it. \
+Both flags affect the readable summary only: --raw and JSON output keep every \
+measurement.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -248,7 +253,11 @@ pub enum Command {
     Probe(ProbeArgs),
     /// Print persisted usage snapshots without calling the provider.
     ///
-    /// Pass an account id, or `--all` to print every stored snapshot.
+    /// Pass an account id, or `--all` to print every stored snapshot. The
+    /// readable summary shows only the rows the account's stored metric filter
+    /// keeps; `--metric` overrides that filter for this invocation and
+    /// `--no-metric-filter` ignores it. Both flags affect the readable summary
+    /// only: `--raw` and JSON output keep every measurement.
     Show(ShowArgs),
     /// Pair, inspect, and revoke HTTP API devices.
     #[command(arg_required_else_help = true, after_help = DEVICE_AFTER_HELP)]
@@ -346,6 +355,20 @@ pub enum AccountCommand {
         /// New account label. Omit this argument to clear the current label.
         #[arg(value_name = "ACCOUNT_LABEL")]
         label: Option<String>,
+    },
+    /// Set or clear the display metric filter of an account id.
+    ///
+    /// Names match readable summary rows by display name, case-insensitively
+    /// and exactly, and they ignore the window a row belongs to. Omit every
+    /// METRIC value to clear the stored filter. Invalid names fail with exit
+    /// code 64 without contacting the daemon.
+    Metrics {
+        /// Stable account id, not the account label.
+        #[arg(value_name = "ACCOUNT_ID")]
+        account: String,
+        /// Display metric names to keep. Omit every value to clear.
+        #[arg(value_name = "METRIC")]
+        metrics: Vec<String>,
     },
     /// Delete an account id and its stored snapshots.
     ///
@@ -496,6 +519,19 @@ pub struct ShowArgs {
     /// Print every stored snapshot instead of selecting one account id.
     #[arg(long)]
     pub all: bool,
+    /// Keep only summary rows whose display name matches.
+    ///
+    /// Matching is exact and case-insensitive and ignores the window a row
+    /// belongs to. Repeat the flag to keep the union of several names.
+    #[arg(
+        long = "metric",
+        value_name = "METRIC",
+        conflicts_with = "no_metric_filter"
+    )]
+    pub metric: Vec<String>,
+    /// Ignore the account's stored metric filter for this invocation.
+    #[arg(long = "no-metric-filter")]
+    pub no_metric_filter: bool,
 }
 
 pub struct SystemClient {
@@ -1204,6 +1240,14 @@ pub fn execute_with(
     if let Some(param) = unsafe_control_param_name(&cli.command) {
         return unsafe_control_error_output(cli.output, param);
     }
+    // Invalid metric names never reach the daemon: surface the usage error
+    // before the control request is built.
+    let metric_choice = match metric_filter_choice(&cli.command) {
+        Ok(choice) => choice,
+        Err(()) => {
+            return error_output(ExitCode::Usage, "invalid_account_metrics", cli.output);
+        }
+    };
     if let Command::Auth {
         command:
             AuthCommand::Login {
@@ -1229,6 +1273,7 @@ pub fn execute_with(
                 cli.raw,
                 false,
                 cli.color,
+                &metric_choice,
             ),
             Err(_) => error_output(ExitCode::Failure, "daemon_process_failed", cli.output),
         };
@@ -1257,6 +1302,7 @@ pub fn execute_with(
                 cli.raw,
                 false,
                 cli.color,
+                &metric_choice,
             ),
             Err(_) => error_output(ExitCode::Failure, "daemon_service_failed", cli.output),
         };
@@ -1329,6 +1375,7 @@ pub fn execute_with(
         cli.raw,
         diagnose,
         cli.color,
+        &metric_choice,
     );
     if let Some(detail) = response.diagnostic {
         output.stderr = with_diagnostic(&output.stderr, &detail, cli.output);
@@ -1409,6 +1456,7 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
                 AccountCommand::Show { account }
                 | AccountCommand::Enable { account }
                 | AccountCommand::Disable { account }
+                | AccountCommand::Metrics { account, .. }
                 | AccountCommand::Remove { account },
         }
         | Command::Probe(ProbeArgs { account, .. }) => {
@@ -1500,6 +1548,62 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
     }
 }
 
+/// Which metric filter the readable summary applies to stored snapshots.
+#[derive(Clone, Debug, Default)]
+enum MetricFilterChoice {
+    /// Apply each account's persisted filter; the default for `show` and
+    /// `probe`.
+    #[default]
+    Persisted,
+    /// Apply one filter to every account: `--metric` or `--no-metric-filter`.
+    Explicit(MetricFilter),
+}
+
+impl MetricFilterChoice {
+    fn for_saved(&self, saved: &[String]) -> MetricFilter {
+        match self {
+            Self::Explicit(filter) => filter.clone(),
+            Self::Persisted => persisted_metric_filter(saved),
+        }
+    }
+}
+
+/// The filter the daemon stored for an account.
+///
+/// Stored names are validated when they are written and when the configuration
+/// loads; an unexpected value leaves the filter inactive rather than panicking
+/// while rendering.
+fn persisted_metric_filter(saved: &[String]) -> MetricFilter {
+    MetricFilter::new(saved.to_vec()).unwrap_or_default()
+}
+
+/// The names a validated filter stores: trimmed and deduplicated.
+fn normalized_metric_names(names: &[String]) -> Vec<String> {
+    MetricFilter::new(names.to_vec())
+        .map(|filter| filter.names().to_vec())
+        .unwrap_or_else(|_| names.to_vec())
+}
+
+/// Resolves the metric filter for this invocation and rejects invalid names
+/// before any control request is built.
+fn metric_filter_choice(command: &Command) -> Result<MetricFilterChoice, ()> {
+    match command {
+        Command::Show(args) if !args.metric.is_empty() => MetricFilter::new(args.metric.clone())
+            .map(MetricFilterChoice::Explicit)
+            .map_err(|_| ()),
+        // An inactive filter shows every row, which is what the flag asks for.
+        Command::Show(args) if args.no_metric_filter => {
+            Ok(MetricFilterChoice::Explicit(MetricFilter::default()))
+        }
+        Command::Account {
+            command: AccountCommand::Metrics { metrics, .. },
+        } => MetricFilter::new(metrics.clone())
+            .map(|_| MetricFilterChoice::Persisted)
+            .map_err(|_| ()),
+        _ => Ok(MetricFilterChoice::Persisted),
+    }
+}
+
 fn to_control_command(command: &Command) -> ControlCommand {
     match command {
         Command::Daemon {
@@ -1543,6 +1647,13 @@ fn to_control_command(command: &Command) -> ControlCommand {
             AccountCommand::Label { account, label } => ControlCommand::SetAccountLabel {
                 account: AccountId::new(account),
                 label: label.clone(),
+            },
+            AccountCommand::Metrics { account, metrics } => ControlCommand::SetAccountMetrics {
+                account: AccountId::new(account),
+                // `metric_filter_choice` already rejected invalid names, so
+                // normalizing here keeps the request identical to what the
+                // daemon stores and returns.
+                metrics: normalized_metric_names(metrics),
             },
             AccountCommand::Remove { account } => ControlCommand::RemoveAccount {
                 account: AccountId::new(account),
@@ -1708,6 +1819,18 @@ fn response_matches_command(command: &Command, result: &ControlResult) -> bool {
         ) => account.id.as_str() == requested && account.label.as_deref() == label.as_deref(),
         (
             Command::Account {
+                command:
+                    AccountCommand::Metrics {
+                        account: requested,
+                        metrics,
+                    },
+            },
+            ControlResult::Account(account),
+        ) => {
+            account.id.as_str() == requested && account.metrics == normalized_metric_names(metrics)
+        }
+        (
+            Command::Account {
                 command: AccountCommand::Remove { .. },
             },
             ControlResult::Ack,
@@ -1806,6 +1929,9 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
                     | AccountCommand::Label {
                         account: requested, ..
                     }
+                    | AccountCommand::Metrics {
+                        account: requested, ..
+                    }
                     | AccountCommand::Remove { account: requested },
             } => account.as_str() == requested,
             Command::Auth { command } => match command {
@@ -1882,10 +2008,16 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
                         | AccountCommand::Enable { .. }
                         | AccountCommand::Disable { .. }
                         | AccountCommand::Label { .. }
+                        | AccountCommand::Metrics { .. }
                         | AccountCommand::Remove { .. }
                 }
         ),
-        ControlError::InvalidAccountMetrics => false,
+        ControlError::InvalidAccountMetrics => matches!(
+            command,
+            Command::Account {
+                command: AccountCommand::Metrics { .. }
+            }
+        ),
         ControlError::UnsupportedCommand => false,
     }
 }
@@ -1958,6 +2090,7 @@ fn render_result(
     raw: bool,
     diagnose: bool,
     color: ColorMode,
+    metric_choice: &MetricFilterChoice,
 ) -> RunOutput {
     let code = result_exit_code(&result);
     if let ControlResult::Error(error) = &result {
@@ -1990,9 +2123,14 @@ fn render_result(
             }
             json_line(&output_result, format == OutputFormat::PrettyJson)
         }
-        OutputFormat::Table => {
-            human_result(&result, reveal, raw, diagnose, &Palette::from_mode(color))
-        }
+        OutputFormat::Table => human_result(
+            &result,
+            reveal,
+            raw,
+            diagnose,
+            &Palette::from_mode(color),
+            metric_choice,
+        ),
     };
     let mut output = RunOutput {
         stdout,
@@ -2146,6 +2284,7 @@ fn human_result(
     raw: bool,
     diagnose: bool,
     palette: &Palette,
+    metric_choice: &MetricFilterChoice,
 ) -> String {
     match result {
         ControlResult::DaemonStatus(status) => render_daemon_status(status, palette),
@@ -2169,12 +2308,10 @@ fn human_result(
             render_table(&["PROVIDER", "NAME", "CAPABILITIES"], &rows, palette)
         }
         ControlResult::Accounts(accounts) => render_accounts(accounts, reveal, palette),
-        ControlResult::Account(account) => {
-            render_accounts(std::slice::from_ref(account), reveal, palette)
-        }
+        ControlResult::Account(account) => render_account(account, reveal, palette),
         ControlResult::Probe(payload) => render_probe(payload, reveal, raw, diagnose, palette),
         ControlResult::Snapshots(snapshots) => {
-            render_snapshots(snapshots, reveal, raw, diagnose, palette)
+            render_snapshots(snapshots, reveal, raw, diagnose, palette, metric_choice)
         }
         ControlResult::AuthChallenge(challenge) => render_pairs(
             &[
@@ -2345,18 +2482,49 @@ fn render_accounts(accounts: &[Account], reveal: bool, palette: &Palette) -> Str
             vec![
                 Cell::new(account.id.as_str()),
                 Cell::new(account.provider.as_str()),
-                Cell::new(
-                    account
-                        .label
-                        .as_deref()
-                        .map(|value| display_sensitive(value, reveal))
-                        .unwrap_or_else(|| "-".into()),
-                ),
+                label_cell(account, reveal),
                 Cell::new(account.enabled.to_string()),
+                Cell::new(metrics_cell(&account.metrics)),
             ]
         })
         .collect::<Vec<_>>();
-    render_table(&["ACCOUNT", "PROVIDER", "LABEL", "ENABLED"], &rows, palette)
+    render_table(
+        &["ACCOUNT", "PROVIDER", "LABEL", "ENABLED", "METRICS"],
+        &rows,
+        palette,
+    )
+}
+
+/// One account as key-value rows, so the stored metric filter has its own line.
+fn render_account(account: &Account, reveal: bool, palette: &Palette) -> String {
+    render_pairs(
+        &[
+            ("ACCOUNT", Cell::new(account.id.as_str())),
+            ("PROVIDER", Cell::new(account.provider.as_str())),
+            ("LABEL", label_cell(account, reveal)),
+            ("ENABLED", Cell::new(account.enabled.to_string())),
+            ("METRICS", Cell::new(metrics_cell(&account.metrics))),
+        ],
+        palette,
+    )
+}
+
+fn label_cell(account: &Account, reveal: bool) -> Cell {
+    Cell::new(
+        account
+            .label
+            .as_deref()
+            .map(|value| display_sensitive(value, reveal))
+            .unwrap_or_else(|| "-".into()),
+    )
+}
+
+fn metrics_cell(metrics: &[String]) -> String {
+    if metrics.is_empty() {
+        "-".into()
+    } else {
+        metrics.join(", ")
+    }
 }
 
 fn render_probe(
@@ -2369,15 +2537,19 @@ fn render_probe(
     if raw {
         return render_usage_outcome(&payload.usage, reveal, diagnose, palette, Vec::new());
     }
+    let filter = persisted_metric_filter(&payload.metrics);
     let mut block = account_section_header(&payload.account_id, &payload.usage, palette);
     block.push_str(&render_usage_summary(
         &payload.usage,
         false,
-        reveal,
-        diagnose,
-        palette,
-        Utc::now(),
-        None,
+        &SummaryRender {
+            reveal,
+            diagnose,
+            palette,
+            now: Utc::now(),
+            layout: None,
+        },
+        &filter,
     ));
     block
 }
@@ -2388,12 +2560,14 @@ fn render_snapshots(
     raw: bool,
     diagnose: bool,
     palette: &Palette,
+    metric_choice: &MetricFilterChoice,
 ) -> String {
     let now = Utc::now();
     let layout = (!raw).then(|| {
         let mut layout = SummaryLayout::default();
         for snapshot in snapshots {
-            let summary = summarize(usage_data(&snapshot.usage));
+            let filter = metric_choice.for_saved(&snapshot.metrics);
+            let summary = summarize_filtered(usage_data(&snapshot.usage), &filter);
             layout.expand(measure_summary_layout(&summary.rows, now));
         }
         layout
@@ -2423,15 +2597,19 @@ fn render_snapshots(
             ));
             block
         } else {
+            let filter = metric_choice.for_saved(&snapshot.metrics);
             let mut block = account_section_header(&snapshot.account_id, &snapshot.usage, palette);
             block.push_str(&render_usage_summary(
                 &snapshot.usage,
                 snapshot.stale,
-                reveal,
-                diagnose,
-                palette,
-                now,
-                layout.as_ref(),
+                &SummaryRender {
+                    reveal,
+                    diagnose,
+                    palette,
+                    now,
+                    layout: layout.as_ref(),
+                },
+                &filter,
             ));
             block
         };
@@ -2469,22 +2647,41 @@ fn account_section_header(
     )
 }
 
+/// The rendering state shared by every summary block of one invocation.
+#[derive(Clone, Copy)]
+struct SummaryRender<'a> {
+    reveal: bool,
+    diagnose: bool,
+    palette: &'a Palette,
+    now: DateTime<Utc>,
+    layout: Option<&'a SummaryLayout>,
+}
+
 /// Renders the readable summary body, falling back to the raw table when no
 /// measurement survives the mapping.
+///
+/// An active metric filter keeps the account heading and its update time but
+/// replaces the rows with a warning when it hides every row; it never falls
+/// back to raw output, because the raw table would contradict the filter. A
+/// summary that was empty before filtering still falls back as before.
 fn render_usage_summary(
     outcome: &QueryOutcome<SubscriptionUsage>,
     stale: bool,
-    reveal: bool,
-    diagnose: bool,
-    palette: &Palette,
-    now: DateTime<Utc>,
-    layout: Option<&SummaryLayout>,
+    render: &SummaryRender<'_>,
+    filter: &MetricFilter,
 ) -> String {
+    let SummaryRender {
+        reveal,
+        diagnose,
+        palette,
+        now,
+        layout,
+    } = *render;
     let usage = usage_data(outcome);
     let summary = summarize(usage);
     if summary.is_empty() {
-        // The raw table replaces the rows, not the notices: a filtered-out
-        // account can still be stale, partial, or out of quota.
+        // The raw table replaces the rows, not the notices: an account with no
+        // readable metric can still be stale, partial, or out of quota.
         let mut output = render_line(
             "! no summarized metrics available; showing raw data",
             Style::Warning,
@@ -2497,12 +2694,27 @@ fn render_usage_summary(
         return output;
     }
 
+    let filtered = summarize_filtered(usage, filter);
     let mut output = render_line(
-        &format!("updated {}", relative_past(summary.observed_at, now)),
+        &format!("updated {}", relative_past(filtered.observed_at, now)),
         Style::Dim,
         palette,
     );
-    if let Some(expires_at) = summary.expires_at {
+    if filtered.is_empty() {
+        output.push_str(&render_line(
+            &format!(
+                "! no rows match the metric filter: {}",
+                filter.names().join(", ")
+            ),
+            Style::Warning,
+            palette,
+        ));
+        output.push_str(&render_summary_notes(
+            &summary, outcome, stale, diagnose, palette,
+        ));
+        return output;
+    }
+    if let Some(expires_at) = filtered.expires_at {
         output.push_str(&render_line(
             &format!("expires {}", expires_at.date_naive()),
             Style::Plain,
@@ -2510,11 +2722,11 @@ fn render_usage_summary(
         ));
     }
     output.push_str(&match layout {
-        Some(layout) => render_summary_rows_aligned(&summary.rows, now, palette, layout),
-        None => render_summary_rows(&summary.rows, now, palette),
+        Some(layout) => render_summary_rows_aligned(&filtered.rows, now, palette, layout),
+        None => render_summary_rows(&filtered.rows, now, palette),
     });
     output.push_str(&render_summary_notes(
-        &summary, outcome, stale, diagnose, palette,
+        &filtered, outcome, stale, diagnose, palette,
     ));
     output
 }
@@ -2901,6 +3113,10 @@ pub(crate) fn error_hint(kind: &str) -> Option<&'static str> {
         "account_not_found" | "account_selector_not_found" => {
             Some("pass a stable account id from `ullage account list`, not a label or display name")
         }
+        "invalid_account_metrics" => Some(
+            "pass display metric names such as `usage` or `Codex`; repeat the flag or argument to \
+             keep several names",
+        ),
         _ => None,
     }
 }
@@ -3107,6 +3323,7 @@ mod snapshot_render_tests {
             true,
             false,
             &palette(),
+            &MetricFilterChoice::Persisted,
         );
         assert!(
             output.starts_with("==== ACCOUNT [redacted] ([redacted]) ====\n"),
@@ -3137,7 +3354,14 @@ mod snapshot_render_tests {
             last_error_at: None,
             metrics: Vec::new(),
         }];
-        let output = render_snapshots(&snapshots, false, true, false, &palette());
+        let output = render_snapshots(
+            &snapshots,
+            false,
+            true,
+            false,
+            &palette(),
+            &MetricFilterChoice::Persisted,
+        );
         assert!(
             output.starts_with("==== ACCOUNT primary (cursor) ====\n"),
             "{output}"
@@ -3162,6 +3386,7 @@ mod snapshot_render_tests {
             false,
             false,
             &palette(),
+            &MetricFilterChoice::Persisted,
         );
         assert!(
             output.starts_with("==== ACCOUNT [redacted] ([redacted] \u{b7} [redacted]) ====\n"),
@@ -3186,6 +3411,7 @@ mod snapshot_render_tests {
             false,
             false,
             &palette(),
+            &MetricFilterChoice::Persisted,
         );
         assert!(
             output.starts_with("==== ACCOUNT primary (claude) ====\n"),
@@ -3201,6 +3427,7 @@ mod snapshot_render_tests {
             false,
             false,
             &palette(),
+            &MetricFilterChoice::Persisted,
         );
         assert!(
             output.contains("! no summarized metrics available; showing raw data\n"),
@@ -3228,7 +3455,14 @@ mod snapshot_render_tests {
             last_error_at: None,
             metrics: Vec::new(),
         }];
-        let output = render_snapshots(&snapshots, false, false, true, &palette());
+        let output = render_snapshots(
+            &snapshots,
+            false,
+            false,
+            true,
+            &palette(),
+            &MetricFilterChoice::Persisted,
+        );
         assert!(!output.contains('\u{1b}'), "{output}");
         assert!(!output.contains("[31m"), "{output}");
         assert!(output.contains("[redacted]"), "{output}");

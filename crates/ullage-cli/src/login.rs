@@ -15,8 +15,8 @@ use ullage_protocol::{
 use crate::prompt::{Prompt, SecretInput};
 use crate::{
     AccountCommand, AuthCommand, AuthMethodArg, Cli, ClientError, Command, ControlClient,
-    DaemonCommand, ExitCode, OutputFormat, ProbeArgs, ProviderCommand, RunOutput,
-    control_error_kind, error_output_with_options, is_unsafe_control, next_request_id,
+    DaemonCommand, ExitCode, MetricFilterChoice, OutputFormat, ProbeArgs, ProviderCommand,
+    RunOutput, control_error_kind, error_output_with_options, is_unsafe_control, next_request_id,
     render_result, response_matches_command, result_exit_code, to_control_command,
 };
 
@@ -299,6 +299,7 @@ pub(crate) fn interactive_login(
             cli.raw,
             false,
             cli.color,
+            &MetricFilterChoice::Persisted,
         ),
         Err(error) => {
             if !error.already_reported_during_auth() {
