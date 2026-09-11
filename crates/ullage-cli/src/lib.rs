@@ -32,7 +32,7 @@ mod table;
 #[cfg(test)]
 mod summary_render_tests;
 
-use render::{human_result, render_stopped_service, sanitize_cell};
+use render::{ResolvedMetricFilter, human_result, render_stopped_service, sanitize_cell};
 use table::Palette;
 use ullage_core::summary::MetricFilter;
 
@@ -143,10 +143,10 @@ const SHOW_ABOUT: &str = "Print persisted usage snapshots without calling the pr
 const SHOW_LONG_ABOUT: &str = "Print persisted usage snapshots without calling the provider.
 
 Pass an account id, or --all to print every stored snapshot. The readable \
-summary shows only the rows the account's stored metric filter keeps; --metric \
-overrides that filter for this invocation and --no-metric-filter ignores it. \
-Both flags affect the readable summary only: --raw and JSON output keep every \
-measurement.";
+summary hides the rows the account's stored metric filter names; --metric \
+keeps only the rows it names for this invocation, and --no-metric-filter \
+ignores the stored filter. Both flags affect the readable summary only: --raw \
+and JSON output keep every measurement.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -250,10 +250,10 @@ pub enum Command {
     /// Print persisted usage snapshots without calling the provider.
     ///
     /// Pass an account id, or `--all` to print every stored snapshot. The
-    /// readable summary shows only the rows the account's stored metric filter
-    /// keeps; `--metric` overrides that filter for this invocation and
-    /// `--no-metric-filter` ignores it. Both flags affect the readable summary
-    /// only: `--raw` and JSON output keep every measurement.
+    /// readable summary hides the rows the account's stored metric filter
+    /// names; `--metric` keeps only the rows it names for this invocation, and
+    /// `--no-metric-filter` ignores the stored filter. Both flags affect the
+    /// readable summary only: `--raw` and JSON output keep every measurement.
     Show(ShowArgs),
     /// Pair, inspect, and revoke HTTP API devices.
     #[command(arg_required_else_help = true, after_help = DEVICE_AFTER_HELP)]
@@ -352,17 +352,17 @@ pub enum AccountCommand {
         #[arg(value_name = "ACCOUNT_LABEL")]
         label: Option<String>,
     },
-    /// Set or clear the display metric filter of an account id.
+    /// Set or clear the display metric hide list of an account id.
     ///
-    /// Names match readable summary rows by display name, case-insensitively
-    /// and exactly, and they ignore the window a row belongs to. Omit every
-    /// METRIC value to clear the stored filter. Invalid names fail with exit
-    /// code 64 without contacting the daemon.
+    /// The stored names are hidden from the account's readable summary; they
+    /// match rows by display name, case-insensitively and exactly, and ignore
+    /// the window a row belongs to. Omit every METRIC value to clear the list.
+    /// Invalid names fail with exit code 64 without contacting the daemon.
     Metrics {
         /// Stable account id, not the account label.
         #[arg(value_name = "ACCOUNT_ID")]
         account: String,
-        /// Display metric names to keep. Omit every value to clear.
+        /// Display metric names to hide. Omit every value to clear.
         #[arg(value_name = "METRIC")]
         metrics: Vec<String>,
     },
@@ -1558,11 +1558,12 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
 /// Which metric filter the readable summary applies to stored snapshots.
 #[derive(Clone, Debug, Default)]
 pub(crate) enum MetricFilterChoice {
-    /// Apply each account's persisted filter; the default for `show` and
-    /// `probe`.
+    /// Apply each account's persisted filter as a hide list; the default for
+    /// `show` and `probe`.
     #[default]
     Persisted,
-    /// Apply one filter to every account: `--metric` or `--no-metric-filter`.
+    /// Apply one filter as a keep list to every account: `--metric` or
+    /// `--no-metric-filter`.
     Explicit(MetricFilter),
 }
 
@@ -1584,21 +1585,12 @@ impl RenderView<'_> {
 }
 
 impl MetricFilterChoice {
-    pub(crate) fn for_saved(&self, saved: &[String]) -> MetricFilter {
+    pub(crate) fn for_saved(&self, saved: &[String]) -> ResolvedMetricFilter {
         match self {
-            Self::Explicit(filter) => filter.clone(),
-            Self::Persisted => persisted_metric_filter(saved),
+            Self::Explicit(filter) => ResolvedMetricFilter::explicit(filter.clone()),
+            Self::Persisted => ResolvedMetricFilter::persisted(saved),
         }
     }
-}
-
-/// The filter the daemon stored for an account.
-///
-/// Stored names are validated when they are written and when the configuration
-/// loads; an unexpected value leaves the filter inactive rather than panicking
-/// while rendering.
-pub(crate) fn persisted_metric_filter(saved: &[String]) -> MetricFilter {
-    MetricFilter::new(saved.to_vec()).unwrap_or_default()
 }
 
 /// The names a validated filter stores: trimmed and deduplicated.
@@ -2484,7 +2476,7 @@ pub(crate) fn error_hint(kind: &str) -> Option<&'static str> {
         }
         "invalid_account_metrics" => Some(
             "pass display metric names such as `usage` or `Codex`; repeat the flag or argument to \
-             keep several names",
+             hide several names",
         ),
         _ => None,
     }

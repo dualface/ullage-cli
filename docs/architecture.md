@@ -343,7 +343,7 @@ values and provider refresh errors are redacted from `Debug` and `Display` outpu
   contain only the short-lived code and expiry; device-list payloads contain display metadata but
   never a device token or token hash. `DeviceNotFound` is the stable unknown-device error.
 - Protocol version 10 adds `SetAccountMetrics` and carries each account's optional display metric
-  filter on account, snapshot, and probe payloads. Filter names are trimmed, case-insensitive,
+  hide list on account, snapshot, and probe payloads. Filter names are trimmed, case-insensitive,
   deduplicated, and rejected when empty, longer than 128 characters, more than 64 entries, or
   containing control or bidirectional characters; `InvalidAccountMetrics` is the stable error.
 
@@ -356,8 +356,8 @@ Windows uses `%APPDATA%\Ullage\config.json`. Version 1 contains daemon concurren
 initial account selectors, optional `credentials.file_fallback` (default false), and optional
 `http` settings (`enabled` default false, `bind` default `127.0.0.1:7878`, `allowed_origins`
 default empty, `probe_min_interval_seconds` default 60). Each account selector may also carry an
-optional `metrics` list of display metric names; it seeds a newly created account's summary-view
-filter, while the persisted value in `state.json` wins for an account that already exists. Provider
+optional `metrics` list of display metric names; it seeds a newly created account's hide list,
+while the persisted value in `state.json` wins for an account that already exists. Provider
 OAuth and billing endpoints are
 compiled into the adapters and cannot be redirected through local configuration. Unknown
 fields, unsupported versions, duplicate account IDs/selectors, unsafe control characters, unknown
@@ -395,7 +395,7 @@ page for Claude). The macOS app is the first client to send the field; for
 ChatGPT it passes the address of the loopback endpoint it has already bound
 (see "Ullage Mac"). Grok's compiled-in redirect URI is used only when a client
 explicitly requests browser OAuth; the app no longer drives that path.
-Control protocol version 10 adds `SetAccountMetrics` and the per-account display metric filter on
+Control protocol version 10 adds `SetAccountMetrics` and the per-account display metric hide list on
 account, snapshot, and probe payloads. Version 9 added device pairing and revocation. Version 8 added
 `credential_backend` on daemon status. Version 7 added the diagnostics opt-in
 (`diagnostics` / `diagnostic`) and `SetAccountLabel`.

@@ -1,7 +1,7 @@
 //! Metric filter validation and usage-measurement filtering for HTTP responses.
 
 use percent_encoding::percent_decode_str;
-use ullage_core::summary::{MetricFilter, filter_usage_measurements};
+use ullage_core::summary::{MetricFilter, MetricFilterMode, filter_usage_measurements};
 use ullage_protocol::{QueryOutcome, SubscriptionUsage};
 
 /// Validates the repeated `metric=` values of one request.
@@ -24,7 +24,7 @@ pub(crate) fn decode_metric_name(value: &str) -> Result<String, ()> {
         .map_err(|_| ())
 }
 
-/// Applies a query metric filter to the data a snapshot carries.
+/// Applies a one-shot keep filter to the data a snapshot carries.
 ///
 /// The outcome variant and its failure list stay untouched so the response
 /// keeps reporting partial failures; only the measurements are filtered, and
@@ -35,7 +35,7 @@ pub(crate) fn filter_usage_outcome(
 ) {
     match outcome {
         QueryOutcome::Complete { data } | QueryOutcome::Partial { data, .. } => {
-            *data = filter_usage_measurements(data, filter);
+            *data = filter_usage_measurements(data, filter, MetricFilterMode::Keep);
         }
     }
 }

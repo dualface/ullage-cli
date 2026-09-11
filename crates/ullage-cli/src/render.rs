@@ -4,7 +4,9 @@
 //! strings can never smuggle terminal controls into the output.
 
 use chrono::{DateTime, Utc};
-use ullage_core::summary::{MetricFilter, UsageSummary, summarize, summarize_filtered};
+use ullage_core::summary::{
+    MetricFilter, MetricFilterMode, UsageSummary, summarize, summarize_filtered,
+};
 use ullage_protocol::{
     Account, AuthMethod, Capability, ControlResult, DaemonStatusPayload, DevicePayload,
     MeasurementUnit, PairCodePayload, ProbePayload, QueryOutcome, SnapshotPayload,
@@ -16,10 +18,55 @@ use crate::table::{
     render_pairs, render_section_header, render_summary_rows, render_summary_rows_aligned,
     render_table,
 };
-use crate::{
-    ColorMode, ExitCode, MetricFilterChoice, OutputFormat, RunOutput, display_sensitive,
-    persisted_metric_filter,
-};
+use crate::{ColorMode, ExitCode, MetricFilterChoice, OutputFormat, RunOutput, display_sensitive};
+
+/// A metric filter resolved for one account: the names plus the polarity of
+/// the entry that supplied them.
+///
+/// `--metric` and `--no-metric-filter` resolve to a keep list, the persisted
+/// `account.metrics` value to a hide list.
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedMetricFilter {
+    filter: MetricFilter,
+    mode: MetricFilterMode,
+}
+
+impl ResolvedMetricFilter {
+    /// One filter for every account, applied as a keep list.
+    pub(crate) fn explicit(filter: MetricFilter) -> Self {
+        Self {
+            filter,
+            mode: MetricFilterMode::Keep,
+        }
+    }
+
+    /// The persisted per-account filter, applied as a hide list.
+    pub(crate) fn persisted(saved: &[String]) -> Self {
+        Self {
+            filter: persisted_metric_filter(saved),
+            mode: MetricFilterMode::Hide,
+        }
+    }
+
+    /// The readable summary for one account under this filter.
+    pub(crate) fn summarize(&self, usage: &SubscriptionUsage) -> UsageSummary {
+        summarize_filtered(usage, &self.filter, self.mode)
+    }
+
+    /// The normalized names, in first-seen order.
+    pub(crate) fn names(&self) -> &[String] {
+        self.filter.names()
+    }
+}
+
+/// The filter the daemon stored for an account.
+///
+/// Stored names are validated when they are written and when the configuration
+/// loads; an unexpected value leaves the filter inactive rather than panicking
+/// while rendering.
+fn persisted_metric_filter(saved: &[String]) -> MetricFilter {
+    MetricFilter::new(saved.to_vec()).unwrap_or_default()
+}
 
 pub(crate) fn human_result(
     result: &ControlResult,
@@ -305,7 +352,7 @@ fn render_probe(
     if raw {
         return render_usage_outcome(&payload.usage, reveal, diagnose, palette, Vec::new());
     }
-    let filter = persisted_metric_filter(&payload.metrics);
+    let filter = ResolvedMetricFilter::persisted(&payload.metrics);
     let mut block = account_section_header(&payload.account_id, &payload.usage, palette);
     block.push_str(&render_usage_summary(
         &payload.usage,
@@ -335,7 +382,7 @@ fn render_snapshots(
         let mut layout = SummaryLayout::default();
         for snapshot in snapshots {
             let filter = metric_choice.for_saved(&snapshot.metrics);
-            let summary = summarize_filtered(usage_data(&snapshot.usage), &filter);
+            let summary = filter.summarize(usage_data(&snapshot.usage));
             layout.expand(measure_summary_layout(&summary.rows, now));
         }
         layout
@@ -429,14 +476,15 @@ struct SummaryRender<'a> {
 /// measurement survives the mapping.
 ///
 /// An active metric filter keeps the account heading and its update time but
-/// replaces the rows with a warning when it hides every row; it never falls
-/// back to raw output, because the raw table would contradict the filter. A
-/// summary that was empty before filtering still falls back as before.
+/// replaces the rows with a warning when it leaves no row to show; it never
+/// falls back to raw output, because the raw table would contradict the
+/// filter. A summary that was empty before filtering still falls back as
+/// before.
 fn render_usage_summary(
     outcome: &QueryOutcome<SubscriptionUsage>,
     stale: bool,
     render: &SummaryRender<'_>,
-    filter: &MetricFilter,
+    filter: &ResolvedMetricFilter,
 ) -> String {
     let SummaryRender {
         reveal,
@@ -462,7 +510,7 @@ fn render_usage_summary(
         return output;
     }
 
-    let filtered = summarize_filtered(usage, filter);
+    let filtered = filter.summarize(usage);
     let mut output = render_line(
         &format!("updated {}", relative_past(filtered.observed_at, now)),
         Style::Dim,

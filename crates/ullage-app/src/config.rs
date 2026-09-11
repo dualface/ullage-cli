@@ -125,8 +125,8 @@ pub struct AccountSettings {
     pub jitter_seconds: u64,
     pub backoff_initial_seconds: u64,
     pub backoff_maximum_seconds: u64,
-    /// Display metric names seeded into a newly created account; empty means no
-    /// filter.
+    /// Display metric names seeded into a newly created account's hide list;
+    /// empty means no filter.
     pub metrics: Vec<String>,
 }
 

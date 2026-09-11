@@ -54,8 +54,8 @@ pub struct AccountConfig {
     pub timeout: Duration,
     pub jitter: Duration,
     pub backoff: BackoffConfig,
-    /// Display metric names the account's summary view keeps; empty means no
-    /// filter.
+    /// Display metric names the account's readable summary hides; empty means
+    /// no filter.
     #[serde(default)]
     pub metrics: Vec<String>,
 }

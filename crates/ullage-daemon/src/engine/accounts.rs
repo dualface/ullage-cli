@@ -88,9 +88,9 @@ impl DaemonEngine {
         Ok(Some(updated))
     }
 
-    /// Replaces the display metric filter of one account.
+    /// Replaces the display metric names the account's readable summary hides.
     ///
-    /// The filter is validated by [`MetricFilter`]; a rejected value leaves the
+    /// The names are validated by [`MetricFilter`]; a rejected value leaves the
     /// account untouched. A failed persistence rolls the in-memory change back.
     pub async fn set_account_metrics(
         &self,

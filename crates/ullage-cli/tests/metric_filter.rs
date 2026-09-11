@@ -52,13 +52,13 @@ fn show_metric_filters_rows_case_insensitively_and_unions_repeats() {
 }
 
 #[test]
-fn show_all_applies_each_accounts_stored_filter_and_flags_override_it() {
+fn show_all_applies_each_accounts_stored_hide_list_and_flags_override_it() {
     fn responder(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
         Ok(response(
             request,
             ControlResult::Snapshots(vec![
-                snapshot_with_metrics("primary", metric_usage(), vec!["usage".into()]),
-                snapshot_with_metrics("secondary", metric_usage(), vec!["Codex".into()]),
+                snapshot_with_metrics("primary", metric_usage(), vec!["uSaGe".into()]),
+                snapshot_with_metrics("secondary", metric_usage(), vec!["codex".into()]),
             ]),
         ))
     }
@@ -69,13 +69,13 @@ fn show_all_applies_each_accounts_stored_filter_and_flags_override_it() {
     let primary = account_block(&stored.stdout, "primary");
     let secondary = account_block(&stored.stdout, "secondary");
     assert!(
-        line_starting_with(primary, "5h").contains("remains"),
+        primary.lines().all(|line| !line.starts_with("5h")),
         "{primary}"
     );
-    assert!(!primary.contains("Weekly Opus"), "{primary}");
-    assert!(secondary.contains("Weekly Opus"), "{secondary}");
+    assert!(primary.contains("Weekly Opus"), "{primary}");
+    assert!(!secondary.contains("Weekly Opus"), "{secondary}");
     assert!(
-        secondary.lines().all(|line| !line.starts_with("5h")),
+        line_starting_with(secondary, "5h").contains("remains"),
         "{secondary}"
     );
 
@@ -120,14 +120,14 @@ fn show_all_applies_each_accounts_stored_filter_and_flags_override_it() {
 }
 
 #[test]
-fn show_metric_without_matches_warns_and_keeps_notices_without_raw_fallback() {
+fn stored_hide_filter_without_surviving_rows_warns_and_keeps_notices_without_raw_fallback() {
     fn responder(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
         Ok(response(
             request,
             ControlResult::Snapshots(vec![snapshot_with_metrics(
                 "primary",
                 metric_usage(),
-                vec!["missing".into()],
+                vec!["usage".into(), "Codex".into()],
             )]),
         ))
     }
@@ -138,7 +138,7 @@ fn show_metric_without_matches_warns_and_keeps_notices_without_raw_fallback() {
     assert!(
         stored
             .stdout
-            .contains("! no rows match the metric filter: missing\n"),
+            .contains("! no rows match the metric filter: usage, Codex\n"),
         "{}",
         stored.stdout
     );
@@ -257,7 +257,7 @@ fn show_raw_and_json_output_ignore_the_metric_filter() {
 }
 
 #[test]
-fn probe_applies_the_stored_metric_filter_and_rejects_the_show_flag() {
+fn probe_applies_the_stored_hide_list_and_rejects_the_show_flag() {
     fn responder(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
         Ok(response(
             request,
@@ -274,8 +274,8 @@ fn probe_applies_the_stored_metric_filter_and_rejects_the_show_flag() {
 
     let output = run_from(["ullage", "--color", "never", "probe", "primary"], &client);
     assert_eq!(output.code, ExitCode::Success, "{}", output.stderr);
-    assert!(output.stdout.contains("Codex"), "{}", output.stdout);
-    assert!(!output.stdout.contains("usage"), "{}", output.stdout);
+    assert!(output.stdout.contains("5h"), "{}", output.stdout);
+    assert!(!output.stdout.contains("Codex"), "{}", output.stdout);
 
     let rejected = run_from(["ullage", "probe", "primary", "--metric", "usage"], &client);
     assert_eq!(rejected.code, ExitCode::Usage);

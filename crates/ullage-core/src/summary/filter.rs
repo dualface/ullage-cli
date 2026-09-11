@@ -28,12 +28,25 @@ pub enum MetricFilterError {
     UnsafeCharacter,
 }
 
+/// How a metric filter reads the display-name match.
+///
+/// The one-shot selectors (`ullage show --metric` and the HTTP `metric=`
+/// query) keep the rows a filter names. The persisted per-account filter
+/// hides them instead. Both modes use the same matching rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricFilterMode {
+    /// Keep rows whose display name the filter names.
+    Keep,
+    /// Hide rows whose display name the filter names.
+    Hide,
+}
+
 /// A validated set of display names selecting which summary rows to show.
 ///
 /// Names are trimmed, matched case-insensitively against exact display names,
 /// and deduplicated while keeping the first spelling. An empty filter is
-/// inactive, which means "show every row". Matching ignores the window a row
-/// belongs to.
+/// inactive, which means "show every row" in either [`MetricFilterMode`].
+/// Matching ignores the window a row belongs to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetricFilter {
     names: Vec<String>,
@@ -84,16 +97,33 @@ impl MetricFilter {
             .iter()
             .any(|name| name.eq_ignore_ascii_case(display))
     }
+
+    /// Whether the filter keeps a row with this display name under `mode`.
+    ///
+    /// An inactive filter keeps every row in either mode.
+    pub fn keeps(&self, display: &str, mode: MetricFilterMode) -> bool {
+        if !self.is_active() {
+            return true;
+        }
+        match mode {
+            MetricFilterMode::Keep => self.matches(display),
+            MetricFilterMode::Hide => !self.matches(display),
+        }
+    }
 }
 
-/// [`summarize`], keeping only rows whose display name the filter selects.
+/// [`summarize`], keeping only the rows the filter selects under `mode`.
 ///
 /// An inactive filter returns the full summary. Timestamps and
 /// `limit_reached` are never affected by filtering.
-pub fn summarize_filtered(usage: &SubscriptionUsage, filter: &MetricFilter) -> UsageSummary {
+pub fn summarize_filtered(
+    usage: &SubscriptionUsage,
+    filter: &MetricFilter,
+    mode: MetricFilterMode,
+) -> UsageSummary {
     let mut summary = summarize(usage);
     if filter.is_active() {
-        summary.rows.retain(|row| filter.matches(&row.metric));
+        summary.rows.retain(|row| filter.keeps(&row.metric, mode));
     }
     summary
 }
@@ -101,16 +131,18 @@ pub fn summarize_filtered(usage: &SubscriptionUsage, filter: &MetricFilter) -> U
 /// Drops measurements a filter would hide from the summary view.
 ///
 /// The result feeds [`summarize`] and must produce the same rows as
-/// [`summarize_filtered`]: a visible measurement survives when its display
-/// name matches, and the hidden bookkeeping measurements that carry the
-/// `allowed`/`limit_reached` state always survive, so a reached limit is never
-/// filtered away. The other hidden flags only shape a matching row or a
-/// synthetic row, so they survive only when that row survives.
+/// [`summarize_filtered`] for the same `mode`: a visible measurement survives
+/// when the filter keeps its display name, and the hidden bookkeeping
+/// measurements that carry the `allowed`/`limit_reached` state always survive,
+/// so a reached limit is never filtered away. The other hidden flags only
+/// shape a kept row or a synthetic row, so they survive only when that row
+/// survives.
 ///
 /// An inactive filter returns a clone of the input.
 pub fn filter_usage_measurements(
     usage: &SubscriptionUsage,
     filter: &MetricFilter,
+    mode: MetricFilterMode,
 ) -> SubscriptionUsage {
     if !filter.is_active() {
         return usage.clone();
@@ -120,7 +152,7 @@ pub fn filter_usage_measurements(
         let rows = summarize_window(window);
         let kept: Vec<&SummaryRow> = rows
             .iter()
-            .filter(|row| filter.matches(&row.metric))
+            .filter(|row| filter.keeps(&row.metric, mode))
             .collect();
         let keeps_unlimited = kept
             .iter()
@@ -142,7 +174,7 @@ pub fn filter_usage_measurements(
                     _ => false,
                 }
             } else {
-                filter.matches(&metric_display_name(&measurement.name))
+                filter.keeps(&metric_display_name(&measurement.name), mode)
             }
         });
     }
@@ -243,6 +275,13 @@ mod tests {
         let inactive = MetricFilter::new(Vec::new()).unwrap();
         assert!(!inactive.is_active());
         assert!(!inactive.matches("usage"));
+        assert!(inactive.keeps("usage", MetricFilterMode::Hide));
+        assert!(inactive.keeps("usage", MetricFilterMode::Keep));
+
+        assert!(filter.keeps("usage", MetricFilterMode::Keep));
+        assert!(!filter.keeps("usage", MetricFilterMode::Hide));
+        assert!(!filter.keeps("total spend", MetricFilterMode::Keep));
+        assert!(filter.keeps("total spend", MetricFilterMode::Hide));
     }
 
     #[test]
@@ -322,7 +361,8 @@ mod tests {
             (&["allowed"], &[]),
         ];
         for (names, expected) in cases {
-            let summary = summarize_filtered(&source, &metric_filter(names));
+            let summary =
+                summarize_filtered(&source, &metric_filter(names), MetricFilterMode::Keep);
             assert_eq!(row_metrics(&summary), expected, "filter {names:?}");
             assert_eq!(summary.limit_reached, full.limit_reached, "{names:?}");
             assert_eq!(summary.observed_at, full.observed_at);
@@ -331,18 +371,83 @@ mod tests {
 
         // A switched-off window whose only visible row does not match leaves no
         // synthetic `status` row behind: the full summary never had one.
-        let spent_off = summarize_filtered(&source, &metric_filter(&["status"]));
+        let spent_off =
+            summarize_filtered(&source, &metric_filter(&["status"]), MetricFilterMode::Keep);
         assert_eq!(row_metrics(&spent_off), ["status"]);
-        let switched = summarize_filtered(&source, &metric_filter(&["spent"]));
+        let switched =
+            summarize_filtered(&source, &metric_filter(&["spent"]), MetricFilterMode::Keep);
         assert_eq!(row_metrics(&switched), ["spent"]);
         assert!(switched.rows[0].disabled);
-        let disabled_on_demand = summarize_filtered(&source, &metric_filter(&["on demand spend"]));
+        let disabled_on_demand = summarize_filtered(
+            &source,
+            &metric_filter(&["on demand spend"]),
+            MetricFilterMode::Keep,
+        );
         assert!(disabled_on_demand.rows[0].disabled);
-        let unlimited_balance = summarize_filtered(&source, &metric_filter(&["credit balance"]));
+        let unlimited_balance = summarize_filtered(
+            &source,
+            &metric_filter(&["credit balance"]),
+            MetricFilterMode::Keep,
+        );
         assert_eq!(
             unlimited_balance.rows[0].value,
             SummaryValue::CreditsUnlimited
         );
+    }
+
+    /// The persisted filter is the mirror of the one-shot filter: every row
+    /// the keep mode would drop survives, and the bookkeeping measurements
+    /// follow the rows that stay.
+    #[test]
+    fn hiding_filter_drops_matching_rows_and_keeps_the_rest() {
+        let source = synthetic_usage();
+        let full = summarize(&source);
+        let hidden = summarize_filtered(
+            &source,
+            &metric_filter(&["usage", "status", "credits"]),
+            MetricFilterMode::Hide,
+        );
+        assert_eq!(
+            row_metrics(&hidden),
+            [
+                "credit balance",
+                "total spend",
+                "on demand spend",
+                "on demand",
+                "spent",
+            ]
+        );
+        assert_eq!(hidden.limit_reached, full.limit_reached);
+        assert_eq!(hidden.observed_at, full.observed_at);
+        assert_eq!(hidden.expires_at, full.expires_at);
+
+        let filtered = filter_usage_measurements(
+            &source,
+            &metric_filter(&["usage", "status", "credits"]),
+            MetricFilterMode::Hide,
+        );
+        let actual = summarize(&filtered);
+        assert_eq!(actual.rows, hidden.rows);
+        assert_eq!(actual.limit_reached, hidden.limit_reached);
+        assert_eq!(actual.observed_at, hidden.observed_at);
+        assert_eq!(actual.expires_at, hidden.expires_at);
+
+        // Hiding every named row leaves the account with no rows, exactly
+        // like a keep filter that matches nothing.
+        let everything = [
+            "usage",
+            "credit balance",
+            "total spend",
+            "on demand spend",
+            "on demand",
+            "status",
+            "credits",
+            "spent",
+        ];
+        let nothing_left =
+            summarize_filtered(&source, &metric_filter(&everything), MetricFilterMode::Hide);
+        assert!(nothing_left.is_empty());
+        assert!(nothing_left.limit_reached);
     }
 
     #[test]
@@ -361,8 +466,8 @@ mod tests {
         ];
         for names in filters {
             let filter = metric_filter(names);
-            let expected = summarize_filtered(&source, &filter);
-            let filtered = filter_usage_measurements(&source, &filter);
+            let expected = summarize_filtered(&source, &filter, MetricFilterMode::Keep);
+            let filtered = filter_usage_measurements(&source, &filter, MetricFilterMode::Keep);
             let actual = summarize(&filtered);
             assert_eq!(actual.rows, expected.rows, "filter {names:?}");
             assert_eq!(actual.limit_reached, expected.limit_reached, "{names:?}");
@@ -392,8 +497,22 @@ mod tests {
         let filters: [&[&str]; 4] = [&[], &["usage"], &["on demand"], &["status"]];
         for names in filters {
             let filter = metric_filter(names);
-            let expected = summarize_filtered(&source, &filter);
-            let filtered = filter_usage_measurements(&source, &filter);
+            let expected = summarize_filtered(&source, &filter, MetricFilterMode::Keep);
+            let filtered = filter_usage_measurements(&source, &filter, MetricFilterMode::Keep);
+            let actual = summarize(&filtered);
+            assert_eq!(actual.rows, expected.rows, "filter {names:?}");
+            assert_eq!(actual.limit_reached, expected.limit_reached, "{names:?}");
+            assert!(actual.limit_reached, "a reached limit survives filtering");
+        }
+    }
+
+    #[test]
+    fn hiding_filter_keeps_a_reached_limit() {
+        let source = double_off_usage();
+        for names in [&[][..], &["usage"], &["on demand"], &["status"]] {
+            let filter = metric_filter(names);
+            let expected = summarize_filtered(&source, &filter, MetricFilterMode::Hide);
+            let filtered = filter_usage_measurements(&source, &filter, MetricFilterMode::Hide);
             let actual = summarize(&filtered);
             assert_eq!(actual.rows, expected.rows, "filter {names:?}");
             assert_eq!(actual.limit_reached, expected.limit_reached, "{names:?}");
@@ -405,13 +524,36 @@ mod tests {
     fn inactive_filter_returns_the_input_and_a_reached_limit_survives() {
         let source = synthetic_usage();
         let inactive = MetricFilter::new(Vec::new()).unwrap();
-        assert_eq!(filter_usage_measurements(&source, &inactive), source);
-        assert_eq!(summarize_filtered(&source, &inactive), summarize(&source));
+        for mode in [MetricFilterMode::Keep, MetricFilterMode::Hide] {
+            assert_eq!(filter_usage_measurements(&source, &inactive, mode), source);
+            assert_eq!(
+                summarize_filtered(&source, &inactive, mode),
+                summarize(&source)
+            );
+        }
 
-        let allowed_only = filter_usage_measurements(&source, &metric_filter(&["usage"]));
+        let allowed_only =
+            filter_usage_measurements(&source, &metric_filter(&["usage"]), MetricFilterMode::Keep);
         let summary = summarize(&allowed_only);
         assert!(summary.limit_reached);
         assert_eq!(row_metrics(&summary), ["usage"]);
+
+        let hidden_only =
+            filter_usage_measurements(&source, &metric_filter(&["usage"]), MetricFilterMode::Hide);
+        let summary = summarize(&hidden_only);
+        assert!(summary.limit_reached);
+        assert_eq!(
+            row_metrics(&summary),
+            [
+                "credit balance",
+                "total spend",
+                "on demand spend",
+                "on demand",
+                "status",
+                "credits",
+                "spent",
+            ]
+        );
     }
 
     #[test]

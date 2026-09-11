@@ -18,7 +18,7 @@ mod filter;
 
 pub use filter::{
     MAX_METRIC_NAME_CHARACTERS, MAX_METRIC_NAMES, MetricFilter, MetricFilterError,
-    filter_usage_measurements, summarize_filtered,
+    MetricFilterMode, filter_usage_measurements, summarize_filtered,
 };
 
 /// Measurements that carry provider bookkeeping rather than remaining quota.

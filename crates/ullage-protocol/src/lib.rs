@@ -35,7 +35,7 @@ pub struct Account {
     pub provider: ProviderId,
     pub label: Option<String>,
     pub enabled: bool,
-    /// Display metric names the account's summary view keeps; empty means no
+    /// Display metric names the account's summary view hides; empty means no
     /// filter.
     #[serde(default)]
     pub metrics: Vec<String>,
@@ -105,6 +105,7 @@ pub enum ControlCommand {
         account: AccountId,
         label: Option<String>,
     },
+    /// Replace the display metric names the account's summary view hides.
     SetAccountMetrics {
         account: AccountId,
         metrics: Vec<String>,
@@ -233,7 +234,7 @@ pub enum ControlResult {
 pub struct ProbePayload {
     pub account_id: String,
     pub usage: QueryOutcome<SubscriptionUsage>,
-    /// Display metric names stored for the account when the probe ran.
+    /// Display metric names the account stored to hide when the probe ran.
     #[serde(default)]
     pub metrics: Vec<String>,
 }
@@ -350,7 +351,8 @@ pub struct SnapshotPayload {
     pub stale: bool,
     pub last_error: Option<SanitizedErrorPayload>,
     pub last_error_at: Option<DateTime<Utc>>,
-    /// Display metric names stored for the account when the snapshot was read.
+    /// Display metric names the account stored to hide when the snapshot was
+    /// read.
     #[serde(default)]
     pub metrics: Vec<String>,
 }

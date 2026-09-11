@@ -389,7 +389,9 @@ POST /v1/accounts/{id}/probe?wait=false
 ```
 
 `/v1/usage` reads cached snapshots and does not contact providers. Repeat
-`metric=` to keep the union of several display names. Matching is exact and
+`metric=` to keep the union of several display names; this one-shot list is a
+keep list, unlike the persisted per-account `metrics` field, which names rows
+to hide. Matching is exact and
 case-insensitive and ignores the window a row belongs to. Only display rows are
 filtered: hidden bookkeeping such as `limit_reached` still reaches the client,
 so a reached limit stays visible. A valid but unknown name returns `200` with
@@ -513,9 +515,11 @@ authentication.
 
 `account list` shows a `METRICS` column and `account show` a `METRICS` line,
 both reading `-` when nothing is stored. `account metrics` replaces the stored
-filter; omit every name to clear it. Names follow the same display-name rules
-as `--metric`: exact, case-insensitive matches that ignore the window a row
-belongs to. An invalid name exits `64` without contacting the daemon.
+hide list; omit every name to clear it. The stored names are hidden from that
+account's readable summary, so `--metric` and HTTP `metric=` stay the one-shot
+keep list, naming rows to show. Names match by exact, case-insensitive display
+name and ignore the window a row belongs to. An invalid name exits `64`
+without contacting the daemon.
 
 ## Authentication
 
@@ -572,16 +576,17 @@ snapshots and does not call the provider.
 `--metric <display-name>` keeps only the summary rows whose display name matches
 exactly, ignoring case and the window a row belongs to; repeat the flag to keep
 the union of several names. `--no-metric-filter` ignores the account's stored
-filter for one invocation. Without either flag, the readable summary applies the
-account's stored filter: `show --all` follows each account's own list, and
-`probe` applies the stored filter of the account it queried. An invalid metric
-name exits `64` without contacting the daemon. Both flags affect the readable
-summary only: `--raw` and JSON output keep every measurement.
+filter for one invocation. Without either flag, the readable summary hides the
+rows each account's stored `account.metrics` list names: `show --all` follows
+each account's own list, and `probe` applies the stored list of the account it
+queried. An invalid metric name exits `64` without contacting the daemon. Both
+flags affect the readable summary only: `--raw` and JSON output keep every
+measurement.
 
-When a filter hides every row but the account still has summarizable metrics,
-the account heading and the `updated` line stay, a
-`! no rows match the metric filter: <names>` line names the requested metrics,
-and the stale, limit, and partial notices still print; the raw table is not used
+When either filter leaves no row to show but the account still has
+summarizable metrics, the account heading and the `updated` line stay, a
+`! no rows match the metric filter: <names>` line names the filter's names, and
+the stale, limit, and partial notices still print; the raw table is not used
 as a fallback. An account with no summarizable measurements still falls back to
 raw output as before.
 
