@@ -346,6 +346,8 @@ values and provider refresh errors are redacted from `Debug` and `Display` outpu
   hide list on account, snapshot, and probe payloads. Filter names are trimmed, case-insensitive,
   deduplicated, and rejected when empty, longer than 128 characters, more than 64 entries, or
   containing control or bidirectional characters; `InvalidAccountMetrics` is the stable error.
+  The one-shot `metric=` query on `/v1/usage` and `ullage show --metric` stay keep lists, applying
+  the same names in the opposite direction.
 
 ## Runtime configuration
 

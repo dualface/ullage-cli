@@ -41,7 +41,8 @@ pub enum MetricFilterMode {
     Hide,
 }
 
-/// A validated set of display names selecting which summary rows to show.
+/// A validated set of display names; [`MetricFilterMode`] reads a match as
+/// keeping or hiding the row.
 ///
 /// Names are trimmed, matched case-insensitively against exact display names,
 /// and deduplicated while keeping the first spelling. An empty filter is

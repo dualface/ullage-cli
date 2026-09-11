@@ -2476,7 +2476,7 @@ pub(crate) fn error_hint(kind: &str) -> Option<&'static str> {
         }
         "invalid_account_metrics" => Some(
             "pass display metric names such as `usage` or `Codex`; repeat the flag or argument to \
-             hide several names",
+             name several metrics",
         ),
         _ => None,
     }
