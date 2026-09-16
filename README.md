@@ -481,3 +481,14 @@ must not send paid model requests.
   boundaries
 - `docs/development.md` — provider extension, vendor DTO compatibility,
   security, and pre-release checks
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
+
+## Author
+
+[dualface](https://x.com/dualface)
+
+- [QuickTUI](https://quicktui.ai/) — a tmux-powered remote terminal for iPhone, iPad, and browsers, so you can drive agents on your Mac from your phone.
+- [Kander](https://github.com/dualface/kander/) — a kanban orchestration tool that lets one person schedule multiple AI agents.

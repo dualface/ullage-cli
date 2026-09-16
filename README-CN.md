@@ -295,3 +295,14 @@ JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改�
 
 - `docs/architecture.md` — crate 图、存储、托管和安全边界
 - `docs/development.md` — 提供方扩展、供应商 DTO 兼容性、安全和发布前检查
+
+## 许可证
+
+MIT。见 [`LICENSE`](LICENSE)。
+
+## 作者
+
+[dualface](https://x.com/dualface)
+
+- [QuickTUI](https://quicktui.ai/) — 面向 iPhone、iPad 和浏览器的 tmux 远程终端，让你在手机上操控 Mac 上的 Agent。
+- [Kander](https://github.com/dualface/kander/) — 用看板调度多个 AI Agent 的任务编排工具。
