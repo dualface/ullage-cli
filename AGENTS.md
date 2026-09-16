@@ -23,20 +23,10 @@ the current task.
 - After finishing a change, create a git commit. Do not leave completed work
   sitting uncommitted in the working tree.
 
-## Remote macOS builds
+## macOS application
 
-- Place macOS app build artifacts on `pro2026` under `~/ullage-build/`.
-- Also copy the final runnable `.app` bundle to `pro2026:~/Desktop/`.
-- Building the macOS app always includes notarization: run
-  `apps/ullage-mac/scripts/remote.sh notarize` (which signs, submits to Apple's
-  notary service, and staples the ticket), not just `sign`. Copy the stapled
-  `.app` to `pro2026:~/Desktop/` after notarization succeeds, then quit any
-  running `Ullage`/`UllageMac` instance and `open` the Desktop app so the new
-  build starts automatically.
-- Replacing the bundle does not replace the running daemon. `ullage-daemon` is
-  kept alive by launchd through the Login Item, so it goes on serving the
-  binary it was started from and the new build talks to stale daemon code.
-  After installing, restart it explicitly:
-  `launchctl kickstart -k gui/$(id -u)/com.ullage.mac.daemon`, and confirm the
-  process start time is current before testing anything that reaches the
-  daemon.
+The Apple Silicon menu bar client lives in the sibling repository
+`ullage-mac-app` (default checkout `~/works/ullage-mac-app`). Remote notarized
+builds, Login Item restarts, and signing rules are in that repository's
+`AGENTS.md`. Do not add a Swift package or `.app` bundle back into this
+workspace.

@@ -112,40 +112,9 @@ real credentials.
 
 ## macOS application release checks
 
-The repository pins Rust 1.85.1 in `rust-toolchain.toml`. The remote macOS
-workflow installs that stable arm64 toolchain when absent and always builds the
-embedded daemon with `cargo build --locked --release -p ullage-app`.
-
-Run SwiftPM and the native Xcode tests before distribution:
-
-```sh
-apps/ullage-mac/scripts/remote.sh test
-make -C apps/ullage-mac archive
-make -C apps/ullage-mac export-app-store
-```
-
-The last two commands use `UllageMac.xcodeproj` and require an Xcode developer
-account plus App Store provisioning profiles for `com.ullage.mac` and
-`com.ullage.mac.daemon`. They create `build/UllageMac.xcarchive` and
-`build/app-store/`; they never upload to App Store Connect.
-
-The iOS-style App Group identifier `group.com.ullage.mac` must be registered to
-the team and authorized in both profiles. Developer ID QA requires separate
-Developer ID profiles for the same two explicit App IDs; provide their remote
-paths through `ULLAGE_MAC_APP_PROFILE` and `ULLAGE_MAC_HELPER_PROFILE`. The
-manual bundle build embeds the profiles and signs both app bundles with the
-corresponding application identifiers.
-
-Developer ID QA is a separate mandatory path. Configure the remote GUI tmux
-session, signing identity, and notary profile described in the root README,
-then run:
-
-```sh
-apps/ullage-mac/scripts/remote.sh notarize
-```
-
-That operation signs all nested code, submits and staples `Ullage.app`, copies
-the runnable app to the remote Desktop, stops an older Ullage instance, and
-opens the new app. Verify automatic Login Item registration in Local mode,
-confirm the daemon survives quitting the UI, and check that selecting Remote
-unregisters the service while selecting Local registers it again.
+The menu bar client and its remote notarization workflow live in the sibling
+repository `ullage-mac-app`. That repository builds the embedded daemon from
+this workspace (`ULLAGE_REPO`, default `../ullage`) with
+`cargo build --locked --release -p ullage-app`. Follow its README and
+`docs/development.md` for Swift tests, Developer ID notarization, and App
+Store archives.
