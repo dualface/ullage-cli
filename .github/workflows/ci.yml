@@ -23,3 +23,39 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
+
+  homebrew-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Homebrew tap formula template
+        run: |
+          set -euo pipefail
+          checksums="$(mktemp)"
+          dummy=0000000000000000000000000000000000000000000000000000000000000000
+          {
+            printf '%s  ullage-aarch64-apple-darwin.tar.gz\n' "$dummy"
+            printf '%s  ullage-x86_64-apple-darwin.tar.gz\n' "$dummy"
+            printf '%s  ullage-aarch64-unknown-linux-gnu.tar.gz\n' "$dummy"
+            printf '%s  ullage-x86_64-unknown-linux-gnu.tar.gz\n' "$dummy"
+          } >"$checksums"
+          formula="$(./scripts/sync-homebrew-tap.sh --dry-run --checksums "$checksums" v0.0.0)"
+          printf '%s\n' "$formula" | grep -q 'on_linux'
+          printf '%s\n' "$formula" | grep -q 'aarch64-unknown-linux-gnu'
+          printf '%s\n' "$formula" | grep -q 'x86_64-unknown-linux-gnu'
+          printf '%s\n' "$formula" | grep -q 'ullage daemon install'
+
+  linuxbrew:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install from dualface/tap
+        run: |
+          set -euo pipefail
+          brew=/home/linuxbrew/.linuxbrew/bin/brew
+          test -x "$brew"
+          eval "$("$brew" shellenv)"
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install dualface/tap/ullage
+          ullage --version
+          command -v ullage
+          file "$(command -v ullage)"
