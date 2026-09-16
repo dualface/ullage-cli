@@ -20,6 +20,13 @@ fn manage_action(action: ServiceAction) -> Result<bool, String> {
     if !executable.is_absolute() {
         return Err("service executable must be absolute".into());
     }
+    // Homebrew installs `$(brew --prefix)/bin/ullage` as a symlink into the
+    // Cellar. Resolve that leaf link so the service manifest stores a regular
+    // file path; Windows keeps the unresolved path to avoid `\\?\` prefixes.
+    #[cfg(unix)]
+    let executable = executable
+        .canonicalize()
+        .map_err(|_| "service executable could not be resolved")?;
     validate_executable(&executable)?;
     #[cfg(target_os = "linux")]
     return linux::manage(action, &executable);
@@ -1183,6 +1190,34 @@ mod tests {
         std::fs::remove_dir(root).unwrap();
 
         assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn brew_style_bin_symlink_passes_after_canonicalize() {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("ullage-brew-style-exe-{}", std::process::id()));
+        let cellar = root.join("Cellar/ullage/0.1.0/bin");
+        let prefix_bin = root.join("bin");
+        std::fs::create_dir_all(&cellar).unwrap();
+        std::fs::create_dir_all(&prefix_bin).unwrap();
+        let target = cellar.join("ullage");
+        std::fs::write(&target, b"#!/bin/sh\n").unwrap();
+        let link = prefix_bin.join("ullage");
+        std::os::unix::fs::symlink("../Cellar/ullage/0.1.0/bin/ullage", &link).unwrap();
+
+        assert!(validate_executable(&link).is_err());
+        let resolved = link.canonicalize().unwrap();
+        let result = validate_executable(&resolved);
+
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(resolved, cellar.join("ullage"));
+        assert_eq!(result, Ok(()));
     }
 
     #[cfg(unix)]

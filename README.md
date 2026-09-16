@@ -316,6 +316,9 @@ ullage daemon stop
 ullage daemon uninstall
 ```
 
+After `brew upgrade`, run `ullage daemon install` again so the LaunchAgent (or
+systemd user unit) pins the new Cellar keg path instead of the previous keg.
+
 `install` / `uninstall` manage the startup entry only. Configuration,
 credentials, snapshots, and logs remain. `status` reports a live daemon when
 the authenticated local endpoint is reachable; otherwise it distinguishes

@@ -262,6 +262,8 @@ ullage daemon stop
 ullage daemon uninstall
 ```
 
+`brew upgrade` 之后请再执行一次 `ullage daemon install`，以便 LaunchAgent（或 systemd 用户单元）钉到新的 Cellar keg 实路径，而不是旧 keg。
+
 `install` / `uninstall` 只管理启动项。配置、凭据、快照和日志会留下。`status` 在已认证的本机端点可达时报告守护进程在线；否则区分已安装但已停止，与未安装。在线表格输出包含 `CREDENTIAL_BACKEND`（`linux_secret_service`、`macos_keychain`、`windows_credential_manager`、`file_fallback` 或 `other_platform`）。JSON 在 `payload.credential_backend` 上使用相同标识符。
 
 Linux 使用 systemd 用户单元，macOS 使用 LaunchAgent，Windows 使用当前用户的任务计划程序任务。平台路径和权限细节见 `docs/architecture.md`。
