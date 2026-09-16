@@ -56,6 +56,23 @@ failures it also asks the daemon to attach the provider's own error text.
 Default error output is still a stable kind. Without that opt-in, a diagnostic
 on the daemon response is rejected as invalid.
 
+After login, `ullage show --all` looks like this:
+
+```console
+$ ullage show --all
+==== ACCOUNT account-1 (claude · max_20x) ====
+updated <1m ago
+5h             remains 91%      resets in 3h37m   [-#########]
+weekly         used up          resets in 41h07m  [----------]
+fable          remains 25%      resets in 41h07m  [-------###]
+
+==== ACCOUNT account-2 (chatgpt · pro) ====
+updated <1m ago
+weekly-Codex   used up          resets in 3d05h   [----------]
+Reset          credits 0
+Balance        credits 0
+```
+
 ## Data paths
 
 Default paths:

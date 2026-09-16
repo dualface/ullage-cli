@@ -37,6 +37,23 @@ ullage auth logout <provider> --account <account-id>
 
 `--diagnose`（或 `ULLAGE_DIAGNOSE=1`）会在 `show` 和 `probe` 上显示已脱敏的部分失败范围和类别。认证和探测命令失败时，还会让守护进程附带提供方自己的错误文本。默认错误输出仍是稳定的 kind。未显式开启时，守护进程响应上的诊断信息会被视为无效并拒绝。
 
+登录之后，`ullage show --all` 看起来像这样：
+
+```console
+$ ullage show --all
+==== ACCOUNT account-1 (claude · max_20x) ====
+updated <1m ago
+5h             remains 91%      resets in 3h37m   [-#########]
+weekly         used up          resets in 41h07m  [----------]
+fable          remains 25%      resets in 41h07m  [-------###]
+
+==== ACCOUNT account-2 (chatgpt · pro) ====
+updated <1m ago
+weekly-Codex   used up          resets in 3d05h   [----------]
+Reset          credits 0
+Balance        credits 0
+```
+
 ## 数据路径
 
 默认路径：
