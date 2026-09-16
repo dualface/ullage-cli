@@ -112,3 +112,24 @@ real credentials.
 
 The sibling repository `ullage-mac-app` embeds a release `ullage` binary from
 this workspace with `cargo build --locked --release -p ullage-cli`.
+
+## Homebrew tap
+
+`brew install dualface/tap/ullage` installs a GitHub Release archive, not a
+source build. Linux archives are produced on Ubuntu 24.04 (x86_64 and
+ARM64) so they stay on glibc 2.39, Homebrew's Linux Tier 1 floor.
+
+After a `v*` tag, the Release workflow rewrites
+`Formula/ullage.rb` in [dualface/homebrew-tap](https://github.com/dualface/homebrew-tap)
+when the `TAP_TOKEN` secret is set (a PAT with `contents:write` on that
+repository). `GITHUB_TOKEN` cannot push to another repository.
+
+To repair the formula from a published tag:
+
+```sh
+scripts/sync-homebrew-tap.sh v0.1.1
+```
+
+`--dry-run --checksums FILE` prints the formula without pushing. The formula
+must include `on_linux` / `on_arm` and `on_linux` / `on_intel` blocks; a
+Linux-only Intel URL leaves ARM Linuxbrew users without an install.
