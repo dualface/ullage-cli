@@ -490,5 +490,5 @@ MIT. See [`LICENSE`](LICENSE).
 
 [dualface](https://x.com/dualface)
 
-- [QuickTUI](https://quicktui.ai/) — a tmux-powered remote terminal for iPhone, iPad, and browsers, so you can drive agents on your Mac from your phone.
+- [QuickTUI](https://quicktui.ai/) — a tmux/herdr-powered remote terminal for iPhone, iPad, and browsers, so you can drive agents on your Mac from your phone.
 - [Kander](https://github.com/dualface/kander/) — a kanban orchestration tool that lets one person schedule multiple AI agents.
