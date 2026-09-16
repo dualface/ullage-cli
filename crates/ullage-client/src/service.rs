@@ -1124,18 +1124,14 @@ mod tests {
         let xml_path = Path::new(r"C:\Users\test\AppData\Local\Ullage\task-create-abc.xml");
 
         let spaced_xml = render_windows_task_xml(spaced).unwrap();
-        assert!(spaced_xml.contains(
-            "<Command>C:\\Program Files\\Ullage\\ullage.exe</Command>"
-        ));
+        assert!(spaced_xml.contains("<Command>C:\\Program Files\\Ullage\\ullage.exe</Command>"));
         assert!(spaced_xml.contains("<Arguments>__daemon</Arguments>"));
         assert!(spaced_xml.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(spaced_xml.contains("<LogonTrigger>"));
         assert!(!spaced_xml.contains("/TR"));
 
         let plain_xml = render_windows_task_xml(plain).unwrap();
-        assert!(plain_xml.contains(
-            "<Command>C:\\Users\\test\\Downloads\\ullage.exe</Command>"
-        ));
+        assert!(plain_xml.contains("<Command>C:\\Users\\test\\Downloads\\ullage.exe</Command>"));
         assert!(plain_xml.contains("<Arguments>__daemon</Arguments>"));
 
         assert_eq!(
