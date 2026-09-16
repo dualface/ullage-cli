@@ -60,7 +60,7 @@ clients obtain a per-device token only by exchanging a one-use pairing code.
 
 The Apple Silicon menu bar client is a separate Swift package in the sibling
 repository `ullage-mac-app`. It is not a member of this Cargo workspace. The
-client talks to the daemon over local control (protocol v9) or the HTTP query
+client talks to the daemon over local control (protocol v10) or the HTTP query
 API, and embeds a release `ullage` binary from this workspace at bundle time.
 
 See that repository's `docs/architecture.md` for the AppKit/SwiftUI shell,
