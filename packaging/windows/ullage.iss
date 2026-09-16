@@ -1,7 +1,8 @@
-; User-level Windows installer. PrivilegesRequired=lowest so the scheduled
-; task is registered for the installing user, not an elevated Administrator.
-; [Run] entries omit the postinstall flag so they still execute under
-; winget's silent Inno switches.
+; Windows installer with explicit current-user support. WinGet passes
+; /CURRENTUSER so Setup stays in non-administrative install mode, while the
+; command-line override lets Setup use administrative mode when requested.
+; [Run] entries omit the postinstall flag so they still
+; execute under winget's silent Inno switches.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -35,6 +36,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\ullage.exe

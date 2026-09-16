@@ -184,6 +184,8 @@ Scope: user
 UpgradeBehavior: install
 ReleaseDate: ${release_date}
 ElevationRequirement: elevatesSelf
+InstallerSwitches:
+  Custom: /CURRENTUSER
 Dependencies:
   PackageDependencies:
     - PackageIdentifier: Microsoft.VCRedist.2015+.x64
@@ -279,7 +281,7 @@ pr_url="$(
 This PR adds user-scope Inno WinGet manifests for ullage ${bare_version}.
 
 - Installer: GitHub Release \`ullage-x86_64-pc-windows-setup.exe\`
-- Scope: user (\`PrivilegesRequired=lowest\`, install dir \`%LOCALAPPDATA%\\Ullage\`)
+- Scope: user (WinGet passes \`/CURRENTUSER\`; install dir \`%LOCALAPPDATA%\\Ullage\`)
 - Silent [Run] entries call \`ullage daemon stop\`, \`install\`, and \`start\` (Homebrew \`post_install\` analog; no \`postinstall\` flag so winget silent mode still runs them)
 
 Checksums: https://github.com/${REPO_SLUG}/releases/download/${version}/checksums.txt

@@ -150,12 +150,13 @@ user-level unit has the path and permission rules.
 `install`, and `start`. Those flags omit `postinstall` / `skipifsilent` so
 winget's silent Inno switches still execute them.
 
-`PrivilegesRequired=lowest` and `DefaultDirName={localappdata}\Ullage`
-keep the scheduled task on the installing user. The manifest declares
-`ElevationRequirement: elevatesSelf` so WinGet accepts both ordinary and
-already-elevated launch contexts. Inno remains in non-administrative install
-mode and targets the account that runs Setup. Users should normally run
-WinGet without elevation; an installation launched under a different
+The installer defaults to `PrivilegesRequired=lowest` and allows a command-line
+override. The manifest declares `ElevationRequirement:
+elevatesSelf`, but its custom `/CURRENTUSER` switch forces WinGet installs
+into Inno's non-administrative mode. `DefaultDirName={localappdata}\Ullage`
+and the scheduled task therefore belong to the account running WinGet. The
+override capability also lets the installer enter administrative mode when
+explicitly requested. An installation launched under a different
 administrator account belongs to that account.
 `PrepareToInstall` stops an already-running daemon so the upgrade can
 replace `ullage.exe`. `[UninstallRun]` stops then uninstalls the task. The
@@ -174,6 +175,6 @@ scripts/sync-winget.sh v0.1.2
 ```
 
 `--dry-run --checksums FILE` prints the three YAML files without opening a
-PR. The installer must declare `InstallerType: inno`, `Scope: user`, and
-`ElevationRequirement: elevatesSelf`, and point the URL at
+PR. The installer must declare `InstallerType: inno`, `Scope: user`,
+`ElevationRequirement: elevatesSelf`, and `/CURRENTUSER`, and point the URL at
 `ullage-x86_64-pc-windows-setup.exe`.
