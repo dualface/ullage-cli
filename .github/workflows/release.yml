@@ -53,6 +53,9 @@ jobs:
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/ullage" LICENSE README.md "$staging/"
           tar -czf "$archive" "$staging"
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup --no-progress -y
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -62,13 +65,30 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/ullage.exe" $staging/
           Copy-Item LICENSE $staging/
           Copy-Item README.md $staging/
-          # Keep the staging directory so WinGet RelativeFilePath stays
-          # ullage-x86_64-pc-windows-msvc/ullage.exe.
+          # Zip stays on GitHub Releases for a portable copy. WinGet uses the
+          # Inno installer so silent install can register the user-level task.
           Compress-Archive -Path $staging -DestinationPath "${{ matrix.archive }}"
+
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found: $iscc" }
+          $version = "${{ github.ref_name }}" -replace '^v',''
+          & $iscc `
+            "/DAppVersion=$version" `
+            "/DSourceExe=$pwd\target\${{ matrix.target }}\release\ullage.exe" `
+            "/DLicenseFile=$pwd\LICENSE" `
+            "/DReadmeFile=$pwd\README.md" `
+            "/DOutputDir=$pwd" `
+            "$pwd\packaging\windows\ullage.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: ullage-x86_64-pc-windows-setup.exe
+          path: ullage-x86_64-pc-windows-setup.exe
 
   publish:
     needs: build

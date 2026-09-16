@@ -143,11 +143,22 @@ user-level unit has the path and permission rules.
 
 ## WinGet
 
-`winget install Dualface.Ullage` installs the GitHub Release zip as a
-portable `ullage.exe`. WinGet has no post-install hook, so the user-level
-scheduled task is not registered automatically.
+`winget install Dualface.Ullage` installs the user-scope Inno Setup package
+`ullage-x86_64-pc-windows-setup.exe`. WinGet has no Homebrew-style
+`post_install` on a portable zip, so the installer is the hook:
+`packaging/windows/ullage.iss` `[Run]` entries call `ullage daemon stop`,
+`install`, and `start`. Those flags omit `postinstall` / `skipifsilent` so
+winget's silent Inno switches still execute them.
 
-After a `v*` tag, the Release workflow opens a PR against
+`PrivilegesRequired=lowest` and `DefaultDirName={localappdata}\Ullage`
+keep the scheduled task on the installing user. Do not elevate; an
+Administrator install would register the task for the admin account.
+`PrepareToInstall` stops an already-running daemon so the upgrade can
+replace `ullage.exe`. `[UninstallRun]` stops then uninstalls the task. The
+GitHub Release zip remains a portable copy and is not what WinGet submits.
+
+After a `v*` tag, the Release workflow compiles the `.iss`, uploads the
+setup exe, and opens a PR against
 [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) when the
 `WINGET_TOKEN` secret is set (a PAT that can fork that repository and open
 pull requests). `GITHUB_TOKEN` cannot.
@@ -159,6 +170,6 @@ scripts/sync-winget.sh v0.1.2
 ```
 
 `--dry-run --checksums FILE` prints the three YAML files without opening a
-PR. The installer must declare `NestedInstallerType: portable` and
-`RelativeFilePath: ullage-x86_64-pc-windows-msvc/ullage.exe`, matching the
-Windows zip layout from the Release workflow.
+PR. The installer must declare `InstallerType: inno`, `Scope: user`, and
+`ElevationRequirement: elevationProhibited`, with the URL pointing at
+`ullage-x86_64-pc-windows-setup.exe`.

@@ -10,8 +10,9 @@
 #
 #   scripts/sync-winget.sh v0.1.2
 #
-# WinGet portable zip installs do not run post-install commands. Users still
-# need `ullage daemon install` and `ullage daemon start` after install/upgrade.
+# WinGet has no Homebrew-style post_install on a portable zip. Manifests
+# therefore point at the user-scope Inno installer, whose [Run] entries call
+# `ullage daemon stop`, `install`, and `start` even under silent winget.
 
 set -euo pipefail
 
@@ -19,8 +20,8 @@ REPO_SLUG=dualface/ullage-cli
 WINGET_UPSTREAM=microsoft/winget-pkgs
 WINGET_FORK=dualface/winget-pkgs
 PACKAGE_ID=Dualface.Ullage
-WINDOWS_ARCHIVE=ullage-x86_64-pc-windows-msvc.zip
-NESTED_EXE=ullage-x86_64-pc-windows-msvc/ullage.exe
+WINDOWS_SETUP=ullage-x86_64-pc-windows-setup.exe
+INNO_PRODUCT_CODE='{C0A1B8E4-5D27-4F91-9C3A-7E6B2D4F8A15}_is1'
 MANIFEST_VERSION=1.10.0
 
 skip_wait=0
@@ -147,8 +148,8 @@ sha_for() {
 	printf '%s' "$sha" | tr '[:lower:]' '[:upper:]'
 }
 
-sha_windows="$(sha_for "$WINDOWS_ARCHIVE")"
-printf '  %s  %s\n' "$WINDOWS_ARCHIVE" "$sha_windows" >&2
+sha_windows="$(sha_for "$WINDOWS_SETUP")"
+printf '  %s  %s\n' "$WINDOWS_SETUP" "$sha_windows" >&2
 
 if [ -z "$release_date" ]; then
 	if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
@@ -161,7 +162,7 @@ if ! printf '%s' "$release_date" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
 	die "release date must look like 2026-09-16, got: $release_date"
 fi
 
-asset_url="https://github.com/${REPO_SLUG}/releases/download/${version}/${WINDOWS_ARCHIVE}"
+asset_url="https://github.com/${REPO_SLUG}/releases/download/${version}/${WINDOWS_SETUP}"
 manifest_dir="$workdir/manifests"
 mkdir -p "$manifest_dir"
 
@@ -178,20 +179,19 @@ cat >"$manifest_dir/${PACKAGE_ID}.installer.yaml" <<EOF
 # yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.${MANIFEST_VERSION}.schema.json
 PackageIdentifier: ${PACKAGE_ID}
 PackageVersion: ${bare_version}
-InstallerType: zip
-NestedInstallerType: portable
-UpgradeBehavior: uninstallPrevious
+InstallerType: inno
+Scope: user
+UpgradeBehavior: install
 ReleaseDate: ${release_date}
+ElevationRequirement: elevationProhibited
+Dependencies:
+  PackageDependencies:
+    - PackageIdentifier: Microsoft.VCRedist.2015+.x64
 Installers:
   - Architecture: x64
-    NestedInstallerFiles:
-      - RelativeFilePath: ${NESTED_EXE}
-        PortableCommandAlias: ullage
     InstallerUrl: ${asset_url}
     InstallerSha256: ${sha_windows}
-    Dependencies:
-      PackageDependencies:
-        - PackageIdentifier: Microsoft.VCRedist.2015+.x64
+    ProductCode: '${INNO_PRODUCT_CODE}'
 ManifestType: installer
 ManifestVersion: ${MANIFEST_VERSION}
 EOF
@@ -218,7 +218,7 @@ Tags:
   - cli
   - cursor
   - grok
-InstallationNotes: After installing, run ullage daemon install then ullage daemon start to register the current-user scheduled task. Re-run those commands after winget upgrade so the task pins the new portable path.
+InstallationNotes: The installer registers a current-user Task Scheduler task and starts the daemon. Open a new terminal so PATH includes %LOCALAPPDATA%\\Ullage.
 ReleaseNotesUrl: https://github.com/dualface/ullage-cli/releases/tag/${version}
 ManifestType: defaultLocale
 ManifestVersion: ${MANIFEST_VERSION}
@@ -276,11 +276,11 @@ pr_url="$(
 		--title "${pr_kind}: ${PACKAGE_ID} version ${bare_version}" \
 		--body "$(
 			cat <<EOF
-This PR adds portable WinGet manifests for ullage ${bare_version}.
+This PR adds user-scope Inno WinGet manifests for ullage ${bare_version}.
 
-- Installer: GitHub Release zip \`ullage-x86_64-pc-windows-msvc.zip\`
-- Nested portable: \`${NESTED_EXE}\`
-- After install, run \`ullage daemon install\` then \`ullage daemon start\` (WinGet portable packages have no post-install hook)
+- Installer: GitHub Release \`ullage-x86_64-pc-windows-setup.exe\`
+- Scope: user (\`PrivilegesRequired=lowest\`, install dir \`%LOCALAPPDATA%\\Ullage\`)
+- Silent [Run] entries call \`ullage daemon stop\`, \`install\`, and \`start\` (Homebrew \`post_install\` analog; no \`postinstall\` flag so winget silent mode still runs them)
 
 Checksums: https://github.com/${REPO_SLUG}/releases/download/${version}/checksums.txt
 EOF

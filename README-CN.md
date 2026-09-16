@@ -20,11 +20,9 @@ Linux 需要先安装 [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux
 
 ```powershell
 winget install Dualface.Ullage
-ullage daemon install
-ullage daemon start
 ```
 
-WinGet 只复制便携版 `ullage.exe`，不会执行这两条守护进程命令。`winget upgrade` 之后请再跑一遍，以便计划任务钉到新的便携路径。
+安装包把 `ullage.exe` 放到 `%LOCALAPPDATA%\Ullage`，把该目录加入用户 `PATH`，然后执行 `ullage daemon install` 和 `ullage daemon start`。安装后请开一个新终端，以便 `PATH` 生效。GitHub Release 里的 zip 仍是便携版，不会注册计划任务。
 
 **GitHub Releases**
 
@@ -274,7 +272,7 @@ ullage daemon stop
 ullage daemon uninstall
 ```
 
-`brew install` 和 `brew upgrade` 会自行执行 `ullage daemon install` 和 `ullage daemon start`，把 LaunchAgent（或 systemd 用户单元）钉到当前 Cellar keg 路径。WinGet 没有安装后钩子，所以 Windows 在 `winget install` 和 `winget upgrade` 之后仍需手动执行这两条命令。
+`brew install` 和 `brew upgrade` 会自行执行 `ullage daemon install` 和 `ullage daemon start`，把 LaunchAgent（或 systemd 用户单元）钉到当前 Cellar keg 路径。`winget install Dualface.Ullage` 通过 Inno 安装包的 `[Run]` 条目做同样的事，把当前用户的计划任务钉到 `%LOCALAPPDATA%\Ullage\ullage.exe`。
 
 `install` / `uninstall` 只管理启动项。配置、凭据、快照和日志会留下。`status` 在已认证的本机端点可达时报告守护进程在线；否则区分已安装但已停止，与未安装。在线表格输出包含 `CREDENTIAL_BACKEND`（`linux_secret_service`、`macos_keychain`、`windows_credential_manager`、`file_fallback` 或 `other_platform`）。JSON 在 `payload.credential_backend` 上使用相同标识符。
 

@@ -25,13 +25,13 @@ then runs `ullage daemon install` and `ullage daemon start`.
 
 ```powershell
 winget install Dualface.Ullage
-ullage daemon install
-ullage daemon start
 ```
 
-WinGet copies the portable `ullage.exe`. It does not run those daemon
-commands. After `winget upgrade`, run them again so the scheduled task pins
-the new portable path.
+The installer copies `ullage.exe` to `%LOCALAPPDATA%\Ullage`, adds that
+directory to the user `PATH`, then runs `ullage daemon install` and
+`ullage daemon start`. Open a new terminal after install so `PATH` updates.
+The GitHub Release zip is still a portable copy that does not register the
+task.
 
 **GitHub Releases**
 
@@ -334,9 +334,9 @@ ullage daemon uninstall
 
 `brew install` and `brew upgrade` run `ullage daemon install` and
 `ullage daemon start` themselves so the LaunchAgent (or systemd user unit)
-pins the current Cellar keg path. WinGet has no post-install hook, so
-Windows still needs those two commands after `winget install` and
-`winget upgrade`.
+pins the current Cellar keg path. `winget install Dualface.Ullage` does
+the same pair from the Inno installer `[Run]` entries so the current-user
+scheduled task pins `%LOCALAPPDATA%\Ullage\ullage.exe`.
 
 `install` / `uninstall` manage the startup entry only. Configuration,
 credentials, snapshots, and logs remain. `status` reports a live daemon when

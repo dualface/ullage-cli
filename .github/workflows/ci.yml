@@ -56,13 +56,22 @@ jobs:
           set -euo pipefail
           checksums="$(mktemp)"
           dummy=0000000000000000000000000000000000000000000000000000000000000000
-          printf '%s  ullage-x86_64-pc-windows-msvc.zip\n' "$dummy" >"$checksums"
+          printf '%s  ullage-x86_64-pc-windows-setup.exe\n' "$dummy" >"$checksums"
           manifests="$(./scripts/sync-winget.sh --dry-run --checksums "$checksums" --release-date 2026-01-01 v0.0.0)"
           printf '%s\n' "$manifests" | grep -q 'PackageIdentifier: Dualface.Ullage'
-          printf '%s\n' "$manifests" | grep -q 'NestedInstallerType: portable'
-          printf '%s\n' "$manifests" | grep -q 'ullage-x86_64-pc-windows-msvc/ullage.exe'
+          printf '%s\n' "$manifests" | grep -q 'InstallerType: inno'
+          printf '%s\n' "$manifests" | grep -q 'Scope: user'
+          printf '%s\n' "$manifests" | grep -q 'ElevationRequirement: elevationProhibited'
+          printf '%s\n' "$manifests" | grep -q 'ullage-x86_64-pc-windows-setup.exe'
           printf '%s\n' "$manifests" | grep -q 'Microsoft.VCRedist.2015+.x64'
-          printf '%s\n' "$manifests" | grep -q 'ullage daemon install'
+          printf '%s\n' "$manifests" | grep -q "ProductCode: '{C0A1B8E4-5D27-4F91-9C3A-7E6B2D4F8A15}_is1'"
+          grep -q 'PrivilegesRequired=lowest' packaging/windows/ullage.iss
+          grep -q 'daemon install' packaging/windows/ullage.iss
+          grep -q 'daemon start' packaging/windows/ullage.iss
+          if grep -E 'Flags:.*postinstall' packaging/windows/ullage.iss; then
+            printf 'error: Inno [Run] must omit the postinstall flag so winget silent mode still starts the daemon\n' >&2
+            exit 1
+          fi
 
   linuxbrew:
     runs-on: ubuntu-24.04
