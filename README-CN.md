@@ -88,7 +88,15 @@ Balance        credits 0
 
 ## 配置
 
-版本 1 的 JSON。未知字段、重复账户 ID、零时长、符号链接，以及大于 1 MiB 的文件都会被拒绝。密钥材料不属于该 schema。文件缺失时，Ullage 使用内置提供方端点和空账户列表。
+版本 1 的 JSON。密钥材料不属于该 schema。文件缺失时，Ullage 使用内置提供方端点和空账户列表。
+
+加载时拒绝：
+
+- 未知字段
+- 重复账户 ID
+- 零时长
+- 符号链接
+- 大于 1 MiB 的文件
 
 ```json
 {
@@ -126,32 +134,123 @@ Balance        credits 0
 
 `provider` 必须是 `claude`、`chatgpt`、`grok` 或 `cursor` 之一。提供方的 OAuth 和计费端点编译进二进制，不能在这里改写。
 
+### 凭据
+
 `credentials.file_fallback` 默认关闭。此时 Ullage 只使用平台凭据库（macOS Keychain、Windows Credential Manager 或 Linux Secret Service）。没有 Secret Service 的机器上，认证会以明确错误失败；加上 `--diagnose` 再跑，可以看到本机没有 Secret Service，以及把 `credentials.file_fallback` 设为 `true` 即可启用文件回退。
 
-开关打开后，只要原生后端可用，Ullage 仍优先用它。只有原生后端报告自己不可用时，Ullage 才会创建上面的平台文件凭据目录。该目录中的凭据以明文存储。任何能读当前用户文件的进程都能读到它们。目录会建成私有（`0700` / 当前用户 DACL）；权限检查失败会停止守护进程，而不是悄悄降级。旧配置若省略 `credentials` 对象，仍按开关关闭加载。
+开关打开后，只要原生后端可用，Ullage 仍优先用它。只有原生后端报告自己不可用时，Ullage 才会创建上面的平台文件凭据目录。
 
-`http.enabled` 默认 false。关闭时守护进程不监听任何 TCP 端口。启用后，`http.bind` 接受 `auto:<port>`，或一个明确的回环、Tailscale 或私有局域网地址。例如 `auto:7878` 会发现所有合格的本机地址并在每个地址上监听，而 `<tailscale-ipv4>:7878` 或 `<lan-ipv4>:7878` 保持单地址行为。通配、链路本地、组播和公网地址会拒绝启动，并指出 `http.bind`。服务器暴露如下 HTTP API：
+- 该目录中的凭据以明文存储。任何能读当前用户文件的进程都能读到它们。
+- 目录会建成私有（`0700` / 当前用户 DACL）。
+- 权限检查失败会停止守护进程，而不是悄悄降级。
+- 旧配置若省略 `credentials` 对象，仍按开关关闭加载。
 
-```text
-POST /v1/pair
-GET  /v1/status
-GET  /v1/providers
-GET  /v1/accounts
-GET  /v1/accounts/{id}
-GET  /v1/usage?account={id}
-GET  /v1/usage?account={id}&metric={display-name}
-POST /v1/accounts/{id}/probe?wait=false
+### HTTP 绑定
+
+`http.enabled` 默认 false。关闭时守护进程不监听任何 TCP 端口。
+
+启用后，`http.bind` 接受 `auto:<port>`，或一个明确的回环、Tailscale 或私有局域网地址：
+
+| 值 | 行为 |
+| -- | ---- |
+| `auto:7878` | 发现所有合格的本机地址并在每个地址上监听 |
+| `<tailscale-ipv4>:7878` | 单个 Tailscale 地址 |
+| `<lan-ipv4>:7878` | 单个私有局域网地址 |
+
+通配、链路本地、组播和公网地址会拒绝启动，并指出 `http.bind`。
+
+在 `auto` 模式下，启动时每个监听地址打一行 `http.bind listening <addr> (<class>)`。若一开始没有 Tailscale 或局域网地址，发现会重试最多 60 秒，然后以回环启动。回环绑定失败会停止启动；非回环绑定失败会打警告并跳过。
+
+## HTTP API
+
+认证、账户变更和工作区控制仍走私有控制套接字。HTTP 服务器只提供查询和配对。
+
+### 路由
+
+| 方法 | 路径 | 说明 |
+| ---- | ---- | ---- |
+| `POST` | `/v1/pair` | 配对；不需要 Bearer 令牌 |
+| `GET` | `/v1/status` | |
+| `GET` | `/v1/providers` | |
+| `GET` | `/v1/accounts` | |
+| `GET` | `/v1/accounts/{id}` | |
+| `GET` | `/v1/usage?account={id}` | 缓存快照；不联系提供方 |
+| `GET` | `/v1/usage?account={id}&metric={display-name}` | 可选的保留列表过滤 |
+| `POST` | `/v1/accounts/{id}/probe?wait=false` | 受 `http.probe_min_interval_seconds`（默认 60）限制 |
+
+重复 `metric=` 会保留多个显示名的并集。这是一次性保留列表，与持久化的每账户 `metrics` 字段相反，后者点名要隐藏的行。
+
+- 匹配按显示名精确、不区分大小写，并忽略该行所属窗口。
+- 只有显示行会被过滤。像 `limit_reached` 这类隐藏簿记仍会到达客户端，因此已达上限仍然可见。
+- 合法但未知的名字返回 `200` 且没有可见测量。
+- 空、过长、数量过多或含控制字符的名字返回 `400 invalid_metric`。
+- `metric` 只在 `/v1/usage` 上接受；其他路由以 `400 bad_request` 拒绝。
+- 同一账户在最小间隔内的探测请求返回 `429` 和 `Retry-After`。
+
+### 认证与配对
+
+除 `POST /v1/pair` 和 `OPTIONS` 外，每条路由都需要
+`Authorization: Bearer <device_token>`。
+
+配对请求：
+
+```json
+{"pair_code":"ABC-DEF","device_name":"client-host"}
 ```
 
-`/v1/usage` 读取缓存快照，不联系提供方。重复 `metric=` 会保留多个显示名的并集；这是一次性保留列表，与持久化的每账户 `metrics` 字段相反，后者点名要隐藏的行。匹配按显示名精确、不区分大小写，并忽略该行所属窗口。只有显示行会被过滤：像 `limit_reached` 这类隐藏簿记仍会到达客户端，因此已达上限仍然可见。合法但未知的名字返回 `200` 且没有可见测量；空、过长、数量过多或含控制字符的名字返回 `400 invalid_metric`。`metric` 只在 `/v1/usage` 上接受；其他路由以 `400 bad_request` 拒绝。同一账户在 `http.probe_min_interval_seconds`（默认 60）内的探测请求返回 `429` 和 `Retry-After`。认证、账户变更和工作区控制消息仍走私有控制套接字。
+响应是设备 ID、净化后的名称，以及 256 位 base64url 设备令牌。该响应是唯一一次暴露原始令牌的时机。
 
-除 `POST /v1/pair` 和 `OPTIONS` 外，每条路由都需要 `Authorization: Bearer <device_token>`。配对接受类似 `{"pair_code":"ABC-DEF","device_name":"client-host"}` 的 JSON，并返回设备 ID、净化后的名称，以及 256 位 base64url 设备令牌。该响应是唯一一次暴露原始令牌的时机。六字符配对码字母表为 `23456789ABCDEFGHJKMNPQRSTVWXYZ`，输入不区分大小写，连字符只允许出现在展示位置，或整段省略。它在 300 秒后过期，只能成功一次，会被下一次生成的码替换，并在五次校验失败后作废。配对尝试还限制为每个源 IP 每秒一次；超出返回 `429` 和 `Retry-After`。
+配对码规则：
 
-`devices.json` 存在状态文件旁边，仅当前用户可访问（`0600` / 受保护 DACL）。每条有效记录包含 12 字符设备 ID、净化后的名称、SHA-256 令牌哈希、创建时间和最后见到时间；从不包含原始令牌。认证会哈希出示的令牌，并与每条有效记录做恒定时间比较，不提前返回。最后见到时间的写入限制为每台设备每 60 秒一次。损坏或不安全的设备文件会拒绝守护进程启动，且从不原地修复。遗留的 `http-token` 文件会被忽略，不会自动删除。
+- 六个字符，字母表 `23456789ABCDEFGHJKMNPQRSTVWXYZ`
+- 输入不区分大小写
+- 连字符只允许出现在展示位置，或整段省略
+- 300 秒后过期
+- 只能成功一次；下一次生成的码会替换它
+- 五次校验失败后作废
+- 每个源 IP 每秒一次；超出返回 `429` 和 `Retry-After`
 
-HTTP 服务器只接受 Host 值 `127.0.0.1:<port>`、`localhost:<port>` 以及实际监听地址；任意 IPv6 监听还会启用 `[::1]:<port>`。`http.allowed_origins` 默认为空：匹配的来源会回显并带 `Vary: Origin`；不匹配的来源没有 CORS 头。服务器从不返回 `Access-Control-Allow-Origin: *` 或 `Access-Control-Allow-Credentials: true`。在 `auto` 模式下，启动时每个监听地址打一行 `http.bind listening <addr> (<class>)`。若一开始没有 Tailscale 或局域网地址，发现会重试最多 60 秒，然后以回环启动。回环绑定失败会停止启动；非回环绑定失败会打警告并跳过。远程访问可用直接的 Tailscale 或局域网地址，或 SSH 隧道。Ullage 不提供 TLS。Tailscale 流量由 WireGuard 加密，但局域网流量及其设备令牌是明文。
+### 设备记录
 
-错误映射稳定：缺失或无效的 Bearer 令牌是 `401`，未知路由 `404`，非法参数 `400`，`AccountNotFound` `404`，`AuthenticationInvalid` `409`，提供方或探测 `RateLimited` `429` 并带 `Retry-After`，`Timeout` `504`，`Storage` `500`。配对另外使用 `400 bad_request`、`401 pair_code_invalid`、`405`、`413` 和 `429`。除非设置 `?diagnose=1`，响应体保持脱敏。大于 1 MiB 的请求体、大于 4 KiB 的配对体，或读超时仍未完成的请求体会被拒绝，且不影响其他连接。
+`devices.json` 存在状态文件旁边，仅当前用户可访问（`0600` / 受保护 DACL）。每条有效记录包含：
+
+- 12 字符设备 ID
+- 净化后的名称
+- SHA-256 令牌哈希
+- 创建时间
+- 最后见到时间
+
+从不包含原始令牌。认证会哈希出示的令牌，并与每条有效记录做恒定时间比较，不提前返回。最后见到时间的写入限制为每台设备每 60 秒一次。损坏或不安全的设备文件会拒绝守护进程启动，且从不原地修复。遗留的 `http-token` 文件会被忽略，不会自动删除。
+
+### Host、CORS 与传输
+
+接受的 `Host` 值：`127.0.0.1:<port>`、`localhost:<port>` 以及实际监听地址。任意 IPv6 监听还会启用 `[::1]:<port>`。
+
+`http.allowed_origins` 默认为空：
+
+- 匹配的来源会回显并带 `Vary: Origin`。
+- 不匹配的来源没有 CORS 头。
+- 服务器从不返回 `Access-Control-Allow-Origin: *` 或
+  `Access-Control-Allow-Credentials: true`。
+
+远程访问可用直接的 Tailscale 或局域网地址，或 SSH 隧道。Ullage 不提供 TLS。Tailscale 流量由 WireGuard 加密，但局域网流量及其设备令牌是明文。
+
+### 错误
+
+除非设置 `?diagnose=1`，响应体保持脱敏。大于 1 MiB 的请求体、大于 4 KiB 的配对体，或读超时仍未完成的请求体会被拒绝，且不影响其他连接。
+
+| 条件 | 状态 |
+| ---- | ---- |
+| 缺失或无效的 Bearer 令牌 | `401` |
+| 未知路由 | `404` |
+| 非法参数 | `400` |
+| `AccountNotFound` | `404` |
+| `AuthenticationInvalid` | `409` |
+| 提供方或探测 `RateLimited` | `429` 并带 `Retry-After` |
+| `Timeout` | `504` |
+| `Storage` | `500` |
+
+配对另外使用 `400 bad_request`、`401 pair_code_invalid`、`405`、`413` 和 `429`。
 
 ## 守护进程生命周期
 
@@ -240,7 +339,8 @@ Weekly Opus  usage  remains 89%  resets in 5d15h  [-#########]
 
 ## JSON 结构
 
-成功的 JSON 是带标签的 `ControlResult`。紧凑的 `ullage --output json show <account>` 形如：
+成功的 JSON 是带标签的 `ControlResult`。紧凑的
+`ullage --output json show <account>` 形如：
 
 ```json
 {
@@ -281,17 +381,36 @@ Weekly Opus  usage  remains 89%  resets in 5d15h  [-#########]
 }
 ```
 
-窗口 `kind` 值为 `five_hours`、`weekly`、`monthly`，或 `{"kind":"other","id":"...","label":"..."}`。缺失的 5h 或 weekly 窗口会被省略；从不填合成零。供应商未报告上限时，`limit` 省略或为 `null`。提供方没有到期时间时，`subscription_expires_at` 为 `null`。
+### 用量字段
 
-错误写到 stderr。表格输出第一行是 `error: <kind>`。CLI 能在不联系守护进程的情况下给出修复建议时，会加一行静态 `hint:`（例如 `daemon_unavailable` 或 `provider_registry_error`）。解析错误打印 clap 自己的消息：缺少子命令显示该层的完整帮助；未知标志、缺少参数和非法枚举值会带参数名，并在可用时给出 did-you-mean 建议或允许值。这些消息在输出前会脱敏，从不回显终端控制字符。像 `--method` 或 `--account` 这类已识别选项名会出现在 hint 中；位置参数和未识别标志改用通用静态消息。
+| 字段 | 规则 |
+| ---- | ---- |
+| `window.kind` | `five_hours`、`weekly`、`monthly`，或 `{"kind":"other","id":"...","label":"..."}` |
+| 缺失的 5h 或 weekly 窗口 | 省略；从不填合成零 |
+| `limit` | 供应商未报告上限时省略或为 `null` |
+| `subscription_expires_at` | 提供方没有到期时间时为 `null` |
+| `"outcome":"partial"` | 带 `failures`。CLI 退出码 `2` 表示部分成功 |
 
-JSON 和 pretty-json 使用同一信封，字段可选：
+JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改变它们的结构或字节，因此基于该 schema 的解析器无论是否传递该标志都能继续工作。
 
-```json
-{ "status": "error", "error": { "kind": "usage", "message": "..." } }
-```
+### 设备命令
 
-有解析错误文本时由 `message` 携带。`hint` 为选定的运行时 kind 提供静态说明。省略的字段不序列化。JSON 从不包含 ANSI 颜色序列。`--help`、`-h`、`help` 和 `--version` 走 stdout 并以 `0` 退出。解析和用法错误退出码 `64`。
+同样的带标签形状。设备列表载荷不含令牌或令牌哈希字段。
+
+| 命令 | 结果 |
+| ---- | ---- |
+| `device pair` | `{"result":"pair_code","payload":{"code":"ABC-DEF","expires_at":"..."}}` |
+| `device list` | `{"result":"devices","payload":[...]}` |
+| `device revoke`（成功） | `{"result":"ack"}` |
+
+### 错误
+
+错误写到 stderr。
+
+| 输出 | 形状 |
+| ---- | ---- |
+| 表格 | 第一行 `error: <kind>` |
+| JSON / pretty-json | `{ "status": "error", "error": { "kind": "usage", "message": "..." } }` |
 
 运行时错误示例：
 
@@ -299,11 +418,23 @@ JSON 和 pretty-json 使用同一信封，字段可选：
 { "status": "error", "error": { "kind": "timeout" } }
 ```
 
-部分用量使用 `"outcome":"partial"` 加上 `failures`。CLI 退出码 `2` 表示部分成功。
+- 有解析错误文本时由 `message` 携带。
+- `hint` 为选定的运行时 kind 提供静态说明（例如 `daemon_unavailable` 或
+  `provider_registry_error`）。CLI 能在不联系守护进程的情况下给出修复建议时，表格输出也会加一行 `hint:`。
+- 省略的字段不序列化。
+- JSON 从不包含 ANSI 颜色序列。
 
-JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改变它们的结构或字节，因此基于该 schema 的解析器无论是否传递该标志都能继续工作。
+解析错误打印 clap 自己的消息，输出前会脱敏，从不回显终端控制字符：
 
-设备命令遵循相同的带标签形状。`device pair` 返回 `{"result":"pair_code","payload":{"code":"ABC-DEF","expires_at":"..."}}`，`device list` 返回 `{"result":"devices","payload":[...]}`，成功的撤销返回 `{"result":"ack"}`。设备列表载荷不含令牌或令牌哈希字段。
+- 缺少子命令显示该层的完整帮助。
+- 未知标志、缺少参数和非法枚举值会带参数名，并在可用时给出 did-you-mean 建议或允许值。
+- 像 `--method` 或 `--account` 这类已识别选项名会出现在 hint 中。
+- 位置参数和未识别标志改用通用静态消息。
+
+| 情况 | 退出码 | 去向 |
+| ---- | ------ | ---- |
+| `--help`、`-h`、`help`、`--version` | `0` | stdout |
+| 解析和用法错误 | `64` | stderr |
 
 ## 真实凭据测试
 
