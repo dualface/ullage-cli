@@ -2177,29 +2177,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ullage-app"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "ullage-auth",
- "ullage-cli",
- "ullage-core",
- "ullage-daemon",
- "ullage-http",
- "ullage-protocol",
- "ullage-provider-chatgpt",
- "ullage-provider-claude",
- "ullage-provider-cursor",
- "ullage-provider-grok",
-]
-
-[[package]]
 name = "ullage-auth"
 version = "0.1.0"
 dependencies = [
@@ -2222,6 +2199,29 @@ dependencies = [
 
 [[package]]
 name = "ullage-cli"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ullage-auth",
+ "ullage-client",
+ "ullage-core",
+ "ullage-daemon",
+ "ullage-http",
+ "ullage-protocol",
+ "ullage-provider-chatgpt",
+ "ullage-provider-claude",
+ "ullage-provider-cursor",
+ "ullage-provider-grok",
+]
+
+[[package]]
+name = "ullage-client"
 version = "0.1.0"
 dependencies = [
  "chrono",

@@ -5,7 +5,7 @@ in `architecture.md`. User commands live in `README.md`.
 
 ## Provider extension
 
-`ullage-app` is the only composition root that links production providers. A
+`ullage-cli` is the only composition root that links production providers. A
 new provider is a workspace crate under `providers/` that depends on
 `ullage-core` and, if it authenticates, `ullage-auth`. Shared crates must not
 depend on a provider crate.
@@ -57,7 +57,7 @@ endpoint, and the user-level service entry.
 
 - Credentials go through `CredentialStore`. Providers never open Keychain,
   Credential Manager, Secret Service, or a fallback file directly.
-  `ullage-app::production_registry` is the only production assembler: native
+  `ullage_app::production_registry` is the only production assembler: native
   keyring by default, `FileStore` only when `credentials.file_fallback` is true
   and the native backend is unavailable. Plaintext fallback files are a
   user-visible security downgrade and must stay opt-in.
@@ -97,24 +97,18 @@ Also run the available target checks and record gaps:
 
 ```sh
 rustup target list --installed
-cargo check -p ullage-app --target x86_64-unknown-linux-gnu
-cargo check -p ullage-cli --target aarch64-apple-darwin
-cargo check -p ullage-cli --target x86_64-apple-darwin
-cargo clippy -p ullage-auth -p ullage-cli --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+cargo check -p ullage-cli --target x86_64-unknown-linux-gnu
+cargo check -p ullage-client --target aarch64-apple-darwin
+cargo check -p ullage-client --target x86_64-apple-darwin
+cargo clippy -p ullage-auth -p ullage-client --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
-Cross-compiling `ullage-app` for Windows needs a working MinGW linker for
+Cross-compiling `ullage-cli` for Windows needs a working MinGW linker for
 crates such as `ring`. If that toolchain is missing, keep the Windows
-`ullage-auth` / `ullage-cli` Clippy coverage and state the gap.
+`ullage-auth` / `ullage-client` Clippy coverage and state the gap.
 
 Do not add default-suite tests that contact vendor production APIs with
 real credentials.
 
-## macOS application release checks
-
-The menu bar client and its remote notarization workflow live in the sibling
-repository `ullage-mac-app`. That repository builds the embedded daemon from
-this workspace (`ULLAGE_REPO`, default `../ullage`) with
-`cargo build --locked --release -p ullage-app`. Follow its README and
-`docs/development.md` for Swift tests, Developer ID notarization, and App
-Store archives.
+The sibling repository `ullage-mac-app` embeds a release `ullage` binary from
+this workspace with `cargo build --locked --release -p ullage-cli`.

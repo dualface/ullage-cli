@@ -1,47 +1,39 @@
 [package]
 name = "ullage-cli"
-autobins = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+description = "Local daemon and CLI that inspects subscription usage for Claude, ChatGPT, Grok, and Cursor."
+repository = "https://github.com/dualface/ullage-cli"
+homepage = "https://github.com/dualface/ullage-cli"
+readme = "../../README.md"
+
+[lib]
+name = "ullage_app"
+
+[[bin]]
+name = "ullage"
+path = "src/main.rs"
 
 [dependencies]
 chrono.workspace = true
-clap.workspace = true
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
-ullage-protocol.workspace = true
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal"] }
+ullage-auth.workspace = true
+ullage-client = { path = "../ullage-client" }
 ullage-core.workspace = true
-unicode-width = "0.2"
+ullage-daemon = { path = "../ullage-daemon" }
+ullage-http = { path = "../ullage-http" }
+ullage-protocol.workspace = true
+ullage-provider-claude.workspace = true
+ullage-provider-chatgpt.workspace = true
+ullage-provider-grok.workspace = true
+ullage-provider-cursor.workspace = true
 
 [dev-dependencies]
-clap.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-ullage-auth.workspace = true
-winapi = { version = "0.3", features = [
-    "combaseapi",
-    "oaidl",
-    "objbase",
-    "oleauto",
-    "taskschd",
-    "unknwnbase",
-    "winerror",
-    "wtypes",
-    "wtypesbase",
-] }
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_System_Console",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Pipes",
-    "Win32_System_SystemInformation",
-    "Win32_System_Threading",
-] }
+async-trait.workspace = true
+tempfile = "3"

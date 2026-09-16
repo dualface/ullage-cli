@@ -4,7 +4,7 @@ BUILD_DIR := build
 BINARY := ullage
 
 build:
-	cargo build --release -p ullage-app
+	cargo build --release -p ullage-cli
 	mkdir -p $(BUILD_DIR)
 	cp -f target/release/$(BINARY) $(BUILD_DIR)/$(BINARY)
 

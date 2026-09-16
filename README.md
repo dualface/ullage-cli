@@ -9,15 +9,33 @@ platform credential store by default; configuration never contains secrets.
 
 ## Install
 
-Build from this workspace with Rust 1.85 or newer:
+The command is `ullage`. The crates.io package name is `ullage-cli`.
+
+**Homebrew**
 
 ```sh
-cargo build --release -p ullage-app
+brew install dualface/tap/ullage
 ```
 
-The binary is `target/release/ullage`. There is no installer or package in this
-release. Place the binary on your `PATH` if you want the user-level service
-commands to find it at a stable location.
+**GitHub Releases**
+
+Download the archive for your OS from
+[Releases](https://github.com/dualface/ullage-cli/releases).
+
+**From git** (Rust 1.85 or newer)
+
+```sh
+cargo install --git https://github.com/dualface/ullage-cli --locked ullage-cli
+```
+
+**From this workspace**
+
+```sh
+cargo build --release -p ullage-cli
+```
+
+The binary is `target/release/ullage`. Place it on your `PATH` if you want the
+user-level service commands to find it at a stable location.
 
 ## Authentication
 
@@ -481,6 +499,10 @@ must not send paid model requests.
   boundaries
 - `docs/development.md` — provider extension, vendor DTO compatibility,
   security, and pre-release checks
+
+## Security
+
+Report vulnerabilities to dualface@gmail.com. See [`SECURITY.md`](SECURITY.md).
 
 ## License
 

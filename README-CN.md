@@ -6,13 +6,31 @@ Ullage 是本地守护进程和 CLI，用来查看 Claude、ChatGPT、Grok 和 C
 
 ## 安装
 
-在本仓库用 Rust 1.85 或更新版本构建：
+命令名是 `ullage`。crates.io 包名是 `ullage-cli`。
+
+**Homebrew**
 
 ```sh
-cargo build --release -p ullage-app
+brew install dualface/tap/ullage
 ```
 
-二进制位于 `target/release/ullage`。本发行不含安装器或软件包。若希望用户级服务命令能在固定位置找到它，把该二进制放到 `PATH` 上。
+**GitHub Releases**
+
+从 [Releases](https://github.com/dualface/ullage-cli/releases) 下载对应系统的压缩包。
+
+**从 git 安装**（Rust 1.85 或更新）
+
+```sh
+cargo install --git https://github.com/dualface/ullage-cli --locked ullage-cli
+```
+
+**从本仓库构建**
+
+```sh
+cargo build --release -p ullage-cli
+```
+
+二进制位于 `target/release/ullage`。若希望用户级服务命令能在固定位置找到它，把它放到 `PATH` 上。
 
 ## 认证
 
@@ -295,6 +313,10 @@ JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改�
 
 - `docs/architecture.md` — crate 图、存储、托管和安全边界
 - `docs/development.md` — 提供方扩展、供应商 DTO 兼容性、安全和发布前检查
+
+## 安全
+
+漏洞请发到 dualface@gmail.com。见 [`SECURITY.md`](SECURITY.md)。
 
 ## 许可证
 

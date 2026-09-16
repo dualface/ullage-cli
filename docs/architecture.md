@@ -7,13 +7,13 @@ Ullage is a Rust workspace with a one-way dependency graph. Shared crates never 
 provider implementation, and provider crates do not depend on each other.
 
 ```text
-ullage-cli ----+
-ullage-app ----+--> ullage-protocol --> ullage-core --> ullage-auth
+ullage-client --+
+ullage-cli -----+--> ullage-protocol --> ullage-core --> ullage-auth
                             ^                ^
                             |                |
 ullage-daemon --------------+                |
 ullage-http -----> ullage-daemon             |
-ullage-app --------------------------------> provider-claude/chatgpt/grok/cursor
+ullage-cli --------------------------------> provider-claude/chatgpt/grok/cursor
 ```
 
 An arrow points from a consumer to one of its dependencies. The compact diagram shows ownership
@@ -27,11 +27,13 @@ direction rather than every composition-root edge; the complete direct workspace
   control transport without choosing production providers.
 - `ullage-http`: `ullage-daemon` and `ullage-protocol`. It is an optional local or
   Tailscale HTTP transport over `ControlService::handle()` and does not change the control protocol.
-- `ullage-app`: `ullage-auth`, `ullage-cli`, `ullage-core`, `ullage-daemon`, `ullage-http`,
-  `ullage-protocol`, and all four provider crates. It is the single production composition root
-  and builds the `ullage` binary.
-- `ullage-cli`: `ullage-protocol`, plus `ullage-auth` on Windows for private service-marker
-  creation using the same protected-DACL primitive as credential and snapshot storage.
+- `ullage-cli` (library name `ullage_app`): `ullage-auth`, `ullage-client`, `ullage-core`,
+  `ullage-daemon`, `ullage-http`, `ullage-protocol`, and all four provider crates. It is the
+  single production composition root and builds the `ullage` binary. This is the published
+  crates.io package.
+- `ullage-client` (library name `ullage_cli`): `ullage-protocol`, plus `ullage-auth` on Windows
+  for private service-marker creation using the same protected-DACL primitive as credential and
+  snapshot storage.
 
 ## Crate ownership
 
@@ -45,9 +47,9 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-daemon`: local transport and scheduling.
 - `ullage-http`: loopback, Tailscale, or private-LAN HTTP query and pairing transport with explicit
   or automatic multi-address binding, Host/Origin checks, per-IP pairing limits, and per-account
-  probe cooldown. Assembled only by `ullage-app`; device state remains owned by `ullage-daemon`.
-- `ullage-cli`: command-line client of the local control protocol.
-- `ullage-app`: single executable composition root for the CLI client and daemon process.
+  probe cooldown. Assembled only by `ullage-cli`; device state remains owned by `ullage-daemon`.
+- `ullage-client`: command-line client of the local control protocol.
+- `ullage-cli`: single executable composition root for the CLI client and daemon process.
 
 The CLI exposes daemon lifecycle, provider, account, authentication, probe,
 snapshot, and device-administration commands. `ullage device pair`,
@@ -70,7 +72,7 @@ UllageKit DTOs, Login Item helper, and signing layout.
 
 1. Provider implementations may depend on `ullage-core` and `ullage-auth`; shared crates may
    not depend on provider implementations.
-2. `ullage-app` is the composition root and is the only crate that links all production providers.
+2. `ullage-cli` is the composition root and is the only crate that links all production providers.
    `ullage daemon run` launches the same `ullage` executable in its private daemon mode.
 3. CLI and app communicate through `ullage-protocol`; they do not inspect daemon or provider
    internals.
