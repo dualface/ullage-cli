@@ -151,7 +151,10 @@ user-level unit has the path and permission rules.
 winget's silent Inno switches still execute them.
 
 `PrivilegesRequired=lowest` and `DefaultDirName={localappdata}\Ullage`
-keep the scheduled task on the installing user. Do not elevate; an
+keep the scheduled task on the installing user. The manifest must not set
+`ElevationRequirement: elevationProhibited`: WinGet validates dependencies
+from an administrator context and rejects that requirement before starting
+the installer. Users should still run WinGet without elevation; an
 Administrator install would register the task for the admin account.
 `PrepareToInstall` stops an already-running daemon so the upgrade can
 replace `ullage.exe`. `[UninstallRun]` stops then uninstalls the task. The
@@ -170,6 +173,6 @@ scripts/sync-winget.sh v0.1.2
 ```
 
 `--dry-run --checksums FILE` prints the three YAML files without opening a
-PR. The installer must declare `InstallerType: inno`, `Scope: user`, and
-`ElevationRequirement: elevationProhibited`, with the URL pointing at
+PR. The installer must declare `InstallerType: inno` and `Scope: user`, omit
+`ElevationRequirement`, and point the URL at
 `ullage-x86_64-pc-windows-setup.exe`.
