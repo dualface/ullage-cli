@@ -58,11 +58,11 @@ Balance        credits 0
 
 默认路径：
 
-| 平台    | 配置                                                                    | 状态                                                                                                                         | 控制                                   |
-| ------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| Linux   | `$XDG_CONFIG_HOME/ullage/config.json` 或 `~/.config/ullage/config.json` | `$XDG_STATE_HOME/ullage/state.json` 或 `~/.local/state/ullage/state.json`；已配对设备在该文件旁的 `devices.json`              | `$XDG_RUNTIME_DIR/ullage/control.sock` |
-| macOS   | `~/Library/Application Support/Ullage/config.json`                      | `~/Library/Application Support/Ullage/state.json`；已配对设备在该文件旁的 `devices.json`                                     | `$TMPDIR/ullage-<uid>/control.sock`    |
-| Windows | `%APPDATA%\Ullage\config.json`                                          | `%LOCALAPPDATA%\Ullage\state.json`；已配对设备在该文件旁的 `devices.json`                                                    | `\\.\pipe\ullage-<user-scope>`         |
+| 平台    | 配置                                                                    | 状态                                                                                                             | 控制                                   |
+| ------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| Linux   | `$XDG_CONFIG_HOME/ullage/config.json` 或 `~/.config/ullage/config.json` | `$XDG_STATE_HOME/ullage/state.json` 或 `~/.local/state/ullage/state.json`；已配对设备在该文件旁的 `devices.json` | `$XDG_RUNTIME_DIR/ullage/control.sock` |
+| macOS   | `~/Library/Application Support/Ullage/config.json`                      | `~/Library/Application Support/Ullage/state.json`；已配对设备在该文件旁的 `devices.json`                         | `$TMPDIR/ullage-<uid>/control.sock`    |
+| Windows | `%APPDATA%\Ullage\config.json`                                          | `%LOCALAPPDATA%\Ullage\state.json`；已配对设备在该文件旁的 `devices.json`                                        | `\\.\pipe\ullage-<user-scope>`         |
 
 覆盖项：`ULLAGE_CONFIG_FILE`、`ULLAGE_STATE_FILE`、`ULLAGE_CONTROL_SOCKET`（Unix）、`ULLAGE_CONTROL_PIPE`（Windows）。
 
