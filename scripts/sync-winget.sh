@@ -183,6 +183,7 @@ InstallerType: inno
 Scope: user
 UpgradeBehavior: install
 ReleaseDate: ${release_date}
+ElevationRequirement: elevatesSelf
 Dependencies:
   PackageDependencies:
     - PackageIdentifier: Microsoft.VCRedist.2015+.x64
