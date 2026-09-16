@@ -48,12 +48,16 @@ the stored credential, then asks for an account label:
 ullage auth login
 ```
 
-You do not need the internal account ID or `ULLAGE_AUTH_CODE`. Providers
-describe what to paste (Claude: the full callback URL or `code#state`;
-ChatGPT: the `code` query value). Grok's device-code flow and Cursor's
-browser sign-in have nothing to paste; both open a page and finish on their
-own. `--method api-token` keeps Cursor's older path, where you create a User
-API Key at cursor.com/dashboard and type it without echo.
+You do not need the internal account ID or `ULLAGE_AUTH_CODE`. Each provider
+says what to paste:
+
+- Claude: the full callback URL or `code#state`
+- ChatGPT: the `code` query value
+- Grok: device-code flow; nothing to paste. Opens a page and finishes on its
+  own
+- Cursor: browser sign-in; nothing to paste. Opens a page and finishes on its
+  own. `--method api-token` keeps the older path: create a User API Key at
+  cursor.com/dashboard and type it without echo
 
 Scripts keep the two-step path:
 

@@ -40,7 +40,12 @@ cargo build --release -p ullage-cli
 ullage auth login
 ```
 
-不需要内部账户 ID，也不需要 `ULLAGE_AUTH_CODE`。各提供方会说明该粘贴什么（Claude：完整回调 URL 或 `code#state`；ChatGPT：`code` 查询值）。Grok 的设备码流程和 Cursor 的浏览器登录没有可粘贴的内容；二者都会打开页面并自行完成。`--method api-token` 保留 Cursor 的旧路径：在 cursor.com/dashboard 创建 User API Key，然后无回显地输入。
+不需要内部账户 ID，也不需要 `ULLAGE_AUTH_CODE`。各提供方会说明该粘贴什么：
+
+- Claude：完整回调 URL 或 `code#state`
+- ChatGPT：`code` 查询值
+- Grok：设备码流程，没有可粘贴的内容。打开页面并自行完成
+- Cursor：浏览器登录，没有可粘贴的内容。打开页面并自行完成。`--method api-token` 保留旧路径：在 cursor.com/dashboard 创建 User API Key，然后无回显地输入
 
 脚本仍走两步路径：
 
@@ -151,11 +156,11 @@ Balance        credits 0
 
 启用后，`http.bind` 接受 `auto:<port>`，或一个明确的回环、Tailscale 或私有局域网地址：
 
-| 值 | 行为 |
-| -- | ---- |
-| `auto:7878` | 发现所有合格的本机地址并在每个地址上监听 |
-| `<tailscale-ipv4>:7878` | 单个 Tailscale 地址 |
-| `<lan-ipv4>:7878` | 单个私有局域网地址 |
+| 值                      | 行为                                     |
+| ----------------------- | ---------------------------------------- |
+| `auto:7878`             | 发现所有合格的本机地址并在每个地址上监听 |
+| `<tailscale-ipv4>:7878` | 单个 Tailscale 地址                      |
+| `<lan-ipv4>:7878`       | 单个私有局域网地址                       |
 
 通配、链路本地、组播和公网地址会拒绝启动，并指出 `http.bind`。
 
@@ -167,16 +172,16 @@ Balance        credits 0
 
 ### 路由
 
-| 方法 | 路径 | 说明 |
-| ---- | ---- | ---- |
-| `POST` | `/v1/pair` | 配对；不需要 Bearer 令牌 |
-| `GET` | `/v1/status` | |
-| `GET` | `/v1/providers` | |
-| `GET` | `/v1/accounts` | |
-| `GET` | `/v1/accounts/{id}` | |
-| `GET` | `/v1/usage?account={id}` | 缓存快照；不联系提供方 |
-| `GET` | `/v1/usage?account={id}&metric={display-name}` | 可选的保留列表过滤 |
-| `POST` | `/v1/accounts/{id}/probe?wait=false` | 受 `http.probe_min_interval_seconds`（默认 60）限制 |
+| 方法   | 路径                                           | 说明                                                |
+| ------ | ---------------------------------------------- | --------------------------------------------------- |
+| `POST` | `/v1/pair`                                     | 配对；不需要 Bearer 令牌                            |
+| `GET`  | `/v1/status`                                   |                                                     |
+| `GET`  | `/v1/providers`                                |                                                     |
+| `GET`  | `/v1/accounts`                                 |                                                     |
+| `GET`  | `/v1/accounts/{id}`                            |                                                     |
+| `GET`  | `/v1/usage?account={id}`                       | 缓存快照；不联系提供方                              |
+| `GET`  | `/v1/usage?account={id}&metric={display-name}` | 可选的保留列表过滤                                  |
+| `POST` | `/v1/accounts/{id}/probe?wait=false`           | 受 `http.probe_min_interval_seconds`（默认 60）限制 |
 
 重复 `metric=` 会保留多个显示名的并集。这是一次性保留列表，与持久化的每账户 `metrics` 字段相反，后者点名要隐藏的行。
 
@@ -195,7 +200,7 @@ Balance        credits 0
 配对请求：
 
 ```json
-{"pair_code":"ABC-DEF","device_name":"client-host"}
+{ "pair_code": "ABC-DEF", "device_name": "client-host" }
 ```
 
 响应是设备 ID、净化后的名称，以及 256 位 base64url 设备令牌。该响应是唯一一次暴露原始令牌的时机。
@@ -239,16 +244,16 @@ Balance        credits 0
 
 除非设置 `?diagnose=1`，响应体保持脱敏。大于 1 MiB 的请求体、大于 4 KiB 的配对体，或读超时仍未完成的请求体会被拒绝，且不影响其他连接。
 
-| 条件 | 状态 |
-| ---- | ---- |
-| 缺失或无效的 Bearer 令牌 | `401` |
-| 未知路由 | `404` |
-| 非法参数 | `400` |
-| `AccountNotFound` | `404` |
-| `AuthenticationInvalid` | `409` |
+| 条件                       | 状态                     |
+| -------------------------- | ------------------------ |
+| 缺失或无效的 Bearer 令牌   | `401`                    |
+| 未知路由                   | `404`                    |
+| 非法参数                   | `400`                    |
+| `AccountNotFound`          | `404`                    |
+| `AuthenticationInvalid`    | `409`                    |
 | 提供方或探测 `RateLimited` | `429` 并带 `Retry-After` |
-| `Timeout` | `504` |
-| `Storage` | `500` |
+| `Timeout`                  | `504`                    |
+| `Storage`                  | `500`                    |
 
 配对另外使用 `400 bad_request`、`401 pair_code_invalid`、`405`、`413` 和 `429`。
 
@@ -383,13 +388,13 @@ Weekly Opus  usage  remains 89%  resets in 5d15h  [-#########]
 
 ### 用量字段
 
-| 字段 | 规则 |
-| ---- | ---- |
-| `window.kind` | `five_hours`、`weekly`、`monthly`，或 `{"kind":"other","id":"...","label":"..."}` |
-| 缺失的 5h 或 weekly 窗口 | 省略；从不填合成零 |
-| `limit` | 供应商未报告上限时省略或为 `null` |
-| `subscription_expires_at` | 提供方没有到期时间时为 `null` |
-| `"outcome":"partial"` | 带 `failures`。CLI 退出码 `2` 表示部分成功 |
+| 字段                      | 规则                                                                              |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `window.kind`             | `five_hours`、`weekly`、`monthly`，或 `{"kind":"other","id":"...","label":"..."}` |
+| 缺失的 5h 或 weekly 窗口  | 省略；从不填合成零                                                                |
+| `limit`                   | 供应商未报告上限时省略或为 `null`                                                 |
+| `subscription_expires_at` | 提供方没有到期时间时为 `null`                                                     |
+| `"outcome":"partial"`     | 带 `failures`。CLI 退出码 `2` 表示部分成功                                        |
 
 JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改变它们的结构或字节，因此基于该 schema 的解析器无论是否传递该标志都能继续工作。
 
@@ -397,19 +402,19 @@ JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改�
 
 同样的带标签形状。设备列表载荷不含令牌或令牌哈希字段。
 
-| 命令 | 结果 |
-| ---- | ---- |
-| `device pair` | `{"result":"pair_code","payload":{"code":"ABC-DEF","expires_at":"..."}}` |
-| `device list` | `{"result":"devices","payload":[...]}` |
-| `device revoke`（成功） | `{"result":"ack"}` |
+| 命令                    | 结果                                                                     |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `device pair`           | `{"result":"pair_code","payload":{"code":"ABC-DEF","expires_at":"..."}}` |
+| `device list`           | `{"result":"devices","payload":[...]}`                                   |
+| `device revoke`（成功） | `{"result":"ack"}`                                                       |
 
 ### 错误
 
 错误写到 stderr。
 
-| 输出 | 形状 |
-| ---- | ---- |
-| 表格 | 第一行 `error: <kind>` |
+| 输出               | 形状                                                                    |
+| ------------------ | ----------------------------------------------------------------------- |
+| 表格               | 第一行 `error: <kind>`                                                  |
 | JSON / pretty-json | `{ "status": "error", "error": { "kind": "usage", "message": "..." } }` |
 
 运行时错误示例：
@@ -431,10 +436,10 @@ JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改�
 - 像 `--method` 或 `--account` 这类已识别选项名会出现在 hint 中。
 - 位置参数和未识别标志改用通用静态消息。
 
-| 情况 | 退出码 | 去向 |
-| ---- | ------ | ---- |
-| `--help`、`-h`、`help`、`--version` | `0` | stdout |
-| 解析和用法错误 | `64` | stderr |
+| 情况                                | 退出码 | 去向   |
+| ----------------------------------- | ------ | ------ |
+| `--help`、`-h`、`help`、`--version` | `0`    | stdout |
+| 解析和用法错误                      | `64`   | stderr |
 
 ## 真实凭据测试
 
