@@ -660,6 +660,9 @@ mod windows {
 
         let xml = render_windows_task_xml(executable)?;
         let xml_path = task_xml_path(task)?;
+        // A prior interrupt can leave this sidecar; CREATE_NEW would then block
+        // pending-install recovery and re-install on the same task name.
+        let _ = std::fs::remove_file(&xml_path);
         let mut file = ullage_auth::create_private_windows_file(&xml_path)
             .map_err(|_| "private task definition could not be created")?;
         // schtasks requires a Unicode (UTF-16 LE) task file.
