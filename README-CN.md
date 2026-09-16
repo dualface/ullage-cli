@@ -16,6 +16,16 @@ brew install dualface/tap/ullage
 
 Linux 需要先安装 [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux)。公式会按当前系统和 CPU 安装 GitHub Release 里的预编译二进制，然后执行 `ullage daemon install` 和 `ullage daemon start`。
 
+**WinGet**（Windows）
+
+```powershell
+winget install Dualface.Ullage
+ullage daemon install
+ullage daemon start
+```
+
+WinGet 只复制便携版 `ullage.exe`，不会执行这两条守护进程命令。`winget upgrade` 之后请再跑一遍，以便计划任务钉到新的便携路径。
+
 **GitHub Releases**
 
 从 [Releases](https://github.com/dualface/ullage-cli/releases) 下载对应系统的压缩包。
@@ -264,7 +274,7 @@ ullage daemon stop
 ullage daemon uninstall
 ```
 
-`brew install` 和 `brew upgrade` 会自行执行 `ullage daemon install` 和 `ullage daemon start`，把 LaunchAgent（或 systemd 用户单元）钉到当前 Cellar keg 路径。
+`brew install` 和 `brew upgrade` 会自行执行 `ullage daemon install` 和 `ullage daemon start`，把 LaunchAgent（或 systemd 用户单元）钉到当前 Cellar keg 路径。WinGet 没有安装后钩子，所以 Windows 在 `winget install` 和 `winget upgrade` 之后仍需手动执行这两条命令。
 
 `install` / `uninstall` 只管理启动项。配置、凭据、快照和日志会留下。`status` 在已认证的本机端点可达时报告守护进程在线；否则区分已安装但已停止，与未安装。在线表格输出包含 `CREDENTIAL_BACKEND`（`linux_secret_service`、`macos_keychain`、`windows_credential_manager`、`file_fallback` 或 `other_platform`）。JSON 在 `payload.credential_backend` 上使用相同标识符。
 

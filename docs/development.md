@@ -140,3 +140,25 @@ instead of kickstarting the previously loaded LaunchAgent. Those commands
 use `quiet_system`: a missing GUI session or systemd user bus must not fail
 `brew install`. Do not add a Homebrew `service do` block; the daemon's own
 user-level unit has the path and permission rules.
+
+## WinGet
+
+`winget install Dualface.Ullage` installs the GitHub Release zip as a
+portable `ullage.exe`. WinGet has no post-install hook, so the user-level
+scheduled task is not registered automatically.
+
+After a `v*` tag, the Release workflow opens a PR against
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) when the
+`WINGET_TOKEN` secret is set (a PAT that can fork that repository and open
+pull requests). `GITHUB_TOKEN` cannot.
+
+To repair or submit manifests from a published tag:
+
+```sh
+scripts/sync-winget.sh v0.1.2
+```
+
+`--dry-run --checksums FILE` prints the three YAML files without opening a
+PR. The installer must declare `NestedInstallerType: portable` and
+`RelativeFilePath: ullage-x86_64-pc-windows-msvc/ullage.exe`, matching the
+Windows zip layout from the Release workflow.

@@ -21,6 +21,18 @@ Linux needs [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux) first.
 The formula installs the GitHub Release binary for the current OS and CPU,
 then runs `ullage daemon install` and `ullage daemon start`.
 
+**WinGet** (Windows)
+
+```powershell
+winget install Dualface.Ullage
+ullage daemon install
+ullage daemon start
+```
+
+WinGet copies the portable `ullage.exe`. It does not run those daemon
+commands. After `winget upgrade`, run them again so the scheduled task pins
+the new portable path.
+
 **GitHub Releases**
 
 Download the archive for your OS from
@@ -322,7 +334,9 @@ ullage daemon uninstall
 
 `brew install` and `brew upgrade` run `ullage daemon install` and
 `ullage daemon start` themselves so the LaunchAgent (or systemd user unit)
-pins the current Cellar keg path.
+pins the current Cellar keg path. WinGet has no post-install hook, so
+Windows still needs those two commands after `winget install` and
+`winget upgrade`.
 
 `install` / `uninstall` manage the startup entry only. Configuration,
 credentials, snapshots, and logs remain. `status` reports a live daemon when
