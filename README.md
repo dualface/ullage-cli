@@ -17,25 +17,53 @@ The binary is `target/release/ullage`. There is no installer or package in this
 release. Place the binary on your `PATH` if you want the user-level service
 commands to find it at a stable location.
 
-## Ullage Mac
+## Authentication
 
-The Apple Silicon menu bar client lives in the sibling repository
-`ullage-mac-app`. Check that repository out next to this one
-(`~/works/ullage-mac-app` beside `~/works/ullage`). It embeds the `ullage`
-daemon from this workspace at bundle time. Build, signing, and notarization
-instructions are in that README.
+Interactive login needs a terminal (stdin and stderr). It selects a provider,
+creates or reuses an account, prints the authorization URL, waits for the
+callback value the provider asks for (or polls a device-code flow), verifies
+the stored credential, then asks for an account label:
 
-Remote mode still uses `ullage device pair` from this binary.
+```sh
+ullage auth login
+ullage auth login claude
+```
+
+You do not need the internal account ID or `ULLAGE_AUTH_CODE`. Providers
+describe what to paste (Claude: the full callback URL or `code#state`;
+ChatGPT: the `code` query value). Grok's device-code flow and Cursor's
+browser sign-in have nothing to paste; both open a page and finish on their
+own. `--method api-token` keeps Cursor's older path, where you create a User
+API Key at cursor.com/dashboard and type it without echo.
+
+Scripts keep the two-step path:
+
+```sh
+ullage auth login <provider> --account <account-id>
+ullage auth complete <provider> --account <account-id> <flow-id>
+ullage auth status <provider> --account <account-id>
+ullage auth logout <provider> --account <account-id>
+```
+
+`auth complete` reads the authorization code from `ULLAGE_AUTH_CODE` by default
+(or `--authorization-code-env`). Tokens, codes, and API keys are not placed in
+process arguments. Interactive login reads them from stdin instead.
+
+`--diagnose` (or `ULLAGE_DIAGNOSE=1`) shows sanitized partial-failure scope
+and category on `show` and `probe`. On authentication and probe command
+failures it also asks the daemon to attach the provider's own error text.
+Default error output is still a stable kind. Without that opt-in, a diagnostic
+on the daemon response is rejected as invalid.
 
 ## Data paths
 
 Default paths:
 
-| Platform | Config | State | Control |
-|---|---|---|---|
-| Linux | `$XDG_CONFIG_HOME/ullage/config.json` or `~/.config/ullage/config.json` | `$XDG_STATE_HOME/ullage/state.json` or `~/.local/state/ullage/state.json`; paired devices in `devices.json` beside that file | `$XDG_RUNTIME_DIR/ullage/control.sock` |
-| macOS | `~/Library/Application Support/Ullage/config.json` | `~/Library/Application Support/Ullage/state.json`; paired devices in `devices.json` beside that file | `$TMPDIR/ullage-<uid>/control.sock` |
-| Windows | `%APPDATA%\Ullage\config.json` | `%LOCALAPPDATA%\Ullage\state.json`; paired devices in `devices.json` beside that file | `\\.\pipe\ullage-<user-scope>` |
+| Platform | Config                                                                  | State                                                                                                                        | Control                                |
+| -------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| Linux    | `$XDG_CONFIG_HOME/ullage/config.json` or `~/.config/ullage/config.json` | `$XDG_STATE_HOME/ullage/state.json` or `~/.local/state/ullage/state.json`; paired devices in `devices.json` beside that file | `$XDG_RUNTIME_DIR/ullage/control.sock` |
+| macOS    | `~/Library/Application Support/Ullage/config.json`                      | `~/Library/Application Support/Ullage/state.json`; paired devices in `devices.json` beside that file                         | `$TMPDIR/ullage-<uid>/control.sock`    |
+| Windows  | `%APPDATA%\Ullage\config.json`                                          | `%LOCALAPPDATA%\Ullage\state.json`; paired devices in `devices.json` beside that file                                        | `\\.\pipe\ullage-<user-scope>`         |
 
 Overrides: `ULLAGE_CONFIG_FILE`, `ULLAGE_STATE_FILE`, `ULLAGE_CONTROL_SOCKET`
 (Unix), `ULLAGE_CONTROL_PIPE` (Windows).
@@ -258,44 +286,6 @@ keep list, naming rows to show. Names match by exact, case-insensitive display
 name and ignore the window a row belongs to. An invalid name exits `64`
 without contacting the daemon.
 
-## Authentication
-
-Interactive login needs a terminal (stdin and stderr). It selects a provider,
-creates or reuses an account, prints the authorization URL, waits for the
-callback value the provider asks for (or polls a device-code flow), verifies
-the stored credential, then asks for an account label:
-
-```sh
-ullage auth login
-ullage auth login claude
-```
-
-You do not need the internal account ID or `ULLAGE_AUTH_CODE`. Providers
-describe what to paste (Claude: the full callback URL or `code#state`;
-ChatGPT: the `code` query value). Grok's device-code flow and Cursor's
-browser sign-in have nothing to paste; both open a page and finish on their
-own. `--method api-token` keeps Cursor's older path, where you create a User
-API Key at cursor.com/dashboard and type it without echo.
-
-Scripts keep the two-step path:
-
-```sh
-ullage auth login <provider> --account <account-id>
-ullage auth complete <provider> --account <account-id> <flow-id>
-ullage auth status <provider> --account <account-id>
-ullage auth logout <provider> --account <account-id>
-```
-
-`auth complete` reads the authorization code from `ULLAGE_AUTH_CODE` by default
-(or `--authorization-code-env`). Tokens, codes, and API keys are not placed in
-process arguments. Interactive login reads them from stdin instead.
-
-`--diagnose` (or `ULLAGE_DIAGNOSE=1`) shows sanitized partial-failure scope
-and category on `show` and `probe`. On authentication and probe command
-failures it also asks the daemon to attach the provider's own error text.
-Default error output is still a stable kind. Without that opt-in, a diagnostic
-on the daemon response is rejected as invalid.
-
 ## Probe and show
 
 ```sh
@@ -433,7 +423,7 @@ arguments and unrecognized flags use a generic static message instead.
 JSON and pretty-json use the same envelope with optional fields:
 
 ```json
-{"status":"error","error":{"kind":"usage","message":"..."}}
+{ "status": "error", "error": { "kind": "usage", "message": "..." } }
 ```
 
 `message` carries parse-error text when present. `hint` carries static guidance
@@ -444,7 +434,7 @@ stdout and exit `0`. Parse and usage mistakes exit `64`.
 Example runtime error:
 
 ```json
-{"status":"error","error":{"kind":"timeout"}}
+{ "status": "error", "error": { "kind": "timeout" } }
 ```
 
 Partial usage uses `"outcome":"partial"` plus `failures`. CLI exit status `2`
