@@ -62,6 +62,8 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/ullage.exe" $staging/
           Copy-Item LICENSE $staging/
           Copy-Item README.md $staging/
+          # Keep the staging directory so WinGet RelativeFilePath stays
+          # ullage-x86_64-pc-windows-msvc/ullage.exe.
           Compress-Archive -Path $staging -DestinationPath "${{ matrix.archive }}"
       - uses: actions/upload-artifact@v4
         with:
@@ -73,6 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -100,3 +103,16 @@ jobs:
           git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
           gh auth setup-git
           ./scripts/sync-homebrew-tap.sh --skip-wait --checksums dist/checksums.txt "${GITHUB_REF_NAME}"
+      # Opens a PR against microsoft/winget-pkgs from Dualface.Ullage
+      # manifests. Needs WINGET_TOKEN: a PAT that can fork that repository
+      # and open PRs. Without the secret, repair with:
+      # scripts/sync-winget.sh --checksums dist/checksums.txt <tag>
+      - name: Submit WinGet package
+        if: env.WINGET_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          gh auth setup-git
+          ./scripts/sync-winget.sh --skip-wait --checksums dist/checksums.txt "${GITHUB_REF_NAME}"
