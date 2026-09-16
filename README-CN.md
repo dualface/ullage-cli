@@ -14,7 +14,7 @@ Ullage 是本地守护进程和 CLI，用来查看 Claude、ChatGPT、Grok 和 C
 brew install dualface/tap/ullage
 ```
 
-Linux 需要先安装 [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux)。公式会按当前系统和 CPU 安装 GitHub Release 里的预编译二进制。
+Linux 需要先安装 [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux)。公式会按当前系统和 CPU 安装 GitHub Release 里的预编译二进制，然后执行 `ullage daemon install` 和 `ullage daemon start`。
 
 **GitHub Releases**
 
@@ -264,7 +264,7 @@ ullage daemon stop
 ullage daemon uninstall
 ```
 
-`brew upgrade` 之后请再执行一次 `ullage daemon install`，以便 LaunchAgent（或 systemd 用户单元）钉到新的 Cellar keg 实路径，而不是旧 keg。
+`brew install` 和 `brew upgrade` 会自行执行 `ullage daemon install` 和 `ullage daemon start`，把 LaunchAgent（或 systemd 用户单元）钉到当前 Cellar keg 路径。
 
 `install` / `uninstall` 只管理启动项。配置、凭据、快照和日志会留下。`status` 在已认证的本机端点可达时报告守护进程在线；否则区分已安装但已停止，与未安装。在线表格输出包含 `CREDENTIAL_BACKEND`（`linux_secret_service`、`macos_keychain`、`windows_credential_manager`、`file_fallback` 或 `other_platform`）。JSON 在 `payload.credential_backend` 上使用相同标识符。
 

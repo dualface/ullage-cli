@@ -133,3 +133,10 @@ scripts/sync-homebrew-tap.sh v0.1.1
 `--dry-run --checksums FILE` prints the formula without pushing. The formula
 must include `on_linux` / `on_arm` and `on_linux` / `on_intel` blocks; a
 Linux-only Intel URL leaves ARM Linuxbrew users without an install.
+
+`post_install` runs `ullage daemon stop`, `install`, and `start` against the
+Cellar keg binary. Stop comes first so an upgrade bootstraps the new keg
+instead of kickstarting the previously loaded LaunchAgent. Those commands
+use `quiet_system`: a missing GUI session or systemd user bus must not fail
+`brew install`. Do not add a Homebrew `service do` block; the daemon's own
+user-level unit has the path and permission rules.

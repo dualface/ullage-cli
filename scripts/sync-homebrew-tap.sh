@@ -184,10 +184,27 @@ class Ullage < Formula
     bin.install "ullage"
   end
 
+  def post_install
+    # Stop first so an upgrade bootstraps the new Cellar keg. kickstart of a
+    # still-loaded job would keep the previous ProgramArguments.
+    ohai "Installing and starting the Ullage user daemon"
+    quiet_system bin/"ullage", "daemon", "stop"
+    unless quiet_system bin/"ullage", "daemon", "install"
+      opoo "Could not install the user daemon. Run: ullage daemon install && ullage daemon start"
+      return
+    end
+    return if quiet_system bin/"ullage", "daemon", "start"
+
+    opoo "Could not start the user daemon. Run: ullage daemon start"
+  end
+
   def caveats
     <<~EOS
-      After \`brew upgrade\`, run \`ullage daemon install\` again so the user-level
-      service pins the new Cellar keg path.
+      brew install and brew upgrade install and start the user-level daemon.
+      After an upgrade they pin the new Cellar keg path. If that step was
+      skipped, run:
+        ullage daemon install
+        ullage daemon start
     EOS
   end
 

@@ -18,7 +18,8 @@ brew install dualface/tap/ullage
 ```
 
 Linux needs [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux) first.
-The formula installs the GitHub Release binary for the current OS and CPU.
+The formula installs the GitHub Release binary for the current OS and CPU,
+then runs `ullage daemon install` and `ullage daemon start`.
 
 **GitHub Releases**
 
@@ -319,8 +320,9 @@ ullage daemon stop
 ullage daemon uninstall
 ```
 
-After `brew upgrade`, run `ullage daemon install` again so the LaunchAgent (or
-systemd user unit) pins the new Cellar keg path instead of the previous keg.
+`brew install` and `brew upgrade` run `ullage daemon install` and
+`ullage daemon start` themselves so the LaunchAgent (or systemd user unit)
+pins the current Cellar keg path.
 
 `install` / `uninstall` manage the startup entry only. Configuration,
 credentials, snapshots, and logs remain. `status` reports a live daemon when

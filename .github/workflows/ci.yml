@@ -44,6 +44,8 @@ jobs:
           printf '%s\n' "$formula" | grep -q 'aarch64-unknown-linux-gnu'
           printf '%s\n' "$formula" | grep -q 'x86_64-unknown-linux-gnu'
           printf '%s\n' "$formula" | grep -q 'ullage daemon install'
+          printf '%s\n' "$formula" | grep -q 'def post_install'
+          printf '%s\n' "$formula" | grep -q 'daemon", "start'
 
   linuxbrew:
     runs-on: ubuntu-24.04
