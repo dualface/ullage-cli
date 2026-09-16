@@ -48,8 +48,7 @@ the stored credential, then asks for an account label:
 ullage auth login
 ```
 
-You do not need the internal account ID or `ULLAGE_AUTH_CODE`. Each provider
-says what to paste:
+You do not need the internal account ID. Each provider says what to paste:
 
 - Claude: the full callback URL or `code#state`
 - ChatGPT: the `code` query value
@@ -58,25 +57,6 @@ says what to paste:
 - Cursor: browser sign-in; nothing to paste. Opens a page and finishes on its
   own. `--method api-token` keeps the older path: create a User API Key at
   cursor.com/dashboard and type it without echo
-
-Scripts keep the two-step path:
-
-```sh
-ullage auth login <provider> --account <account-id>
-ullage auth complete <provider> --account <account-id> <flow-id>
-ullage auth status <provider> --account <account-id>
-ullage auth logout <provider> --account <account-id>
-```
-
-`auth complete` reads the authorization code from `ULLAGE_AUTH_CODE` by default
-(or `--authorization-code-env`). Tokens, codes, and API keys are not placed in
-process arguments. Interactive login reads them from stdin instead.
-
-`--diagnose` (or `ULLAGE_DIAGNOSE=1`) shows sanitized partial-failure scope
-and category on `show` and `probe`. On authentication and probe command
-failures it also asks the daemon to attach the provider's own error text.
-Default error output is still a stable kind. Without that opt-in, a diagnostic
-on the daemon response is rejected as invalid.
 
 After login, `ullage show --all` looks like this:
 
@@ -464,6 +444,12 @@ it affects table output only and is a no-op for `--output json` and
 `--output pretty-json`. Without `--reveal`, account labels, auth URIs, flow IDs,
 and similar personal values are replaced with `[redacted]`. `--raw` does not
 change what is redacted. Error details stay redacted even with `--reveal`.
+
+`--diagnose` (or `ULLAGE_DIAGNOSE=1`) shows sanitized partial-failure scope and
+category on `show` and `probe`. On authentication and probe command failures it
+also asks the daemon to attach the provider's own error text. Default error
+output is still a stable kind. Without that opt-in, a diagnostic on the daemon
+response is rejected as invalid.
 
 ## JSON schema
 

@@ -40,25 +40,12 @@ cargo build --release -p ullage-cli
 ullage auth login
 ```
 
-不需要内部账户 ID，也不需要 `ULLAGE_AUTH_CODE`。各提供方会说明该粘贴什么：
+不需要内部账户 ID。各提供方会说明该粘贴什么：
 
 - Claude：完整回调 URL 或 `code#state`
 - ChatGPT：`code` 查询值
 - Grok：设备码流程，没有可粘贴的内容。打开页面并自行完成
 - Cursor：浏览器登录，没有可粘贴的内容。打开页面并自行完成。`--method api-token` 保留旧路径：在 cursor.com/dashboard 创建 User API Key，然后无回显地输入
-
-脚本仍走两步路径：
-
-```sh
-ullage auth login <provider> --account <account-id>
-ullage auth complete <provider> --account <account-id> <flow-id>
-ullage auth status <provider> --account <account-id>
-ullage auth logout <provider> --account <account-id>
-```
-
-`auth complete` 默认从 `ULLAGE_AUTH_CODE` 读取授权码（或 `--authorization-code-env`）。令牌、授权码和 API 密钥不会放进进程参数。交互式登录改为从 stdin 读取。
-
-`--diagnose`（或 `ULLAGE_DIAGNOSE=1`）会在 `show` 和 `probe` 上显示已脱敏的部分失败范围和类别。认证和探测命令失败时，还会让守护进程附带提供方自己的错误文本。默认错误输出仍是稳定的 kind。未显式开启时，守护进程响应上的诊断信息会被视为无效并拒绝。
 
 登录之后，`ullage show --all` 看起来像这样：
 
@@ -341,6 +328,8 @@ Weekly Opus  usage  remains 89%  resets in 5d15h  [-#########]
 ```
 
 全局输出标志：`--output table|json|pretty-json`、`--color auto|always|never`、`--raw` 和 `--reveal`。`--color` 默认为 `auto`：当 stdout 是终端且 `NO_COLOR` 未设置或为空时给表格上色。JSON 和 pretty-json 输出从不上色。`--raw` 用未翻译的提供方表（`WINDOW`、`MEASUREMENT`、`USED`、`LIMIT`、`UNIT`、`RESETS_AT`）替换摘要；它只影响表格输出，对 `--output json` 和 `--output pretty-json` 是空操作。不给 `--reveal` 时，账户标签、授权 URI、流程 ID 以及类似个人值会替换成 `[redacted]`。`--raw` 不改变哪些内容被脱敏。即使给了 `--reveal`，错误细节仍保持脱敏。
+
+`--diagnose`（或 `ULLAGE_DIAGNOSE=1`）会在 `show` 和 `probe` 上显示已脱敏的部分失败范围和类别。认证和探测命令失败时，还会让守护进程附带提供方自己的错误文本。默认错误输出仍是稳定的 kind。未显式开启时，守护进程响应上的诊断信息会被视为无效并拒绝。
 
 ## JSON 结构
 
