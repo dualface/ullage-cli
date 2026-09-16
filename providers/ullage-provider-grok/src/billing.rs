@@ -965,7 +965,7 @@ fn parse_products(
             let product = fields(object, &["product", "name", "id", "category"])
                 .into_iter()
                 .find_map(string_value);
-            let used = fields(
+            let used_values = fields(
                 object,
                 &[
                     "usage_percent",
@@ -974,14 +974,18 @@ fn parse_products(
                     "used_percent",
                     "value",
                 ],
-            )
-            .into_iter()
-            .find_map(non_negative_number);
-            match (product, used) {
-                (Some(product), Some(usage_percent)) => Some(GrokProductUsage {
+            );
+            let used_present = !used_values.is_empty();
+            let used = used_values.into_iter().find_map(non_negative_number);
+            match (product, used, used_present) {
+                (Some(product), Some(usage_percent), _) => Some(GrokProductUsage {
                     product,
                     usage_percent,
                 }),
+                // SuperGrok Heavy lists GrokChat / GrokImagine with a name and
+                // no percent. Omit them; a missing measurement is not a
+                // protocol failure.
+                (Some(_), None, false) => None,
                 _ => {
                     failures.push(failure(format!("products[{index}]")));
                     None
