@@ -412,17 +412,17 @@ mod windows {
                 Some(TaskMarkerState::Installed(task)) => {
                     require_task_definition(&schtasks, &task)?;
                     require(&schtasks, &args(&["/Query", "/TN", task.as_str()]))?;
-                    let arguments = windows_create_arguments(executable, &task, true)?;
-                    require(&schtasks, &arguments)
+                    register_scheduled_task(&schtasks, executable, &task, true)
                 }
                 Some(TaskMarkerState::Pending(task)) => {
                     recover_pending_install(&schtasks, executable, &task)
                 }
                 None => {
                     let task = new_task_name()?;
-                    let arguments = windows_create_arguments(executable, &task, false)?;
                     create_pending_task_marker(&task)?;
-                    if let Err(create_error) = require(&schtasks, &arguments) {
+                    if let Err(create_error) =
+                        register_scheduled_task(&schtasks, executable, &task, false)
+                    {
                         return match remove_task_marker() {
                             Ok(()) => Err(create_error),
                             Err(_) => Err("daemon task creation and marker rollback failed".into()),
@@ -637,8 +637,7 @@ mod windows {
     ) -> Result<(), String> {
         match pending_install_recovery(task_definition_exists(schtasks, task)?) {
             PendingInstallRecovery::CreateTask => {
-                let arguments = windows_create_arguments(executable, task, false)?;
-                require(schtasks, &arguments)?;
+                register_scheduled_task(schtasks, executable, task, false)?;
             }
             PendingInstallRecovery::FinalizeMarker => {
                 require(schtasks, &args(&["/Query", "/TN", task]))?;
@@ -646,6 +645,55 @@ mod windows {
         }
         let mut marker = open_task_marker_for_update()?;
         finalize_task_marker(&mut marker)
+    }
+
+    /// Register via `/XML` so the executable and `__daemon` stay separate
+    /// arguments. A single `/TR` string is re-parsed by CreateProcess and can
+    /// reject even paths without spaces after Rust quotes the argv element.
+    fn register_scheduled_task(
+        schtasks: &Path,
+        executable: &Path,
+        task: &str,
+        replace: bool,
+    ) -> Result<(), String> {
+        use std::io::Write;
+
+        let xml = render_windows_task_xml(executable)?;
+        let xml_path = task_xml_path(task)?;
+        let mut file = ullage_auth::create_private_windows_file(&xml_path)
+            .map_err(|_| "private task definition could not be created")?;
+        // schtasks requires a Unicode (UTF-16 LE) task file.
+        let write_result = (|| -> Result<(), String> {
+            file.write_all(&[0xFF, 0xFE])
+                .map_err(|_| "task definition could not be written".to_owned())?;
+            for unit in xml.encode_utf16() {
+                file.write_all(&unit.to_le_bytes())
+                    .map_err(|_| "task definition could not be written".to_owned())?;
+            }
+            file.sync_all()
+                .map_err(|_| "task definition could not be synchronized".to_owned())
+        })();
+        if let Err(error) = write_result {
+            drop(file);
+            let _ = std::fs::remove_file(&xml_path);
+            return Err(error);
+        }
+        drop(file);
+        let arguments = windows_create_arguments(task, &xml_path, replace);
+        let result = require(schtasks, &arguments);
+        let _ = std::fs::remove_file(&xml_path);
+        result
+    }
+
+    fn task_xml_path(task: &str) -> Result<PathBuf, String> {
+        let nonce = task
+            .rsplit('-')
+            .next()
+            .ok_or("service task name is invalid")?;
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|root| root.join(format!("Ullage/task-create-{nonce}.xml")))
+            .ok_or_else(|| "Windows local data directory unavailable".into())
     }
 
     fn stop_pending_task(schtasks: &Path, task: &str) -> Result<bool, String> {
@@ -917,22 +965,61 @@ const fn pending_uninstall_recovery(task_exists: bool) -> PendingUninstallRecove
 }
 
 #[cfg(any(windows, test))]
-fn windows_create_arguments(
-    executable: &Path,
-    task: &str,
-    replace: bool,
-) -> Result<Vec<OsString>, String> {
-    let command = quote_task_command(executable)?;
-    let mut arguments: Vec<OsString> = ["/Create", "/SC", "ONLOGON", "/TN", task, "/TR"]
+fn windows_create_arguments(task: &str, xml_path: &Path, replace: bool) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = ["/Create", "/TN", task, "/XML"]
         .into_iter()
         .map(OsString::from)
-        .chain([OsString::from(command)])
+        .chain([OsString::from(xml_path.as_os_str())])
         .collect();
     if replace {
         arguments.push(OsString::from("/F"));
     }
-    arguments.extend(["/RL", "LIMITED"].into_iter().map(OsString::from));
-    Ok(arguments)
+    arguments
+}
+
+#[cfg(any(windows, test))]
+fn render_windows_task_xml(executable: &Path) -> Result<String, String> {
+    let executable = executable
+        .to_str()
+        .ok_or("service executable path is not Unicode")?;
+    // Reject characters that Task Scheduler still expands or that break XML
+    // safely; Command and Arguments stay separate so paths with spaces work.
+    if executable.contains(['"', '%']) || executable.chars().any(|character| character.is_control())
+    {
+        return Err("service executable path cannot be safely quoted".into());
+    }
+    let executable = xml_escape(executable)?;
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n\
+<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n\
+  <Triggers>\n\
+    <LogonTrigger>\n\
+      <Enabled>true</Enabled>\n\
+    </LogonTrigger>\n\
+  </Triggers>\n\
+  <Principals>\n\
+    <Principal id=\"Author\">\n\
+      <LogonType>InteractiveToken</LogonType>\n\
+      <RunLevel>LeastPrivilege</RunLevel>\n\
+    </Principal>\n\
+  </Principals>\n\
+  <Settings>\n\
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n\
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n\
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n\
+    <AllowStartOnDemand>true</AllowStartOnDemand>\n\
+    <Enabled>true</Enabled>\n\
+    <Hidden>false</Hidden>\n\
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n\
+  </Settings>\n\
+  <Actions Context=\"Author\">\n\
+    <Exec>\n\
+      <Command>{executable}</Command>\n\
+      <Arguments>__daemon</Arguments>\n\
+    </Exec>\n\
+  </Actions>\n\
+</Task>\n"
+    ))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -978,7 +1065,7 @@ fn render_plist(executable: &Path, home: &Path) -> Result<String, String> {
     ))
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn xml_escape(value: &str) -> Result<String, String> {
     if value.chars().any(|character| character.is_control()) {
         return Err("service path contains control characters".into());
@@ -989,18 +1076,6 @@ fn xml_escape(value: &str) -> Result<String, String> {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;"))
-}
-
-#[cfg(any(windows, test))]
-fn quote_task_command(executable: &Path) -> Result<String, String> {
-    let executable = executable
-        .to_str()
-        .ok_or("service executable path is not Unicode")?;
-    if executable.contains(['"', '%']) || executable.chars().any(|character| character.is_control())
-    {
-        return Err("service executable path cannot be safely quoted".into());
-    }
-    Ok(format!("\"{executable}\" __daemon"))
 }
 
 #[cfg(test)]
@@ -1033,46 +1108,53 @@ mod tests {
     fn templates_reject_control_characters() {
         assert!(render_unit(Path::new("/tmp/ullage\nother")).is_err());
         assert!(render_plist(Path::new("/tmp/ullage"), Path::new("/Users/bad\nuser")).is_err());
-        assert!(quote_task_command(Path::new("C:\\Ullage\nother.exe")).is_err());
-        assert!(quote_task_command(Path::new(r"C:\%TEMP%\ullage.exe")).is_err());
+        assert!(render_windows_task_xml(Path::new("C:\\Ullage\nother.exe")).is_err());
+        assert!(render_windows_task_xml(Path::new(r"C:\%TEMP%\ullage.exe")).is_err());
+        assert!(render_windows_task_xml(Path::new(r#"C:\bad"quote\ullage.exe"#)).is_err());
     }
 
     #[test]
-    fn windows_task_command_quotes_the_executable_without_a_shell() {
-        let executable = Path::new(r"C:\Program Files\Ullage\ullage.exe");
+    fn windows_task_xml_separates_executable_and_daemon_argument() {
+        let spaced = Path::new(r"C:\Program Files\Ullage\ullage.exe");
+        let plain = Path::new(r"C:\Users\test\Downloads\ullage.exe");
         let task = "Ullage-user-scope";
+        let xml_path = Path::new(r"C:\Users\test\AppData\Local\Ullage\task-create-abc.xml");
+
+        let spaced_xml = render_windows_task_xml(spaced).unwrap();
+        assert!(spaced_xml.contains(
+            "<Command>C:\\Program Files\\Ullage\\ullage.exe</Command>"
+        ));
+        assert!(spaced_xml.contains("<Arguments>__daemon</Arguments>"));
+        assert!(spaced_xml.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        assert!(spaced_xml.contains("<LogonTrigger>"));
+        assert!(!spaced_xml.contains("/TR"));
+
+        let plain_xml = render_windows_task_xml(plain).unwrap();
+        assert!(plain_xml.contains(
+            "<Command>C:\\Users\\test\\Downloads\\ullage.exe</Command>"
+        ));
+        assert!(plain_xml.contains("<Arguments>__daemon</Arguments>"));
+
         assert_eq!(
-            quote_task_command(executable).unwrap(),
-            r#""C:\Program Files\Ullage\ullage.exe" __daemon"#
-        );
-        assert_eq!(
-            windows_create_arguments(executable, task, false).unwrap(),
+            windows_create_arguments(task, xml_path, false),
             [
                 "/Create",
-                "/SC",
-                "ONLOGON",
                 "/TN",
                 "Ullage-user-scope",
-                "/TR",
-                r#""C:\Program Files\Ullage\ullage.exe" __daemon"#,
-                "/RL",
-                "LIMITED",
+                "/XML",
+                r"C:\Users\test\AppData\Local\Ullage\task-create-abc.xml",
             ]
             .map(OsString::from)
         );
         assert_eq!(
-            windows_create_arguments(executable, task, true).unwrap(),
+            windows_create_arguments(task, xml_path, true),
             [
                 "/Create",
-                "/SC",
-                "ONLOGON",
                 "/TN",
                 "Ullage-user-scope",
-                "/TR",
-                r#""C:\Program Files\Ullage\ullage.exe" __daemon"#,
+                "/XML",
+                r"C:\Users\test\AppData\Local\Ullage\task-create-abc.xml",
                 "/F",
-                "/RL",
-                "LIMITED",
             ]
             .map(OsString::from)
         );
