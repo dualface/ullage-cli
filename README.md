@@ -11,11 +11,14 @@ platform credential store by default; configuration never contains secrets.
 
 The command is `ullage`. The crates.io package name is `ullage-cli`.
 
-**Homebrew**
+**Homebrew** (macOS and Linux)
 
 ```sh
 brew install dualface/tap/ullage
 ```
+
+Linux needs [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux) first.
+The formula installs the GitHub Release binary for the current OS and CPU.
 
 **GitHub Releases**
 

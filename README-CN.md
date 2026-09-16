@@ -8,11 +8,13 @@ Ullage 是本地守护进程和 CLI，用来查看 Claude、ChatGPT、Grok 和 C
 
 命令名是 `ullage`。crates.io 包名是 `ullage-cli`。
 
-**Homebrew**
+**Homebrew**（macOS 和 Linux）
 
 ```sh
 brew install dualface/tap/ullage
 ```
+
+Linux 需要先安装 [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux)。公式会按当前系统和 CPU 安装 GitHub Release 里的预编译二进制。
 
 **GitHub Releases**
 
