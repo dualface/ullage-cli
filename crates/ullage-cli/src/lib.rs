@@ -489,30 +489,13 @@ async fn merge_configured_accounts(
 
 #[cfg(unix)]
 fn control_endpoint() -> PathBuf {
-    std::env::var_os("ULLAGE_CONTROL_SOCKET")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .map(PathBuf::from)
-                .map(|path| path.join("ullage/control.sock"))
-        })
-        .unwrap_or_else(|| {
-            // SAFETY: `geteuid` has no arguments and no memory-safety preconditions.
-            let user_id = unsafe { libc::geteuid() };
-            std::env::temp_dir()
-                .join(format!("ullage-{user_id}"))
-                .join("control.sock")
-        })
+    ullage_cli::control_endpoint_from_environment()
 }
 
 #[cfg(windows)]
 fn control_endpoint() -> Result<PathBuf, String> {
-    if let Some(endpoint) = std::env::var_os("ULLAGE_CONTROL_PIPE") {
-        return Ok(PathBuf::from(endpoint));
-    }
-    let scope = ullage_auth::current_windows_user_scope()
-        .map_err(|_| "current Windows user identity unavailable")?;
-    Ok(PathBuf::from(format!(r"\\.\pipe\ullage-{scope}")))
+    ullage_cli::control_endpoint_from_environment()
+        .ok_or_else(|| "current Windows user identity unavailable".to_owned())
 }
 
 fn state_path() -> Result<PathBuf, String> {

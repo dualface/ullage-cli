@@ -32,7 +32,7 @@ pub use cli::{
     AccountCommand, AuthCommand, AuthMethodArg, Cli, ColorMode, Command, DaemonCommand,
     DeviceCommand, OutputFormat, ProbeArgs, ProviderCommand, ShowArgs,
 };
-pub use transport::SystemClient;
+pub use transport::{SystemClient, control_endpoint_from_environment};
 
 pub(crate) use errors::{
     control_error_kind, error_hint, error_hint_for_control, error_output_with_options,

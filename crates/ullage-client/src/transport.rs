@@ -73,26 +73,42 @@ fn classify_readiness_response(
     }
 }
 
+/// The control endpoint the environment resolves: the
+/// `ULLAGE_CONTROL_SOCKET`/`ULLAGE_CONTROL_PIPE` override, then the per-user
+/// default. The daemon binds this address as configured; [`SystemClient`]
+/// applies its own trust checks on top.
+#[cfg(unix)]
+pub fn control_endpoint_from_environment() -> PathBuf {
+    std::env::var_os("ULLAGE_CONTROL_SOCKET")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .map(|runtime| runtime.join("ullage/control.sock"))
+        })
+        .unwrap_or_else(default_unix_control_socket)
+}
+
+/// The Windows analogue: `ULLAGE_CONTROL_PIPE`, then the per-user pipe name.
+/// `None` only when the current user's scope cannot be determined.
+#[cfg(windows)]
+pub fn control_endpoint_from_environment() -> Option<PathBuf> {
+    std::env::var_os("ULLAGE_CONTROL_PIPE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            ullage_auth::current_windows_user_scope()
+                .ok()
+                .map(|scope| PathBuf::from(format!(r"\\.\pipe\ullage-{scope}")))
+        })
+}
+
 impl SystemClient {
     pub fn from_environment() -> Self {
         #[cfg(unix)]
-        let endpoint = std::env::var_os("ULLAGE_CONTROL_SOCKET")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("XDG_RUNTIME_DIR")
-                    .map(PathBuf::from)
-                    .map(|runtime| runtime.join("ullage/control.sock"))
-            })
-            .or_else(|| Some(default_unix_control_socket()));
+        let endpoint = Some(control_endpoint_from_environment());
         #[cfg(windows)]
-        let endpoint = std::env::var_os("ULLAGE_CONTROL_PIPE")
-            .map(PathBuf::from)
-            .or_else(|| {
-                ullage_auth::current_windows_user_scope()
-                    .ok()
-                    .map(|scope| PathBuf::from(format!(r"\\.\pipe\ullage-{scope}")))
-            })
-            .filter(|path| is_local_windows_pipe(path));
+        let endpoint =
+            control_endpoint_from_environment().filter(|path| is_local_windows_pipe(path));
         Self { endpoint }
     }
 
