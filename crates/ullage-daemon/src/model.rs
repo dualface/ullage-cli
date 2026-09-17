@@ -101,6 +101,7 @@ pub enum SanitizedError {
     Timeout,
     Cancelled,
     ProviderNotFound,
+    AccountNotFound,
     Storage,
 }
 
@@ -126,12 +127,16 @@ impl SanitizedError {
             ProbeError::Timeout => Self::Timeout,
             ProbeError::Cancelled => Self::Cancelled,
             ProbeError::Registry(_) => Self::ProviderNotFound,
-            ProbeError::AccountNotFound(_) => Self::ProviderNotFound,
+            ProbeError::AccountNotFound(_) => Self::AccountNotFound,
             ProbeError::Storage(_) => Self::Storage,
         }
     }
 }
 
+/// Single daemon-side name for the provider-error redaction policy. The body
+/// is intentionally a pass-through to `ProviderError::sanitized`: keeping one
+/// symbol here lets every redaction call site name the policy and gives the
+/// audit one place to check.
 pub(crate) fn sanitize_provider_error(error: ProviderError) -> ProviderError {
     error.sanitized()
 }
@@ -141,6 +146,9 @@ pub struct SnapshotRecord {
     pub account_id: AccountId,
     pub usage: QueryOutcome<SubscriptionUsage>,
     pub last_success_at: DateTime<Utc>,
+    /// Marks a snapshot written before a failed refresh, not an age check:
+    /// the engine sets it on a failed probe and clears it on the next success.
+    /// How old the data is can always be read from `last_success_at`.
     pub stale: bool,
     pub last_error: Option<SanitizedError>,
     pub last_error_at: Option<DateTime<Utc>>,

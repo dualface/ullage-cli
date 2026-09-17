@@ -51,15 +51,20 @@ struct EngineInner {
     failures: RwLock<BTreeMap<AccountId, FailureRecord>>,
     persist_lock: Mutex<()>,
     accounts: RwLock<BTreeMap<AccountId, Arc<AccountRuntime>>>,
+    /// Ids retired by removal. The set is never compacted: a tombstone keeps a
+    /// recreated account from being mistaken for the removed one.
     removed_accounts: RwLock<std::collections::BTreeSet<AccountId>>,
     accounts_changed: Notify,
     next_account_id: AtomicU64,
     global_limit: Arc<Semaphore>,
     provider_limits: HashMap<ProviderId, Arc<Semaphore>>,
-    default_provider_limit: usize,
     shutdown: watch::Sender<bool>,
     admission: StdMutex<FlightAdmission>,
     flights_idle: Notify,
+    #[cfg(test)]
+    test_panic_run_account: AtomicBool,
+    #[cfg(test)]
+    test_panic_flight_supervisor: AtomicBool,
 }
 
 #[derive(Default)]
@@ -74,6 +79,18 @@ struct AccountRuntime {
     state: Mutex<AccountRuntimeState>,
     schedule_changed: Notify,
 }
+
+/// Delay before a crashed per-account task is restarted, so a deterministic
+/// panic cannot spin the scheduler.
+const ACCOUNT_TASK_RESTART_DELAY: Duration = Duration::from_secs(1);
+
+/// Upper bound honored for a provider-supplied `Retry-After`. Without it a
+/// hostile or broken provider could park an account for decades.
+const MAXIMUM_RETRY_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Bound on a single `SnapshotStore::stage` call. A store that never returns
+/// must not wedge a flight and every waiter attached to it.
+const STORE_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl AccountRuntime {
     fn config(&self) -> AccountConfig {
@@ -92,8 +109,74 @@ struct AccountRuntimeState {
 }
 
 struct FlightState {
-    result: Mutex<Option<Result<QueryOutcome<SubscriptionUsage>, ProbeError>>>,
+    /// `StdMutex` so the watchdog `Drop` can still publish a result while the
+    /// supervisor task unwinds, where awaiting a tokio mutex is impossible.
+    result: StdMutex<Option<Result<QueryOutcome<SubscriptionUsage>, ProbeError>>>,
     completion: Notify,
+}
+
+/// Publishes a failure when the flight supervisor task dies before storing a
+/// result, so probe waiters are never left on a flight that cannot finish.
+struct FlightWatchdog {
+    inner: Arc<EngineInner>,
+    account: Arc<AccountRuntime>,
+    flight: Arc<FlightState>,
+}
+
+impl Drop for FlightWatchdog {
+    fn drop(&mut self) {
+        {
+            let mut result = self
+                .flight
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if result.is_some() {
+                return;
+            }
+            *result = Some(Err(ProbeError::Storage(
+                "daemon flight supervisor failed".into(),
+            )));
+        }
+        self.flight.completion.notify_waiters();
+        // Best effort only: the lock is held for microseconds elsewhere, and a
+        // missed cleanup is repaired on the next `start_probe_account` call.
+        if let Ok(mut state) = self.account.state.try_lock() {
+            if state
+                .current_flight
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.flight))
+            {
+                state.current_flight = None;
+            }
+            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+            let config = self.account.config();
+            state.next_probe_at = if config.enabled
+                && !self.account.removed.load(Ordering::Acquire)
+                && !*self.inner.shutdown.borrow()
+            {
+                let delay = next_delay(
+                    &config,
+                    state.consecutive_failures,
+                    Some(&ProbeError::Storage(
+                        "daemon flight supervisor failed".into(),
+                    )),
+                );
+                let delta = chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
+                Some(
+                    self.inner
+                        .clock
+                        .now()
+                        .checked_add_signed(delta)
+                        .unwrap_or(DateTime::<Utc>::MAX_UTC),
+                )
+            } else {
+                None
+            };
+            drop(state);
+            self.account.schedule_changed.notify_waiters();
+        }
+    }
 }
 
 struct FlightCompletion {
@@ -129,7 +212,6 @@ impl DaemonEngine {
         clock: Arc<dyn Clock>,
         store: Arc<dyn SnapshotStore>,
     ) -> Result<Self, DaemonError> {
-        crate::install_redacting_panic_hook();
         if config.maximum_concurrency == 0 {
             return Err(DaemonError::InvalidGlobalConcurrency);
         }
@@ -163,7 +245,8 @@ impl DaemonEngine {
             .chain(persisted.removed_accounts.iter())
             .filter_map(|id| id.as_str().strip_prefix("account-")?.parse::<u64>().ok())
             .max()
-            .and_then(|sequence| sequence.checked_add(1))
+            // Saturate at u64::MAX instead of wrapping back to account-1.
+            .map(|sequence| sequence.checked_add(1).unwrap_or(u64::MAX))
             .unwrap_or(1)
             .max(persisted.next_account_sequence);
         let accounts = persisted
@@ -196,10 +279,13 @@ impl DaemonEngine {
                 next_account_id: AtomicU64::new(next_account_sequence),
                 global_limit: Arc::new(Semaphore::new(config.maximum_concurrency)),
                 provider_limits,
-                default_provider_limit: config.default_provider_concurrency,
                 shutdown,
                 admission: StdMutex::new(FlightAdmission::default()),
                 flights_idle: Notify::new(),
+                #[cfg(test)]
+                test_panic_run_account: AtomicBool::new(false),
+                #[cfg(test)]
+                test_panic_flight_supervisor: AtomicBool::new(false),
             }),
         })
     }
@@ -225,6 +311,9 @@ impl DaemonEngine {
             schedule_changed: Notify::new(),
         });
         let mut accounts = self.inner.accounts.write().await;
+        // A tombstone in `removed_accounts` does not block re-adding: it exists
+        // so generated ids are never reused and stale flights can tell the new
+        // runtime from the removed one.
         if accounts.contains_key(&id) {
             return Err(DaemonError::DuplicateAccount(id));
         }
@@ -245,7 +334,7 @@ impl DaemonEngine {
             });
         }
         accounts.insert(id.clone(), runtime);
-        if let Err(error) = self.persist_accounts(&accounts).await {
+        if let Err(error) = self.persist_accounts_spawned(&accounts).await {
             accounts.remove(&id);
             return Err(error);
         }
@@ -258,7 +347,14 @@ impl DaemonEngine {
         loop {
             let sequence = self.inner.next_account_id.fetch_add(1, Ordering::Relaxed);
             let candidate = AccountId::new(format!("account-{sequence}"));
-            if !self.inner.accounts.read().await.contains_key(&candidate) {
+            if !self.inner.accounts.read().await.contains_key(&candidate)
+                && !self
+                    .inner
+                    .removed_accounts
+                    .read()
+                    .await
+                    .contains(&candidate)
+            {
                 return candidate;
             }
         }
@@ -291,6 +387,12 @@ impl DaemonEngine {
             .contains(account_id)
     }
 
+    /// Stages and commits the whole account map under `persist_lock`.
+    ///
+    /// The caller keeps the `accounts` lock held across this call so the staged
+    /// snapshot cannot fall behind a concurrent mutation, and `persist_lock`
+    /// keeps commits in the same order. The storage I/O this spans is a small
+    /// local JSON write; a slow disk stalls account mutation, never data.
     async fn persist_accounts(
         &self,
         accounts: &BTreeMap<AccountId, Arc<AccountRuntime>>,
@@ -306,14 +408,25 @@ impl DaemonEngine {
             snapshots: self.inner.snapshots.read().await.clone(),
             failures: self.inner.failures.read().await.clone(),
         };
-        self.inner
-            .store
-            .stage(&state)
+        match tokio::time::timeout(STORE_STAGE_TIMEOUT, self.inner.store.stage(&state)).await {
+            Ok(Ok(staged)) => staged.commit().await.map_err(DaemonError::Storage),
+            Ok(Err(error)) => Err(DaemonError::Storage(error)),
+            Err(_) => Err(DaemonError::Storage("snapshot stage timed out".into())),
+        }
+    }
+
+    /// Persists `accounts` in a spawned task so a cancelled caller cannot drop
+    /// the write between stage and commit. The map is captured under the
+    /// caller's lock, matching the spawn scheme `remove_account` uses.
+    async fn persist_accounts_spawned(
+        &self,
+        accounts: &BTreeMap<AccountId, Arc<AccountRuntime>>,
+    ) -> Result<(), DaemonError> {
+        let engine = self.clone();
+        let accounts = accounts.clone();
+        tokio::spawn(async move { engine.persist_accounts(&accounts).await })
             .await
-            .map_err(DaemonError::Storage)?
-            .commit()
-            .await
-            .map_err(DaemonError::Storage)
+            .map_err(|_| DaemonError::Storage("account persist task failed".into()))?
     }
 
     pub async fn remove_account(
@@ -375,7 +488,12 @@ impl DaemonEngine {
         };
         let stage_store = self.inner.store.clone();
         let stage_state = staged.clone();
-        let mut stage_task = tokio::spawn(async move { stage_store.stage(&stage_state).await });
+        let mut stage_task = tokio::spawn(async move {
+            match tokio::time::timeout(STORE_STAGE_TIMEOUT, stage_store.stage(&stage_state)).await {
+                Ok(result) => result,
+                Err(_) => Err("snapshot stage timed out".into()),
+            }
+        });
         let mut shutdown = self.inner.shutdown.subscribe();
         let staged = if *shutdown.borrow() {
             stage_task.abort();
@@ -445,6 +563,9 @@ impl DaemonEngine {
     pub async fn run(&self) {
         let mut tasks = JoinSet::new();
         let mut started = HashSet::new();
+        // A `JoinError` carries no task output, so the account owning each
+        // spawned task is tracked by its task id and cleaned up either way.
+        let mut task_accounts = HashMap::new();
 
         let mut shutdown = self.inner.shutdown.subscribe();
         loop {
@@ -453,10 +574,12 @@ impl DaemonEngine {
                 let account_id = account.config().id;
                 if started.insert(account_id.clone()) {
                     let engine = self.clone();
-                    tasks.spawn(async move {
+                    let task_account = account_id.clone();
+                    let handle = tasks.spawn(async move {
                         engine.run_account(account).await;
                         account_id
                     });
+                    task_accounts.insert(handle.id(), task_account);
                 }
             }
             if *shutdown.borrow() {
@@ -468,9 +591,53 @@ impl DaemonEngine {
                         break;
                     }
                 }
-                joined = tasks.join_next(), if !tasks.is_empty() => {
-                    if let Some(Ok(account_id)) = joined {
-                        started.remove(&account_id);
+                joined = tasks.join_next_with_id(), if !tasks.is_empty() => {
+                    match joined {
+                        Some(Ok((task_id, account_id))) => {
+                            task_accounts.remove(&task_id);
+                            started.remove(&account_id);
+                        }
+                        Some(Err(error)) => {
+                            if let Some(account_id) = task_accounts.remove(&error.id()) {
+                                started.remove(&account_id);
+                                eprintln!(
+                                    "ullage daemon account task {account_id} failed: {error}"
+                                );
+                                let account = self
+                                    .inner
+                                    .accounts
+                                    .read()
+                                    .await
+                                    .get(&account_id)
+                                    .cloned();
+                                let restartable = account.as_ref().is_some_and(|account| {
+                                    !account.removed.load(Ordering::Acquire)
+                                        && !*self.inner.shutdown.borrow()
+                                });
+                                if restartable {
+                                    // Restart under a short delay so a task that
+                                    // panics every run cannot spin the loop.
+                                    let account = account.unwrap();
+                                    started.insert(account_id.clone());
+                                    let engine = self.clone();
+                                    let task_account = account_id.clone();
+                                    let handle = tasks.spawn(async move {
+                                        let mut shutdown = engine.inner.shutdown.subscribe();
+                                        tokio::select! {
+                                            _ = tokio::time::sleep(ACCOUNT_TASK_RESTART_DELAY) => {
+                                                engine.run_account(account).await;
+                                            }
+                                            changed = shutdown.changed() => {
+                                                let _ = changed;
+                                            }
+                                        }
+                                        account_id
+                                    });
+                                    task_accounts.insert(handle.id(), task_account);
+                                }
+                            }
+                        }
+                        None => {}
                     }
                 }
                 _ = self.inner.accounts_changed.notified() => {}
@@ -535,6 +702,26 @@ impl DaemonEngine {
             .map_err(sanitize_probe_error)
     }
 
+    /// The live runtime for `account_id`, or `AccountNotFound` when it is
+    /// missing or already removed.
+    async fn live_account(
+        &self,
+        account_id: &AccountId,
+    ) -> Result<Arc<AccountRuntime>, ProbeError> {
+        let account = self
+            .inner
+            .accounts
+            .read()
+            .await
+            .get(account_id)
+            .cloned()
+            .ok_or_else(|| ProbeError::AccountNotFound(account_id.clone()))?;
+        if account.removed.load(Ordering::Acquire) {
+            return Err(ProbeError::AccountNotFound(account_id.clone()));
+        }
+        Ok(account)
+    }
+
     /// Probe without sanitizing the returned provider error. The control
     /// handler uses this only to attach opt-in diagnostics, then sanitizes
     /// the `ControlError` payload.
@@ -543,17 +730,7 @@ impl DaemonEngine {
         account_id: &AccountId,
         trigger: ProbeTrigger,
     ) -> Result<QueryOutcome<SubscriptionUsage>, ProbeError> {
-        let account = self
-            .inner
-            .accounts
-            .read()
-            .await
-            .get(account_id)
-            .cloned()
-            .ok_or_else(|| ProbeError::AccountNotFound(account_id.clone()))?;
-        if account.removed.load(Ordering::Acquire) {
-            return Err(ProbeError::AccountNotFound(account_id.clone()));
-        }
+        let account = self.live_account(account_id).await?;
         self.probe_account(account, trigger).await
     }
 
@@ -562,17 +739,7 @@ impl DaemonEngine {
         account_id: &AccountId,
         trigger: ProbeTrigger,
     ) -> Result<(), ProbeError> {
-        let account = self
-            .inner
-            .accounts
-            .read()
-            .await
-            .get(account_id)
-            .cloned()
-            .ok_or_else(|| ProbeError::AccountNotFound(account_id.clone()))?;
-        if account.removed.load(Ordering::Acquire) {
-            return Err(ProbeError::AccountNotFound(account_id.clone()));
-        }
+        let account = self.live_account(account_id).await?;
         self.start_probe_account(account, trigger).await.map(drop)
     }
 
@@ -602,10 +769,10 @@ impl DaemonEngine {
     pub(crate) async fn show_configured_account(
         &self,
         account_id: &AccountId,
-    ) -> Result<Option<SnapshotRecord>, ()> {
+    ) -> Result<Option<SnapshotRecord>, ProbeError> {
         let accounts = self.inner.accounts.read().await;
         if !accounts.contains_key(account_id) {
-            return Err(());
+            return Err(ProbeError::AccountNotFound(account_id.clone()));
         }
         Ok(self.inner.snapshots.read().await.get(account_id).cloned())
     }
@@ -650,6 +817,14 @@ impl DaemonEngine {
     }
 
     async fn run_account(&self, account: Arc<AccountRuntime>) {
+        #[cfg(test)]
+        if self
+            .inner
+            .test_panic_run_account
+            .swap(false, Ordering::SeqCst)
+        {
+            panic!("injected run_account panic");
+        }
         if account.config().enabled {
             let result = self
                 .probe_account(account.clone(), ProbeTrigger::Startup)
@@ -737,7 +912,12 @@ impl DaemonEngine {
             let notified = flight.completion.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if let Some(result) = flight.result.lock().await.clone() {
+            if let Some(result) = flight
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+            {
                 return result;
             }
             notified.await;
@@ -766,17 +946,32 @@ impl DaemonEngine {
             if admission.closed {
                 return Err(ProbeError::Cancelled);
             }
-            if let Some(flight) = &state.current_flight {
-                (flight.clone(), false)
-            } else {
-                admission.active = admission.active.saturating_add(1);
-                let flight = Arc::new(FlightState {
-                    result: Mutex::new(None),
-                    completion: Notify::new(),
-                });
-                state.current_flight = Some(flight.clone());
-                state.next_probe_at = None;
-                (flight, true)
+            match state.current_flight.clone() {
+                Some(flight) => {
+                    // A flight whose result is already stored is finished: hand
+                    // it to this waiter and free the slot. This also repairs a
+                    // slot a dead supervisor left behind before its watchdog
+                    // could run.
+                    if flight
+                        .result
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_some()
+                    {
+                        state.current_flight = None;
+                    }
+                    (flight, false)
+                }
+                None => {
+                    admission.active = admission.active.saturating_add(1);
+                    let flight = Arc::new(FlightState {
+                        result: StdMutex::new(None),
+                        completion: Notify::new(),
+                    });
+                    state.current_flight = Some(flight.clone());
+                    state.next_probe_at = None;
+                    (flight, true)
+                }
             }
         };
 
@@ -789,10 +984,23 @@ impl DaemonEngine {
             };
             tokio::spawn(async move {
                 let _activity = activity;
+                let _watchdog = FlightWatchdog {
+                    inner: engine.inner.clone(),
+                    account: flight_account.clone(),
+                    flight: supervised_flight.clone(),
+                };
+                #[cfg(test)]
+                if engine
+                    .inner
+                    .test_panic_flight_supervisor
+                    .swap(false, Ordering::SeqCst)
+                {
+                    panic!("injected flight supervisor panic");
+                }
                 let work_engine = engine.clone();
                 let work_account = flight_account.clone();
                 let completion = match tokio::spawn(async move {
-                    work_engine.prepare_flight_completion(&work_account).await
+                    work_engine.prepare_flight_completion(work_account).await
                 })
                 .await
                 {
@@ -811,7 +1019,11 @@ impl DaemonEngine {
                     }
                 };
                 {
-                    *supervised_flight.result.lock().await = Some(completion.result.clone());
+                    *supervised_flight
+                        .result
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(completion.result.clone());
                     let mut state = flight_account.state.lock().await;
                     if state
                         .current_flight
@@ -853,7 +1065,7 @@ impl DaemonEngine {
         Ok(flight)
     }
 
-    async fn prepare_flight_completion(&self, account: &AccountRuntime) -> FlightCompletion {
+    async fn prepare_flight_completion(&self, account: Arc<AccountRuntime>) -> FlightCompletion {
         let query_engine = self.clone();
         let query_config = account.config();
         let query_result = match tokio::spawn(async move {
@@ -868,20 +1080,21 @@ impl DaemonEngine {
         };
         if matches!(query_result, Err(ProbeError::Cancelled)) {
             return self
-                .finish_flight_completion(account, Err(ProbeError::Cancelled))
+                .finish_flight_completion(&account, Err(ProbeError::Cancelled))
                 .await;
         }
         let record_engine = self.clone();
-        let account_id = account.config().id;
-        let record_task =
-            tokio::spawn(
-                async move { record_engine.record_result(&account_id, query_result).await },
-            );
+        let record_account = account.clone();
+        let record_task = tokio::spawn(async move {
+            record_engine
+                .record_result(record_account, query_result)
+                .await
+        });
         let result = match record_task.await {
             Ok(result) => result,
             Err(_) => Err(ProbeError::Storage("snapshot storage task failed".into())),
         };
-        self.finish_flight_completion(account, result).await
+        self.finish_flight_completion(&account, result).await
     }
 
     async fn finish_flight_completion(
@@ -905,20 +1118,23 @@ impl DaemonEngine {
         &self,
         config: &AccountConfig,
     ) -> Result<QueryOutcome<SubscriptionUsage>, ProbeError> {
-        let provider = self
-            .inner
-            .registry
-            .get_for_account(&config.provider, config.id.as_str())?;
-        let provider_limit = self
-            .inner
-            .provider_limits
-            .get(&config.provider)
-            .cloned()
-            .unwrap_or_else(|| Arc::new(Semaphore::new(self.inner.default_provider_limit)));
         let mut shutdown = self.inner.shutdown.subscribe();
         if *shutdown.borrow() {
             return Err(ProbeError::Cancelled);
         }
+        let provider = self
+            .inner
+            .registry
+            .get_for_account(&config.provider, config.id.as_str())?;
+        // A resolved provider always has a limit: `provider_limits` is seeded
+        // from every registry descriptor at engine construction and the
+        // registry cannot gain providers afterwards.
+        let provider_limit = self
+            .inner
+            .provider_limits
+            .get(&config.provider)
+            .expect("provider concurrency limit covers every registered provider")
+            .clone();
         let timeout = self.inner.clock.sleep(config.timeout);
         tokio::pin!(timeout);
         let provider_permit = tokio::select! {
@@ -958,16 +1174,23 @@ impl DaemonEngine {
 
     async fn record_result(
         &self,
-        account_id: &AccountId,
+        account: Arc<AccountRuntime>,
         result: Result<QueryOutcome<SubscriptionUsage>, ProbeError>,
     ) -> Result<QueryOutcome<SubscriptionUsage>, ProbeError> {
+        let account_id = account.config().id;
         // Keep the original provider error for opt-in diagnostics. Persist only
         // the sanitized copy so snapshots and failure records stay redacted.
         let result = result.map(sanitize_outcome);
         let persisted = result.clone().map_err(sanitize_probe_error);
         let accounts = self.inner.accounts.read().await;
-        if !accounts.contains_key(account_id) {
-            return Err(ProbeError::Cancelled);
+        // A flight that outlives its account must not write onto an account
+        // later recreated under the same id; the runtime pointer is the
+        // generation check. The caller still gets the result, persisted or not.
+        if !accounts
+            .get(&account_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &account))
+        {
+            return result;
         }
         let _guard = self.inner.persist_lock.lock().await;
         let now = self.inner.clock.now();
@@ -986,11 +1209,11 @@ impl DaemonEngine {
                         last_error_at: None,
                     },
                 );
-                failures.remove(account_id);
+                failures.remove(&account_id);
             }
             Err(error) => {
                 let sanitized = SanitizedError::from_probe(error);
-                if let Some(snapshot) = snapshots.get_mut(account_id) {
+                if let Some(snapshot) = snapshots.get_mut(&account_id) {
                     snapshot.stale = true;
                     snapshot.last_error = Some(sanitized.clone());
                     snapshot.last_error_at = Some(now);
@@ -1014,13 +1237,25 @@ impl DaemonEngine {
             snapshots: snapshots.clone(),
             failures: failures.clone(),
         };
+        // The staged bytes are frozen and `persist_lock` already serializes the
+        // commit, so the read guard can be released before the storage I/O.
+        drop(accounts);
         let mut shutdown = self.inner.shutdown.subscribe();
         if *shutdown.borrow() {
             return Err(ProbeError::Cancelled);
         }
         let staged_write = tokio::select! {
-            staged_write = self.inner.store.stage(&staged) => {
-                staged_write.map_err(ProbeError::Storage)?
+            staged_write = tokio::time::timeout(
+                STORE_STAGE_TIMEOUT,
+                self.inner.store.stage(&staged),
+            ) => {
+                match staged_write {
+                    Ok(Ok(staged)) => staged,
+                    Ok(Err(error)) => return Err(ProbeError::Storage(error)),
+                    Err(_) => {
+                        return Err(ProbeError::Storage("snapshot stage timed out".into()));
+                    }
+                }
             }
             changed = shutdown.changed() => {
                 let _ = changed;
@@ -1044,7 +1279,6 @@ impl DaemonEngine {
         let mut live_failures = self.inner.failures.write().await;
         *live_snapshots = snapshots;
         *live_failures = failures;
-        drop(accounts);
         result
     }
 }
@@ -1065,7 +1299,7 @@ fn next_delay(config: &AccountConfig, failures: u32, error: Option<&ProbeError>)
         Some(ProbeError::Provider(ullage_core::ProviderError::RateLimited {
             retry_after_seconds: Some(seconds),
             ..
-        })) => Duration::from_secs(*seconds),
+        })) => Duration::from_secs(*seconds).min(MAXIMUM_RETRY_AFTER),
         _ => Duration::ZERO,
     };
     base.max(rate_limit)
@@ -1109,4 +1343,356 @@ fn deterministic_jitter(account_id: &AccountId, generation: u32, maximum: Durati
     }
     let millis = u128::from(hash) % (maximum_millis + 1);
     Duration::from_millis(millis.min(u128::from(u64::MAX)) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use ullage_auth::{
+        AuthChallenge, AuthCompleteRequest, AuthMethod, AuthStartRequest, AuthState, LogoutRequest,
+    };
+    use ullage_core::{Capability, Provider, ProviderDescriptor, ProviderResult, UsageQuery};
+
+    use super::*;
+    use crate::model::BackoffConfig;
+    use crate::store::{MemorySnapshotStore, StagedSnapshot};
+
+    #[derive(Clone)]
+    struct TestProvider {
+        inner: Arc<TestProviderInner>,
+    }
+
+    struct TestProviderInner {
+        calls: AtomicUsize,
+        started: Notify,
+        gate: Option<Arc<Semaphore>>,
+    }
+
+    impl TestProvider {
+        fn gated() -> (Self, Arc<Semaphore>) {
+            let gate = Arc::new(Semaphore::new(0));
+            (
+                Self {
+                    inner: Arc::new(TestProviderInner {
+                        calls: AtomicUsize::new(0),
+                        started: Notify::new(),
+                        gate: Some(gate.clone()),
+                    }),
+                },
+                gate,
+            )
+        }
+
+        fn immediate() -> Self {
+            Self {
+                inner: Arc::new(TestProviderInner {
+                    calls: AtomicUsize::new(0),
+                    started: Notify::new(),
+                    gate: None,
+                }),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.inner.calls.load(Ordering::SeqCst)
+        }
+
+        async fn wait_for_calls(&self, expected: usize) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let notified = self.inner.started.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if self.calls() >= expected {
+                        return;
+                    }
+                    notified.await;
+                }
+            })
+            .await
+            .expect("provider query was not reached");
+        }
+    }
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        type VendorUsage = SubscriptionUsage;
+
+        fn descriptor(&self) -> ProviderDescriptor {
+            ProviderDescriptor {
+                id: ProviderId::new("test"),
+                display_name: "test".into(),
+                capabilities: vec![Capability::UsageQuery],
+            }
+        }
+
+        async fn start_auth(&self, _: AuthStartRequest) -> ProviderResult<AuthChallenge> {
+            Ok(AuthChallenge {
+                flow_id: "flow-1".into(),
+                method: AuthMethod::DeviceCode,
+                verification_uri: None,
+                user_code: None,
+                expires_at: None,
+                input: None,
+            })
+        }
+
+        async fn complete_auth(&self, _: AuthCompleteRequest) -> ProviderResult<AuthState> {
+            Ok(AuthState::NotAuthenticated)
+        }
+
+        async fn auth_status(&self) -> ProviderResult<AuthState> {
+            Ok(AuthState::NotAuthenticated)
+        }
+
+        async fn logout(&self, _: LogoutRequest) -> ProviderResult<()> {
+            Ok(())
+        }
+
+        async fn query(
+            &self,
+            request: UsageQuery,
+        ) -> ProviderResult<QueryOutcome<Self::VendorUsage>> {
+            self.inner.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.started.notify_waiters();
+            if let Some(gate) = &self.inner.gate {
+                gate.acquire().await.unwrap().forget();
+            }
+            Ok(QueryOutcome::Complete {
+                data: SubscriptionUsage {
+                    provider: ProviderId::new("test"),
+                    account_label: request.account_label,
+                    plan: None,
+                    subscription_expires_at: None,
+                    observed_at: Utc::now(),
+                    windows: Vec::new(),
+                },
+            })
+        }
+
+        fn normalize(&self, usage: Self::VendorUsage) -> ProviderResult<SubscriptionUsage> {
+            Ok(usage)
+        }
+    }
+
+    fn test_account(id: &str) -> AccountConfig {
+        AccountConfig {
+            id: AccountId::new(id),
+            provider: ProviderId::new("test"),
+            query: UsageQuery {
+                account_label: Some(id.into()),
+            },
+            enabled: true,
+            interval: Duration::from_secs(60),
+            timeout: Duration::from_secs(5),
+            jitter: Duration::ZERO,
+            backoff: BackoffConfig {
+                initial: Duration::from_secs(10),
+                maximum: Duration::from_secs(40),
+            },
+            metrics: Vec::new(),
+        }
+    }
+
+    fn engine_with(provider: TestProvider) -> (DaemonEngine, Arc<MemorySnapshotStore>) {
+        let mut registry = ProviderRegistry::default();
+        registry.register(provider).unwrap();
+        let store = Arc::new(MemorySnapshotStore::default());
+        (
+            DaemonEngine {
+                inner: Arc::new(EngineInner {
+                    registry: Arc::new(registry),
+                    clock: Arc::new(SystemClock),
+                    store: store.clone(),
+                    snapshots: RwLock::new(SnapshotMap::new()),
+                    failures: RwLock::new(BTreeMap::new()),
+                    persist_lock: Mutex::new(()),
+                    accounts: RwLock::new(BTreeMap::new()),
+                    removed_accounts: RwLock::new(std::collections::BTreeSet::new()),
+                    accounts_changed: Notify::new(),
+                    next_account_id: AtomicU64::new(1),
+                    global_limit: Arc::new(Semaphore::new(4)),
+                    provider_limits: HashMap::from([(
+                        ProviderId::new("test"),
+                        Arc::new(Semaphore::new(2)),
+                    )]),
+                    shutdown: watch::channel(false).0,
+                    admission: StdMutex::new(FlightAdmission::default()),
+                    flights_idle: Notify::new(),
+                    test_panic_run_account: AtomicBool::new(false),
+                    test_panic_flight_supervisor: AtomicBool::new(false),
+                }),
+            },
+            store,
+        )
+    }
+
+    #[test]
+    fn rate_limit_hint_is_capped() {
+        let config = test_account("account-1");
+        let rate_limited = |seconds| {
+            ProbeError::Provider(ProviderError::RateLimited {
+                message: "slow down".into(),
+                retry_after_seconds: Some(seconds),
+            })
+        };
+
+        assert_eq!(
+            next_delay(&config, 0, Some(&rate_limited(120))),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            next_delay(&config, 0, Some(&rate_limited(u64::MAX))),
+            MAXIMUM_RETRY_AFTER
+        );
+    }
+
+    #[tokio::test]
+    async fn account_task_panic_recovers_scheduling() {
+        let (engine, _store) = engine_with(TestProvider::immediate());
+        let account_id = AccountId::new("account-1");
+        engine.add_account(test_account("account-1")).await.unwrap();
+        engine
+            .inner
+            .test_panic_run_account
+            .store(true, Ordering::SeqCst);
+
+        let runner = {
+            let engine = engine.clone();
+            tokio::spawn(async move { engine.run().await })
+        };
+        // The first run_account panics; the scheduler must remove only this
+        // account from `started` and re-admit it after the restart delay.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if engine.show(&account_id).await.is_some() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("account never probed after task panic");
+
+        engine.shutdown();
+        runner.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flight_supervisor_panic_releases_probe_waiters() {
+        let (engine, _store) = engine_with(TestProvider::immediate());
+        let account_id = AccountId::new("account-1");
+        engine.add_account(test_account("account-1")).await.unwrap();
+        engine
+            .inner
+            .test_panic_flight_supervisor
+            .store(true, Ordering::SeqCst);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            engine.probe(&account_id, ProbeTrigger::Manual),
+        )
+        .await
+        .expect("probe waiter hung after supervisor panic");
+        assert!(matches!(result, Err(ProbeError::Storage(_))));
+
+        // The freed slot must accept a fresh flight and finish it.
+        let result = engine.probe(&account_id, ProbeTrigger::Manual).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn recreated_account_does_not_inherit_old_flight_result() {
+        let (provider, gate) = TestProvider::gated();
+        let (engine, _store) = engine_with(provider.clone());
+        let account_id = AccountId::new("account-1");
+        engine.add_account(test_account("account-1")).await.unwrap();
+
+        let probe = {
+            let engine = engine.clone();
+            let account_id = account_id.clone();
+            tokio::spawn(async move { engine.probe(&account_id, ProbeTrigger::Manual).await })
+        };
+        // The query is in flight; swapping the account must not let its result
+        // land on the runtime recreated under the same id.
+        provider.wait_for_calls(1).await;
+        engine.remove_account(&account_id).await.unwrap();
+        engine.add_account(test_account("account-1")).await.unwrap();
+        gate.add_permits(1);
+
+        probe
+            .await
+            .unwrap()
+            .expect("waiter must still get a result");
+        assert!(engine.show(&account_id).await.is_none());
+        let status = engine.status().await;
+        assert_eq!(
+            status
+                .accounts
+                .iter()
+                .find(|account| account.id == account_id)
+                .unwrap()
+                .consecutive_failures,
+            0
+        );
+    }
+
+    /// A store whose `stage` never returns must not wedge a flight; the bound
+    /// is `STORE_STAGE_TIMEOUT` of tokio time.
+    struct HangingStore;
+
+    #[async_trait]
+    impl SnapshotStore for HangingStore {
+        async fn load(&self) -> Result<PersistedState, String> {
+            Ok(PersistedState::default())
+        }
+
+        async fn stage(&self, _: &PersistedState) -> Result<Box<dyn StagedSnapshot>, String> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_stage_times_out_instead_of_wedging_the_flight() {
+        let mut registry = ProviderRegistry::default();
+        registry.register(TestProvider::immediate()).unwrap();
+        let engine = DaemonEngine::new(
+            DaemonConfig::default(),
+            Arc::new(registry),
+            Arc::new(SystemClock),
+            Arc::new(HangingStore),
+        )
+        .await
+        .unwrap();
+        let account_id = AccountId::new("account-1");
+
+        // `add_account` also stages; its own bounded wait must not hang.
+        let add = {
+            let engine = engine.clone();
+            tokio::spawn(async move { engine.add_account(test_account("account-1")).await })
+        };
+        tokio::task::yield_now().await;
+        tokio::time::advance(STORE_STAGE_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(matches!(add.await.unwrap(), Err(DaemonError::Storage(_))));
+
+        // Register the account without persistence to exercise the flight path.
+        engine.inner.accounts.write().await.insert(
+            account_id.clone(),
+            Arc::new(AccountRuntime {
+                config: StdRwLock::new(test_account("account-1")),
+                removed: AtomicBool::new(false),
+                state: Mutex::new(AccountRuntimeState::default()),
+                schedule_changed: Notify::new(),
+            }),
+        );
+        let probe = {
+            let engine = engine.clone();
+            let account_id = account_id.clone();
+            tokio::spawn(async move { engine.probe(&account_id, ProbeTrigger::Manual).await })
+        };
+        tokio::task::yield_now().await;
+        tokio::time::advance(STORE_STAGE_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(matches!(probe.await.unwrap(), Err(ProbeError::Storage(_))));
+    }
 }

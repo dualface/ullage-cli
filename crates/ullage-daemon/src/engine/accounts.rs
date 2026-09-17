@@ -25,7 +25,7 @@ impl DaemonEngine {
             config.enabled = enabled;
             (previous_enabled, config.clone())
         };
-        if let Err(error) = self.persist_accounts(&accounts).await {
+        if let Err(error) = self.persist_accounts_spawned(&accounts).await {
             account
                 .config
                 .write()
@@ -75,7 +75,7 @@ impl DaemonEngine {
             let previous_label = std::mem::replace(&mut config.query.account_label, label);
             (previous_label, config.clone())
         };
-        if let Err(error) = self.persist_accounts(&accounts).await {
+        if let Err(error) = self.persist_accounts_spawned(&accounts).await {
             account
                 .config
                 .write()
@@ -111,7 +111,7 @@ impl DaemonEngine {
             let previous_metrics = std::mem::replace(&mut config.metrics, filter.names().to_vec());
             (previous_metrics, config.clone())
         };
-        if let Err(error) = self.persist_accounts(&accounts).await {
+        if let Err(error) = self.persist_accounts_spawned(&accounts).await {
             account
                 .config
                 .write()
