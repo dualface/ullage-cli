@@ -6,8 +6,7 @@ use ullage_auth::{
     SecretValue,
 };
 use ullage_provider_chatgpt::{
-    ChatGptApiError, ChatGptApiErrorKind, ChatGptSession, ChatGptSessionStore, ChatGptWorkspace,
-    OAuthTokenSet,
+    ChatGptApiError, ChatGptApiErrorKind, ChatGptSession, ChatGptSessionStore,
 };
 use ullage_provider_claude::{ClaudeCredential, ClaudeCredentialStore};
 
@@ -71,65 +70,16 @@ impl ChatGptVault {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct PersistedChatGptSession {
-    access_token: String,
-    refresh_token: Option<String>,
-    identity_token: Option<String>,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    workspaces: Vec<ChatGptWorkspace>,
-    selected_workspace_id: Option<String>,
-    invalid_reason: Option<String>,
-}
-
-impl PersistedChatGptSession {
-    fn from_session(session: &ChatGptSession) -> Self {
-        Self {
-            access_token: session.tokens.access_token().into(),
-            refresh_token: session.tokens.refresh_token().map(str::to_owned),
-            identity_token: session.tokens.identity_token().map(str::to_owned),
-            expires_at: session.tokens.expires_at,
-            workspaces: session.workspaces.clone(),
-            selected_workspace_id: session.selected_workspace_id.clone(),
-            invalid_reason: session.invalid_reason.clone(),
-        }
-    }
-}
-
+// ChatGptSession itself is the persisted shape: its Deserialize runs every
+// token back through OAuthTokenSet validation, so a tampered store record is
+// rejected by the same rules as a fresh OAuth response.
 impl ChatGptSessionStore for ChatGptVault {
     fn load(&self) -> Result<Option<(ChatGptSession, CredentialVersion)>, ChatGptApiError> {
-        let persisted: Option<(PersistedChatGptSession, CredentialVersion)> =
-            load_json(&self.store, &self.key).map_err(chatgpt_store_error)?;
-        persisted
-            .map(|(persisted, version)| {
-                let tokens = OAuthTokenSet::new(
-                    persisted.access_token,
-                    persisted.refresh_token,
-                    persisted.expires_at,
-                )
-                .map_err(|_| chatgpt_store_error(CredentialError::CorruptCredential))?
-                .with_identity_token(persisted.identity_token)
-                .map_err(|_| chatgpt_store_error(CredentialError::CorruptCredential))?;
-                Ok((
-                    ChatGptSession {
-                        tokens,
-                        workspaces: persisted.workspaces,
-                        selected_workspace_id: persisted.selected_workspace_id,
-                        invalid_reason: persisted.invalid_reason,
-                    },
-                    version,
-                ))
-            })
-            .transpose()
+        load_json(&self.store, &self.key).map_err(chatgpt_store_error)
     }
 
     fn save(&self, session: &ChatGptSession) -> Result<CredentialVersion, ChatGptApiError> {
-        save_json(
-            &self.store,
-            &self.key,
-            &PersistedChatGptSession::from_session(session),
-        )
-        .map_err(chatgpt_store_error)
+        save_json(&self.store, &self.key, session).map_err(chatgpt_store_error)
     }
 
     fn replace(
@@ -137,13 +87,7 @@ impl ChatGptSessionStore for ChatGptVault {
         expected: CredentialVersion,
         session: &ChatGptSession,
     ) -> Result<Option<CredentialVersion>, ChatGptApiError> {
-        replace_json(
-            &self.store,
-            &self.key,
-            expected,
-            &PersistedChatGptSession::from_session(session),
-        )
-        .map_err(chatgpt_store_error)
+        replace_json(&self.store, &self.key, expected, session).map_err(chatgpt_store_error)
     }
 
     fn clear(&self) -> Result<(), ChatGptApiError> {
@@ -232,6 +176,7 @@ mod tests {
     use ullage_auth::{
         Availability, BackendKind, BackendScope, CredentialBackend, CredentialError,
     };
+    use ullage_provider_chatgpt::{ChatGptWorkspace, OAuthTokenSet};
 
     use super::*;
 
@@ -418,19 +363,20 @@ mod tests {
             (" ", Some("refresh"), Some("identity")),
             ("access", Some(" "), Some("identity")),
             ("access", Some("refresh"), Some(" ")),
+            ("access\nforged: yes", Some("refresh"), Some("identity")),
         ] {
             save_json(
                 &store,
                 &vault.key,
-                &PersistedChatGptSession {
-                    access_token: access_token.into(),
-                    refresh_token: refresh_token.map(str::to_owned),
-                    identity_token: identity_token.map(str::to_owned),
-                    expires_at: None,
-                    workspaces: Vec::new(),
-                    selected_workspace_id: None,
-                    invalid_reason: None,
-                },
+                &serde_json::json!({
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "identity_token": identity_token,
+                    "expires_at": null,
+                    "workspaces": [],
+                    "selected_workspace_id": null,
+                    "invalid_reason": null,
+                }),
             )
             .unwrap();
             assert!(vault.load().is_err());
