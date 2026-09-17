@@ -1003,18 +1003,57 @@ fn sweep_daemon_error_logs_before(directory: &Path, cutoff: std::time::SystemTim
     }
 }
 
+/// Log directory beside the control socket: the runtime dir is already a
+/// private boundary, and only the no-runtime-dir fallback needs the per-uid
+/// name under a world-writable `temp_dir()`.
+#[cfg(unix)]
+fn daemon_error_log_directory() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(|runtime| PathBuf::from(runtime).join("ullage"))
+        .unwrap_or_else(|| {
+            // SAFETY: `geteuid` has no arguments and no memory-safety preconditions.
+            let user_id = unsafe { libc::geteuid() };
+            std::env::temp_dir().join(format!("ullage-{user_id}"))
+        })
+}
+
+/// The fallback base is world-writable, so a pre-existing entry must prove it
+/// is a real directory owned by the current user with private permissions
+/// before diagnostics land in it — otherwise a local neighbour could pre-create
+/// or symlink the path and control what `read_log_tail` later reopens. Mirrors
+/// the daemon's `ensure_private_directory` for its socket parent.
+#[cfg(unix)]
+fn ensure_daemon_log_directory(path: &Path) -> Result<(), ClientError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(path)
+                .map_err(|_| ClientError::DaemonProcess)?;
+            std::fs::symlink_metadata(path).map_err(|_| ClientError::DaemonProcess)?
+        }
+        Err(_) => return Err(ClientError::DaemonProcess),
+    };
+    // SAFETY: `geteuid` has no arguments and no memory-safety preconditions.
+    let owned = metadata.uid() == unsafe { libc::geteuid() };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || !owned
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(ClientError::DaemonProcess);
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
-    use std::os::unix::fs::DirBuilderExt;
-
-    // SAFETY: `geteuid` has no arguments and no memory-safety preconditions.
-    let user_id = unsafe { libc::geteuid() };
-    let directory = std::env::temp_dir().join(format!("ullage-{user_id}"));
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&directory)
-        .map_err(|_| ClientError::DaemonProcess)?;
+    let directory = daemon_error_log_directory();
+    ensure_daemon_log_directory(&directory)?;
     sweep_daemon_error_logs(&directory);
     create_daemon_error_log(&directory, daemon_error_log_name)
 }
@@ -1101,11 +1140,20 @@ fn daemon_process_failure(stderr_log: &Path, fallback: &str) -> ClientError {
 }
 
 /// Last `DAEMON_STDERR_TAIL_BYTES` of the daemon stderr log; an unreadable or
-/// missing file yields an empty tail.
+/// missing file yields an empty tail. The path is reopened after the child
+/// exits, so the final component must not follow a swapped symlink into an
+/// unrelated file the launcher can read.
 fn read_log_tail(path: &Path) -> Vec<u8> {
     use std::io::{Read, Seek, SeekFrom};
 
-    let mut file = match std::fs::File::open(path) {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = match options.open(path) {
         Ok(file) => file,
         Err(_) => return Vec::new(),
     };
@@ -3824,6 +3872,68 @@ mod tests {
         let mut stuck = || "daemon-error-taken.log".to_owned();
         let result = create_daemon_error_log(&directory, &mut stuck);
         assert!(matches!(result, Err(ClientError::DaemonProcess)));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_log_directory_rejects_symlinks_and_foreign_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-logdir-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+
+        // A world-writable parent lets a neighbour pre-create the log dir;
+        // loose permissions must fail the launch instead of being adopted.
+        let loose = directory.join("loose");
+        std::fs::create_dir(&loose).unwrap();
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(
+            ensure_daemon_log_directory(&loose),
+            Err(ClientError::DaemonProcess)
+        ));
+
+        // A symlink must never be followed into attacker-chosen territory.
+        let link = directory.join("link");
+        std::os::unix::fs::symlink(&loose, &link).unwrap();
+        assert!(matches!(
+            ensure_daemon_log_directory(&link),
+            Err(ClientError::DaemonProcess)
+        ));
+
+        // A missing path is created fresh with private permissions.
+        let fresh = directory.join("fresh");
+        ensure_daemon_log_directory(&fresh).unwrap();
+        let metadata = std::fs::symlink_metadata(&fresh).unwrap();
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_log_tail_does_not_follow_a_symlink() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-logtail-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let secret = directory.join("secret.txt");
+        std::fs::write(&secret, b"do-not-leak").unwrap();
+        let link = directory.join("daemon-error-swapped.log");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        // The name was swapped between create and read-back; the tail must
+        // come out empty rather than streaming the link target.
+        assert!(read_log_tail(&link).is_empty());
+        assert_eq!(read_log_tail(&secret), b"do-not-leak");
 
         std::fs::remove_dir_all(directory).unwrap();
     }
