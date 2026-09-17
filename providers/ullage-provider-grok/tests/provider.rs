@@ -51,6 +51,7 @@ struct MockTransport {
     delay_billing: Option<std::time::Duration>,
     billing: Mutex<Option<Value>>,
     settings: Mutex<Option<Result<Value, GrokApiError>>>,
+    settings_results: Mutex<VecDeque<Result<Value, GrokApiError>>>,
 }
 
 #[derive(Default)]
@@ -218,6 +219,9 @@ impl GrokTransport for MockTransport {
     }
 
     async fn fetch_settings(&self, _: &str) -> Result<Value, GrokApiError> {
+        if let Some(result) = self.settings_results.lock().unwrap().pop_front() {
+            return result;
+        }
         if self.hang_settings {
             return std::future::pending().await;
         }
@@ -828,25 +832,93 @@ async fn settings_request_failure_keeps_billing_usage_and_is_partial() {
 }
 
 #[tokio::test]
-async fn settings_authentication_failure_keeps_billing_usage_and_is_partial() {
-    let (_, outcome) = query_with_settings(
-        billing_with_tier(),
-        Err(GrokApiError::AuthenticationInvalid(
-            "settings token rejected".into(),
-        )),
-    )
-    .await;
-    assert!(
-        outcome_failures(&outcome).iter().any(|failure| {
-            failure.scope == "settings" && failure.message == "provider authentication is invalid"
-        }),
-        "{:?}",
-        outcome_failures(&outcome)
+async fn settings_authentication_failure_refreshes_and_retries_once() {
+    let transport = MockTransport {
+        billing: Mutex::new(Some(billing_with_tier())),
+        settings_results: Mutex::new(VecDeque::from([
+            Err(GrokApiError::AuthenticationInvalid(
+                "settings token rejected".into(),
+            )),
+            Ok(json!({
+                "subscription_tier_display": "SuperGrok",
+                "allow_access": true
+            })),
+        ])),
+        ..MockTransport::default()
+    };
+    let provider = GrokProvider::with_transport(Arc::new(transport));
+    let challenge = provider
+        .start_auth(AuthStartRequest {
+            method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    let outcome = provider.query(UsageQuery::default()).await.unwrap();
+    let data = outcome_data(&outcome);
+    assert_eq!(data.usage_percent, Some(1.0));
+    assert_eq!(
+        data.tier.as_ref().map(|tier| tier.raw.as_str()),
+        Some("SuperGrok")
     );
-    assert!(
-        !format!("{:?}", outcome_failures(&outcome)).contains("settings token rejected"),
-        "settings error details must not leak into the query outcome"
-    );
+}
+
+#[tokio::test]
+async fn settings_repeated_authentication_failure_returns_authentication_invalid() {
+    let transport = MockTransport {
+        billing: Mutex::new(Some(billing_with_tier())),
+        settings_results: Mutex::new(VecDeque::from([
+            Err(GrokApiError::AuthenticationInvalid(
+                "settings token rejected".into(),
+            )),
+            Err(GrokApiError::AuthenticationInvalid(
+                "settings token still rejected".into(),
+            )),
+        ])),
+        ..MockTransport::default()
+    };
+    let provider = GrokProvider::with_transport(Arc::new(transport));
+    let challenge = provider
+        .start_auth(AuthStartRequest {
+            method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    let error = provider.query(UsageQuery::default()).await.unwrap_err();
+    assert!(matches!(error, ProviderError::AuthenticationInvalid { .. }));
 }
 
 #[tokio::test(start_paused = true)]

@@ -31,8 +31,9 @@ use ullage_core::{
     ProviderResult, QueryOutcome, SubscriptionUsage, UsageQuery,
 };
 
-/// Cap for the settings fetch. Settings run after billing answers, so the
-/// deadline bounds the second call without stacking on top of billing's own.
+/// Cap for the settings fetch, which overlaps billing so a hang cannot add a
+/// second wait after a slow billing response. A billing failure drops the
+/// in-flight request instead of waiting out this deadline.
 const SETTINGS_FETCH_DEADLINE: Duration = Duration::from_secs(8);
 
 /// Tokens this close to expiry are refreshed before use, so a token cannot
@@ -764,17 +765,22 @@ where
                 SETTINGS_FETCH_DEADLINE,
                 self.transport.fetch_settings(&access_token),
             );
-            tokio::pin!(settings);
+            let mut settings = std::pin::pin!(settings);
             let mut billing = std::pin::pin!(self.transport.fetch_billing(&access_token));
             let mut settings_result = None;
-            let billing_result = loop {
-                tokio::select! {
-                    result = &mut billing => break result,
-                    result = &mut settings, if settings_result.is_none() => {
+            let billing_result = std::future::poll_fn(|context| {
+                use std::task::Poll;
+                if let Poll::Ready(result) = billing.as_mut().poll(context) {
+                    return Poll::Ready(result);
+                }
+                if settings_result.is_none() {
+                    if let Poll::Ready(result) = settings.as_mut().poll(context) {
                         settings_result = Some(result);
                     }
                 }
-            };
+                Poll::Pending
+            })
+            .await;
             match billing_result {
                 // An access token rejected mid-flight gets one refresh and
                 // retry. A missing refresh token, a refused refresh, or a
@@ -795,6 +801,39 @@ where
                     let settings_result = match settings_result {
                         Some(result) => result,
                         None => settings.await,
+                    };
+                    let settings_result = match settings_result {
+                        // Settings rejecting the same token gets the same
+                        // one-shot refresh and retry billing gets; a second
+                        // rejection is a real sign-out and surfaces as
+                        // AuthenticationInvalid rather than Partial.
+                        Ok(Err(GrokApiError::AuthenticationInvalid(message))) => {
+                            if retried {
+                                return Err(GrokApiError::AuthenticationInvalid(message).into());
+                            }
+                            self.refresh_auth().await?;
+                            {
+                                let session = self.lock_session()?;
+                                token = session
+                                    .token
+                                    .clone()
+                                    .ok_or_else(|| Self::unauthenticated_error(&session))?;
+                                generation = session.generation;
+                            }
+                            let access_token = token.access_token.clone();
+                            match tokio::time::timeout(
+                                SETTINGS_FETCH_DEADLINE,
+                                self.transport.fetch_settings(&access_token),
+                            )
+                            .await
+                            {
+                                Ok(Err(GrokApiError::AuthenticationInvalid(message))) => {
+                                    return Err(GrokApiError::AuthenticationInvalid(message).into());
+                                }
+                                retried_result => retried_result,
+                            }
+                        }
+                        other => other,
                     };
                     break (response, settings_result);
                 }

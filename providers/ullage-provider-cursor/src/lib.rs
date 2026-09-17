@@ -226,6 +226,36 @@ impl CursorProvider {
         })
     }
 
+    /// Expire an abandoned pending flow under `credential_gate`, serialized
+    /// against `install_exchange`'s persist+commit window: a flow cleared
+    /// between a completed sign-in's store write and its state commit would
+    /// leave the store holding a credential the session never adopted.
+    async fn expire_pending_flow_gated(&self) -> ProviderResult<bool> {
+        let _persist_gate = self.credential_gate.lock().await;
+        Ok(self.lock_state()?.expire_pending_flow())
+    }
+
+    /// `resolve_exchange_failure` under `credential_gate` for the same reason:
+    /// clearing `pending_flow` or invalidating `auth` must not interleave
+    /// with a completed sign-in's persistence.
+    async fn resolve_exchange_failure_gated(
+        &self,
+        expected_generation: u64,
+        expected_session_id: Option<u64>,
+        expected_flow: Option<&str>,
+        error: ApiFailure,
+        allow_shared_refresh: bool,
+    ) -> ProviderResult<ExchangeFailureResolution> {
+        let _persist_gate = self.credential_gate.lock().await;
+        self.resolve_exchange_failure(
+            expected_generation,
+            expected_session_id,
+            expected_flow,
+            error,
+            allow_shared_refresh,
+        )
+    }
+
     async fn ensure_credentials_loaded(&self) -> ProviderResult<()> {
         let Some((credentials, key)) = &self.credentials else {
             return Ok(());
@@ -367,9 +397,9 @@ impl CursorProvider {
 
     pub async fn refresh_auth(&self) -> ProviderResult<AuthState> {
         self.ensure_credentials_loaded().await?;
+        self.expire_pending_flow_gated().await?;
         let (api_key, generation, session_id, epoch) = {
-            let mut state = self.lock_state()?;
-            state.expire_pending_flow();
+            let state = self.lock_state()?;
             if state.pending_flow.is_some() {
                 return Err(ProviderError::ProtocolIncompatible {
                     message: "Cursor authentication replacement is pending".into(),
@@ -412,13 +442,10 @@ impl CursorProvider {
         self.begin_exchange()?;
         let exchange = match self.api.exchange_user_api_key(&api_key).await {
             Ok(exchange) => exchange,
-            Err(error) => match self.resolve_exchange_failure(
-                generation,
-                Some(session_id),
-                None,
-                error,
-                true,
-            )? {
+            Err(error) => match self
+                .resolve_exchange_failure_gated(generation, Some(session_id), None, error, true)
+                .await?
+            {
                 ExchangeFailureResolution::Shared { status, .. } => return Ok(status),
                 ExchangeFailureResolution::Failed(error) => {
                     self.record_exchange_failure(generation, session_id, &error)?;
@@ -443,6 +470,9 @@ impl CursorProvider {
         endpoint: Endpoint,
         expected_session_id: u64,
     ) -> Result<EndpointData, ApiFailure> {
+        self.expire_pending_flow_gated()
+            .await
+            .map_err(provider_as_api_failure)?;
         let snapshot = self
             .auth_tokens(expected_session_id)
             .map_err(provider_as_api_failure)?;
@@ -468,7 +498,14 @@ impl CursorProvider {
                 Ok(_) => unreachable!("authentication failure was matched above"),
             };
             return match self
-                .resolve_exchange_failure(generation, Some(expected_session_id), None, error, false)
+                .resolve_exchange_failure_gated(
+                    generation,
+                    Some(expected_session_id),
+                    None,
+                    error,
+                    false,
+                )
+                .await
                 .map_err(provider_as_api_failure)?
             {
                 ExchangeFailureResolution::Shared { .. } => {
@@ -488,11 +525,9 @@ impl CursorProvider {
         {
             drop(gate);
             let retried = self.call_endpoint(endpoint, &access_token).await;
-            return self.coordinate_retry_result(
-                expected_session_id,
-                refreshed_generation,
-                retried,
-            );
+            return self
+                .coordinate_retry_result(expected_session_id, refreshed_generation, retried)
+                .await;
         }
         if let Some(failure) = self
             .failed_exchange_since(generation, expected_session_id, snapshot.epoch)
@@ -514,7 +549,14 @@ impl CursorProvider {
         let exchange = match self.api.exchange_user_api_key(&api_key).await {
             Ok(exchange) => exchange,
             Err(error) => match self
-                .resolve_exchange_failure(generation, Some(expected_session_id), None, error, true)
+                .resolve_exchange_failure_gated(
+                    generation,
+                    Some(expected_session_id),
+                    None,
+                    error,
+                    true,
+                )
+                .await
                 .map_err(provider_as_api_failure)?
             {
                 ExchangeFailureResolution::Shared {
@@ -524,7 +566,9 @@ impl CursorProvider {
                 } => {
                     drop(gate);
                     let retried = self.call_endpoint(endpoint, &access_token).await;
-                    return self.coordinate_retry_result(expected_session_id, generation, retried);
+                    return self
+                        .coordinate_retry_result(expected_session_id, generation, retried)
+                        .await;
                 }
                 ExchangeFailureResolution::Failed(error) => {
                     self.record_exchange_failure(generation, expected_session_id, &error)
@@ -553,6 +597,7 @@ impl CursorProvider {
         drop(gate);
         let retried = self.call_endpoint(endpoint, &refreshed_access_token).await;
         self.coordinate_retry_result(expected_session_id, refreshed_generation, retried)
+            .await
     }
 
     async fn call_endpoint(
@@ -596,6 +641,7 @@ impl CursorProvider {
         generation: u64,
     ) -> ProviderResult<AuthState> {
         if expires_at <= Utc::now() {
+            let _persist_gate = self.credential_gate.lock().await;
             let mut state = self.lock_state()?;
             if state.pending_flow.as_ref().map(PendingFlow::flow_id) == Some(flow_id) {
                 state.pending_flow = None;
@@ -607,13 +653,10 @@ impl CursorProvider {
         let polled = match self.api.poll_login(uuid, verifier).await {
             Ok(polled) => polled,
             Err(error) => {
-                match self.resolve_exchange_failure(
-                    generation,
-                    None,
-                    Some(flow_id),
-                    error,
-                    false,
-                )? {
+                match self
+                    .resolve_exchange_failure_gated(generation, None, Some(flow_id), error, false)
+                    .await?
+                {
                     ExchangeFailureResolution::Failed(error) => return Err(error),
                     ExchangeFailureResolution::Shared { .. } => {
                         unreachable!("a shared refresh was not allowed")
@@ -794,8 +837,10 @@ impl CursorProvider {
     }
 
     fn auth_tokens(&self, expected_session_id: u64) -> ProviderResult<AuthSnapshot> {
-        let mut state = self.lock_state()?;
-        state.expire_pending_flow();
+        // Callers expire stale pending flows through `expire_pending_flow_gated`
+        // before this snapshot, so the clear stays serialized against
+        // `install_exchange`.
+        let state = self.lock_state()?;
         if state.session_id != expected_session_id {
             return Err(ProviderError::ProtocolIncompatible {
                 message: "Cursor authentication session changed during the operation".into(),
@@ -903,12 +948,13 @@ impl CursorProvider {
         ))
     }
 
-    fn coordinate_retry_result(
+    async fn coordinate_retry_result(
         &self,
         expected_session_id: u64,
         expected_generation: u64,
         result: Result<EndpointData, ApiFailure>,
     ) -> Result<EndpointData, ApiFailure> {
+        let _persist_gate = self.credential_gate.lock().await;
         if !matches!(
             result,
             Err(ApiFailure {
@@ -1156,8 +1202,8 @@ impl Provider for CursorProvider {
             authorization_code,
             redirect_uri: _,
         } = request;
-        let (generation, browser_flow) = {
-            let mut state = self.lock_state()?;
+        let (generation, browser_flow, api_key_expired) = {
+            let state = self.lock_state()?;
             let pending = state
                 .pending_flow
                 .as_ref()
@@ -1174,15 +1220,25 @@ impl Provider for CursorProvider {
                     ..
                 } => (None, Some((uuid.clone(), verifier.clone(), *expires_at))),
             };
-            if api_key_expires_at.is_some_and(|expires_at| expires_at <= Utc::now()) {
-                // The abandoned flow must release the pending slot.
-                state.pending_flow = None;
-                return Err(ProviderError::AuthenticationInvalid {
-                    message: "Cursor API key sign-in expired".into(),
-                });
-            }
-            (state.generation, browser_flow)
+            (
+                state.generation,
+                browser_flow,
+                api_key_expires_at.is_some_and(|expires_at| expires_at <= Utc::now()),
+            )
         };
+        if api_key_expired {
+            // The abandoned flow must release the pending slot, under the
+            // persist gate so the clear cannot interleave with a concurrent
+            // install_exchange's store write and commit.
+            let _persist_gate = self.credential_gate.lock().await;
+            let mut state = self.lock_state()?;
+            if state.pending_flow.as_ref().map(PendingFlow::flow_id) == Some(flow_id.as_str()) {
+                state.pending_flow = None;
+            }
+            return Err(ProviderError::AuthenticationInvalid {
+                message: "Cursor API key sign-in expired".into(),
+            });
+        }
         if let Some((uuid, verifier, expires_at)) = browser_flow {
             return self
                 .complete_browser_auth(&flow_id, &uuid, &verifier, expires_at, generation)
@@ -1199,13 +1255,10 @@ impl Provider for CursorProvider {
         let trimmed_api_key = Zeroizing::new(api_key.trim().to_owned());
         let exchange = match self.api.exchange_user_api_key(&trimmed_api_key).await {
             Ok(exchange) => exchange,
-            Err(error) => match self.resolve_exchange_failure(
-                generation,
-                None,
-                Some(&flow_id),
-                error,
-                false,
-            )? {
+            Err(error) => match self
+                .resolve_exchange_failure_gated(generation, None, Some(&flow_id), error, false)
+                .await?
+            {
                 ExchangeFailureResolution::Failed(error) => return Err(error),
                 ExchangeFailureResolution::Shared { .. } => {
                     unreachable!("authentication completion never shares a refresh")
@@ -1219,14 +1272,12 @@ impl Provider for CursorProvider {
 
     async fn auth_status(&self) -> ProviderResult<AuthState> {
         self.ensure_credentials_loaded().await?;
-        let mut state = self.lock_state()?;
         // A flow nobody finished would stay pending forever otherwise, and a
         // pending flow names no account, so the identity behind it would stay
         // invisible to anything comparing accounts.
-        if state.expire_pending_flow()
-            && state.auth.is_none()
-            && state.invalid_account_key.is_some()
-        {
+        let expired_flow = self.expire_pending_flow_gated().await?;
+        let mut state = self.lock_state()?;
+        if expired_flow && state.auth.is_none() && state.invalid_account_key.is_some() {
             state.invalid_reason = Some("the Cursor sign-in was not completed".into());
         }
         let state = state;
