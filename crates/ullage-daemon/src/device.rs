@@ -54,11 +54,24 @@ struct PendingPairCode {
     failures: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DeviceCredential {
     pub device_id: String,
     pub device_token: String,
     pub device_name: String,
+}
+
+// `device_token` is a bearer credential: never let it reach a log through
+// `Debug`.
+impl std::fmt::Debug for DeviceCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeviceCredential")
+            .field("device_id", &self.device_id)
+            .field("device_token", &"<redacted>")
+            .field("device_name", &self.device_name)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +101,7 @@ impl DeviceStore {
 
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, String> {
         let path = path.into();
+        sweep_stale_temporary_files(&path);
         let devices = match read_private_file(&path)? {
             Some(bytes) => {
                 let devices = serde_json::from_slice::<DeviceFile>(&bytes)
@@ -166,6 +180,11 @@ impl DeviceStore {
                 break candidate;
             }
         };
+        // The display split below assumes exactly PAIR_CODE_LENGTH characters;
+        // a custom generator must uphold that or the code cannot be entered.
+        if normalized.chars().count() != PAIR_CODE_LENGTH {
+            return Err("pair code generator returned a malformed code".into());
+        }
         let expires_at = now + TimeDelta::seconds(PAIR_CODE_TTL_SECONDS);
         state.pair_code = Some(PendingPairCode {
             normalized: normalized.clone(),
@@ -204,10 +223,12 @@ impl DeviceStore {
         device_name: &str,
         now: DateTime<Utc>,
     ) -> Result<DeviceCredential, PairDeviceError> {
-        if device_name.chars().count() > 64 {
+        // Length is validated on the sanitized name so the limit matches what
+        // is actually stored and shown; `validate_devices` re-checks on load.
+        let name = sanitize_device_name(device_name);
+        if name.chars().count() > 64 {
             return Err(PairDeviceError::InvalidName);
         }
-        let name = sanitize_device_name(device_name);
         let normalized = normalize_pair_code(pair_code);
         let mut state = self.lock();
         let valid = if let Some(pending) = state.pair_code.as_ref() {
@@ -345,7 +366,11 @@ fn validate_devices(devices: &[DeviceRecord]) -> Result<(), &'static str> {
         {
             return Err("device name is malformed");
         }
-        if device.last_seen_at < device.created_at {
+        if device.last_seen_at < device.created_at
+            || device
+                .revoked_at
+                .is_some_and(|revoked_at| revoked_at < device.created_at)
+        {
             return Err("device timestamps are malformed");
         }
         if device.token_hash.len() != 64
@@ -454,6 +479,10 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
+/// Device mutations serialize on the store mutex and hold it across the
+/// atomic write. The file is a small local JSON document (one fsync plus one
+/// rename), so the critical section stays bounded; callers are one-shot
+/// control commands, not a hot path.
 fn persist_state(state: &DeviceState) -> Result<(), String> {
     persist_state_with_current_seen(state, &[])
 }
@@ -507,7 +536,81 @@ fn replace_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let _guard = TemporaryFile(temporary.clone());
     create_private_file(&temporary, bytes)?;
     replace_path(&temporary, path)
-        .map_err(|error| format!("{} could not be replaced: {error}", path.display()))
+        .map_err(|error| format!("{} could not be replaced: {error}", path.display()))?;
+    // The rename is only durable once the directory entry is on disk.
+    sync_parent_directory(path)
+        .map_err(|error| format!("{} could not be synced: {error}", path.display()))
+}
+
+/// Removes temp files left behind by a crashed `replace_private_file`, matched
+/// on the `.name.pid.sequence.tmp` naming this store generates. Best effort: a
+/// file that cannot be removed is left for the next open.
+fn sweep_stale_temporary_files(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let prefix = format!(".{file_name}.");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_stale_temporary_name(&name, &prefix) {
+            continue;
+        }
+        if entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Matches only the `.name.digits.digits.tmp` temp names `replace_private_file`
+/// generates, so the sweep never touches a user file that merely looks similar.
+fn is_stale_temporary_name(name: &str, prefix: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(body) = rest.strip_suffix(".tmp") else {
+        return false;
+    };
+    let mut parts = body.split('.');
+    let numeric = |part: Option<&str>| {
+        part.is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    };
+    numeric(parts.next()) && numeric(parts.next()) && parts.next().is_none()
+}
+
+/// fsyncs the directory holding `path` so a committed rename survives a crash.
+/// On Windows the write-through rename already flushes the directory entry.
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    let path = std::ffi::CString::new(parent.as_os_str().as_bytes())
+        .map_err(|_| format!("{} has no valid parent path", path.display()))?;
+    // SAFETY: `path` is a valid null-terminated path; the fd is checked below
+    // and ownership is passed to `File` only on success.
+    let descriptor = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    // SAFETY: `descriptor` is a valid, freshly opened fd owned by this scope.
+    let directory = unsafe { std::fs::File::from_raw_fd(descriptor) };
+    directory.sync_all().map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn read_private_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -1145,5 +1248,87 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(std::fs::read(&path).unwrap(), after_second_write);
+    }
+
+    #[test]
+    fn a_pair_code_is_dead_at_its_expiry_instant() {
+        let store = DeviceStore::memory();
+        let code = store.create_pair_code_at(fixed_time(0)).unwrap();
+        assert_eq!(
+            store.pair_at(&code.code, "edge", fixed_time(300)),
+            Err(PairDeviceError::InvalidCode)
+        );
+        assert_eq!(
+            store.pair_at(&code.code, "edge", fixed_time(299)),
+            Err(PairDeviceError::InvalidCode)
+        );
+    }
+
+    #[test]
+    fn unparseable_pair_codes_count_toward_the_failure_limit() {
+        let store = DeviceStore::memory();
+        let code = store.create_pair_code_at(fixed_time(0)).unwrap();
+        for _ in 0..5 {
+            assert_eq!(
+                store.pair_at("not-a-code", "wrong", fixed_time(1)),
+                Err(PairDeviceError::InvalidCode)
+            );
+        }
+        assert_eq!(
+            store.pair_at(&code.code, "too late", fixed_time(1)),
+            Err(PairDeviceError::InvalidCode)
+        );
+    }
+
+    #[test]
+    fn device_credential_debug_never_exposes_the_token() {
+        let credential = DeviceCredential {
+            device_id: "device-1".into(),
+            device_token: "s3cr3t-token".into(),
+            device_name: "laptop".into(),
+        };
+        let rendered = format!("{credential:?}");
+        assert!(rendered.contains("device-1"));
+        assert!(!rendered.contains("s3cr3t-token"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_a_corrupt_device_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.path().join("devices.json");
+        std::fs::write(&path, b"not json").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            DeviceStore::open(&path)
+                .err()
+                .is_some_and(|error| error.contains("could not be parsed"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authenticate_returns_an_error_when_the_seen_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.path().join("devices.json");
+        let store = DeviceStore::open(&path).unwrap();
+        let code = store.create_pair_code_at(fixed_time(0)).unwrap();
+        let credential = store.pair_at(&code.code, "device", fixed_time(0)).unwrap();
+
+        // Replacing the parent with a file makes the next atomic write fail
+        // while the in-memory state stays consistent.
+        std::fs::remove_dir_all(directory.path()).unwrap();
+        std::fs::write(directory.path(), b"blocked").unwrap();
+        assert!(
+            store
+                .authenticate_at(&credential.device_token, fixed_time(120))
+                .is_err()
+        );
     }
 }
