@@ -1105,6 +1105,122 @@ fn rejects_unsafe_controls_in_command_arguments_before_sending() {
     }
 }
 
+/// Every free-text argument on every leaf subcommand must reject control
+/// characters at parse time through `free_text_argument`. Walking the clap
+/// schema — not a hand-mirrored list — is what makes this auditable: a new
+/// `String` field without the marker fails this test.
+#[test]
+fn every_free_text_argument_rejects_control_characters() {
+    use clap::{CommandFactory, Parser};
+    use ullage_cli::Cli;
+
+    // Canonical argv for every leaf subcommand: all positionals (including
+    // optional ones) first, then the required options.
+    let canonical: &[(&[&str], &[&str])] = &[
+        (&["daemon", "install"], &[]),
+        (&["daemon", "start"], &[]),
+        (&["daemon", "stop"], &[]),
+        (&["daemon", "run"], &[]),
+        (&["daemon", "status"], &[]),
+        (&["daemon", "uninstall"], &[]),
+        (&["provider", "list"], &[]),
+        (&["account", "add"], &["claude"]),
+        (&["account", "list"], &[]),
+        (&["account", "show"], &["claude-a"]),
+        (&["account", "enable"], &["claude-a"]),
+        (&["account", "disable"], &["claude-a"]),
+        (&["account", "label"], &["claude-a", "label-a"]),
+        (&["account", "metrics"], &["claude-a", "usage"]),
+        (&["account", "remove"], &["claude-a"]),
+        (&["auth", "login"], &["claude"]),
+        (
+            &["auth", "complete"],
+            &["claude", "flow-1", "--account", "claude-a"],
+        ),
+        (&["auth", "status"], &["claude", "--account", "claude-a"]),
+        (&["auth", "logout"], &["claude", "--account", "claude-a"]),
+        (&["probe"], &["claude-a"]),
+        (&["show"], &["claude-a"]),
+        (&["device", "pair"], &[]),
+        (&["device", "list"], &[]),
+        (&["device", "revoke"], &["dev-1"]),
+    ];
+
+    // Collect every leaf path from the schema and require full coverage.
+    fn leaf_paths(command: &clap::Command, path: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+        let mut is_leaf = true;
+        for subcommand in command.get_subcommands() {
+            if subcommand.get_name() == "help" {
+                continue;
+            }
+            is_leaf = false;
+            path.push(subcommand.get_name().to_owned());
+            leaf_paths(subcommand, path, out);
+            path.pop();
+        }
+        if is_leaf && !path.is_empty() {
+            out.push(path.clone());
+        }
+    }
+    let mut command = Cli::command();
+    command.build();
+    let mut paths = Vec::new();
+    leaf_paths(&command, &mut Vec::new(), &mut paths);
+    let mut expected: Vec<Vec<String>> = canonical
+        .iter()
+        .map(|(path, _)| path.iter().map(ToString::to_string).collect())
+        .collect();
+    paths.sort();
+    expected.sort();
+    assert_eq!(paths, expected, "leaf subcommand coverage drifted");
+
+    const BAD: &str = "safe\u{0007}value";
+    for (path, tokens) in canonical {
+        let leaf = path.iter().fold(&command, |command, name| {
+            command.find_subcommand(name).expect("listed leaf exists")
+        });
+        for argument in leaf.get_arguments() {
+            if !argument.get_action().takes_values() || !argument.get_possible_values().is_empty() {
+                continue;
+            }
+            let mut argv: Vec<String> = std::iter::once("ullage")
+                .chain(path.iter().copied())
+                .map(str::to_owned)
+                .chain(tokens.iter().copied().map(str::to_owned))
+                .collect();
+            if let Some(long) = argument.get_long() {
+                let flag = format!("--{long}");
+                match argv.iter().position(|token| token == &flag) {
+                    // The canonical argv already carries the flag: replace
+                    // its value instead of passing the flag twice.
+                    Some(index) => argv[index + 1] = BAD.to_owned(),
+                    None => {
+                        argv.push(flag);
+                        argv.push(BAD.to_owned());
+                    }
+                }
+            } else {
+                // Positionals occupy the leading canonical tokens after the
+                // program name and subcommand path; the clap index is
+                // one-based among positionals.
+                let index = argument
+                    .get_index()
+                    .expect("non-option argument is positional");
+                argv[1 + path.len() + index - 1] = BAD.to_owned();
+            }
+            let error = match Cli::try_parse_from(&argv) {
+                Err(error) => error,
+                Ok(_) => panic!("{path:?} accepted {BAD:?}: {argv:?}"),
+            };
+            assert!(
+                error.to_string().contains("disallowed control characters"),
+                "{path:?} {}: {error}",
+                argument.get_id()
+            );
+        }
+    }
+}
+
 #[test]
 fn reveal_never_exposes_error_details_in_json_output() {
     fn partial(request: &ControlRequest) -> Result<ControlResponse, ClientError> {

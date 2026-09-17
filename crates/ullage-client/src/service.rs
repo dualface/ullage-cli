@@ -208,12 +208,9 @@ mod linux {
 
     pub(super) fn manage(action: ServiceAction, executable: &Path) -> Result<bool, String> {
         let unit = unit_path()?;
-        let systemctl = [Path::new("/usr/bin/systemctl"), Path::new("/bin/systemctl")]
-            .into_iter()
-            .find(|path| path.is_file())
-            .ok_or("systemctl unavailable")?;
         match action {
             ServiceAction::Install => {
+                let systemctl = systemctl()?;
                 write_private(&unit, render_unit(executable)?.as_bytes())?;
                 require(systemctl, &args(&["--user", "daemon-reload"]))?;
                 require(systemctl, &args(&["--user", "enable", "ullage.service"]))?;
@@ -223,30 +220,42 @@ mod linux {
                 if !private_manifest_exists(&unit)? {
                     return Err("daemon service is not installed".into());
                 }
-                require(systemctl, &args(&["--user", "start", "ullage.service"]))?;
+                require(systemctl()?, &args(&["--user", "start", "ullage.service"]))?;
                 Ok(false)
             }
             ServiceAction::Stop => {
                 let installed = private_manifest_exists(&unit)?;
                 let active = installed
                     && run(
-                        systemctl,
+                        systemctl()?,
                         &args(&["--user", "is-active", "--quiet", "ullage.service"]),
                     )?;
                 if installed {
-                    require(systemctl, &args(&["--user", "stop", "ullage.service"]))?;
+                    require(systemctl()?, &args(&["--user", "stop", "ullage.service"]))?;
                 }
                 Ok(active)
             }
             ServiceAction::Uninstall => {
                 if private_manifest_exists(&unit)? {
+                    let systemctl = systemctl()?;
                     require(systemctl, &args(&["--user", "disable", "ullage.service"]))?;
                     std::fs::remove_file(&unit).map_err(|_| "service file could not be removed")?;
+                    // Only a removed unit has anything to reload: on a host
+                    // without a systemd session there is nothing to forget.
+                    require(systemctl, &args(&["--user", "daemon-reload"]))?;
                 }
-                require(systemctl, &args(&["--user", "daemon-reload"]))?;
                 Ok(false)
             }
         }
+    }
+
+    /// Resolved lazily so stop/uninstall on a host that never installed the
+    /// unit does not fail just because `systemctl` is absent.
+    fn systemctl() -> Result<&'static Path, String> {
+        [Path::new("/usr/bin/systemctl"), Path::new("/bin/systemctl")]
+            .into_iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| "systemctl unavailable".into())
     }
 
     fn args(values: &[&str]) -> Vec<OsString> {

@@ -122,8 +122,10 @@ impl EchoGuard {
         }
         let previous = current;
         current.c_lflag &= !libc::ECHO;
+        // TCSANOW, not TCSAFLUSH: input already typed before echo went off was
+        // echoed and stays queued for the read that follows.
         // SAFETY: same preconditions as the `tcgetattr` call above.
-        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &current) } != 0 {
+        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &current) } != 0 {
             return None;
         }
         Some(Self {
@@ -136,8 +138,11 @@ impl EchoGuard {
 impl Drop for EchoGuard {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.take() {
+            // TCSADRAIN waits for pending output and leaves queued input —
+            // anything typed ahead while echo was off — intact for the next
+            // read.
             // SAFETY: `previous` is the mode we read from this same descriptor.
-            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &previous) };
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &previous) };
         }
     }
 }

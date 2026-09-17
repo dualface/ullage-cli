@@ -332,11 +332,7 @@ fn account_metrics_sets_clears_and_rejects_invalid_names_without_a_request() {
     ));
 
     let requests_before = client.requests.lock().unwrap().len();
-    let invalid_names = [
-        "  ".to_string(),
-        "x".repeat(129),
-        "bad\u{202e}name".to_string(),
-    ];
+    let invalid_names = ["  ".to_string(), "x".repeat(129)];
     for invalid in &invalid_names {
         let output = run_from(
             ["ullage", "account", "metrics", "primary", invalid.as_str()],
@@ -350,6 +346,19 @@ fn account_metrics_sets_clears_and_rejects_invalid_names_without_a_request() {
         );
         assert!(!output.stderr.contains("bad"), "{}", output.stderr);
     }
+    // Bidirectional overrides are rejected by the argument parser itself and
+    // the error never echoes the pasted value.
+    let output = run_from(
+        ["ullage", "account", "metrics", "primary", "bad\u{202e}name"],
+        &client,
+    );
+    assert_eq!(output.code, ExitCode::Usage, "{}", output.stderr);
+    assert!(
+        output.stderr.contains("disallowed control characters"),
+        "{}",
+        output.stderr
+    );
+    assert!(!output.stderr.contains("bad"), "{}", output.stderr);
     let mut too_many: Vec<String> = vec![
         "ullage".into(),
         "account".into(),
@@ -427,16 +436,26 @@ fn show_metric_and_no_metric_filter_are_mutually_exclusive() {
 #[test]
 fn show_rejects_invalid_metric_names_without_touching_the_daemon() {
     let client = MockClient::new(|_| unreachable!());
-    for invalid in ["  ", "bad\u{202e}name"] {
-        let output = run_from(["ullage", "show", "primary", "--metric", invalid], &client);
-        assert_eq!(output.code, ExitCode::Usage, "{}", output.stderr);
-        assert!(
-            output.stderr.contains("invalid_account_metrics"),
-            "{}",
-            output.stderr
-        );
-        assert!(!output.stderr.contains("bad"), "{}", output.stderr);
-    }
+    let output = run_from(["ullage", "show", "primary", "--metric", "  "], &client);
+    assert_eq!(output.code, ExitCode::Usage, "{}", output.stderr);
+    assert!(
+        output.stderr.contains("invalid_account_metrics"),
+        "{}",
+        output.stderr
+    );
+    // Bidirectional overrides fail at parse time; the error does not echo the
+    // pasted value.
+    let output = run_from(
+        ["ullage", "show", "primary", "--metric", "bad\u{202e}name"],
+        &client,
+    );
+    assert_eq!(output.code, ExitCode::Usage, "{}", output.stderr);
+    assert!(
+        output.stderr.contains("disallowed control characters"),
+        "{}",
+        output.stderr
+    );
+    assert!(!output.stderr.contains("bad"), "{}", output.stderr);
     assert!(client.requests.lock().unwrap().is_empty());
 }
 

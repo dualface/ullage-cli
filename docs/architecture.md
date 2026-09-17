@@ -162,7 +162,8 @@ while the persisted value in `state.json` wins for an account that already exist
 OAuth and billing endpoints are
 compiled into the adapters and cannot be redirected through local configuration. Unknown
 fields, unsupported versions, duplicate account IDs/selectors, unsafe control characters, unknown
-providers, invalid metric filters, zero timing values, symbolic links, and files above 1 MiB are rejected. Secret
+providers, invalid metric filters, zero interval/timeout/backoff timing values (a zero jitter disables
+jittering and stays valid), symbolic links, and files above 1 MiB are rejected. Secret
 credential values are not part of the schema and are therefore rejected rather than copied into configuration.
 When file fallback is enabled and the native backend is unavailable, plaintext
 files are written under `$XDG_DATA_HOME/ullage/credentials` or

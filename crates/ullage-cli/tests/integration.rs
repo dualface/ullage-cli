@@ -373,11 +373,7 @@ impl CredentialBackend for MemoryBackend {
 #[test]
 fn production_composition_registers_all_four_providers() {
     let credentials = Arc::new(CredentialStore::new(MemoryBackend::default()));
-    let registry = ullage_app::registry_with_credentials(
-        &ullage_app::ProviderSettings::default(),
-        credentials,
-    )
-    .unwrap();
+    let registry = ullage_app::registry_with_credentials(credentials).unwrap();
     let ids = registry
         .descriptors()
         .into_iter()
@@ -428,10 +424,15 @@ fn single_binary_contains_daemon_failure_output() {
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert_eq!(
-        output.stderr,
-        b"{\"status\":\"error\",\"error\":{\"kind\":\"daemon_process_failed\"}}\n"
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let envelope: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap();
+    assert_eq!(envelope["error"]["kind"], "daemon_process_failed");
+    // The daemon's stderr tail rides along in `message`; its ANSI colors are
+    // stripped and its stdout stays out of the report.
+    let message = envelope["error"]["message"].as_str().unwrap();
+    assert!(message.contains("STDERR_SENTINEL"), "{stderr}");
+    assert!(!message.contains("STDOUT_SENTINEL"), "{stderr}");
+    assert!(!message.contains('\u{1b}'), "{stderr}");
 }
 
 #[cfg(unix)]
@@ -454,8 +455,14 @@ fn single_binary_rejects_a_daemon_that_exits_during_startup() {
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert_eq!(
-        output.stderr,
-        b"{\"status\":\"error\",\"error\":{\"kind\":\"daemon_process_failed\"}}\n"
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let envelope: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap();
+    assert_eq!(envelope["error"]["kind"], "daemon_process_failed");
+    // With no stderr output the failure still says what happened.
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("exited during startup")),
+        "{stderr}"
     );
 }

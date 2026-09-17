@@ -29,6 +29,12 @@ const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// How many times a device-code flow is polled before giving up.
 const DEVICE_POLL_LIMIT: usize = 60;
+/// Total cap on device-code polling even when the provider reports an
+/// expiry far in the future; matches the longest real device-flow window.
+#[cfg(not(test))]
+const DEVICE_POLL_DURATION_LIMIT: Duration = Duration::from_secs(15 * 60);
+#[cfg(test)]
+const DEVICE_POLL_DURATION_LIMIT: Duration = Duration::from_millis(100);
 
 /// A round trip that did not produce a usable result.
 enum CallFailure {
@@ -225,6 +231,12 @@ impl Session<'_> {
                 return Err(CallFailure::Transport {
                     kind: "daemon_unavailable",
                     code: ExitCode::DaemonUnavailable,
+                });
+            }
+            Err(ClientError::InvalidEndpoint) => {
+                return Err(CallFailure::Transport {
+                    kind: "invalid_control_socket",
+                    code: ExitCode::Usage,
                 });
             }
             Err(_) => return Err(Self::untrusted()),
@@ -604,7 +616,16 @@ fn authenticate_once(
                 })?
             };
             let value = value.trim().to_owned();
-            if value.is_empty() || value.chars().any(is_unsafe_control) {
+            if value.chars().any(is_unsafe_control) {
+                prompt.tell(
+                    "The pasted value contains control characters; aborting the sign-in rather \
+                     than sending them to the provider.",
+                );
+                return Err(LoginError::Aborted {
+                    stage: LoginStage::CompleteAuth,
+                });
+            }
+            if value.is_empty() {
                 return Err(LoginError::Aborted {
                     stage: LoginStage::CompleteAuth,
                 });
@@ -690,9 +711,15 @@ fn poll_device_flow(
     flow_id: &str,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<AuthState, LoginError> {
+    let started = std::time::Instant::now();
     let mut attempts = 0;
     loop {
-        if challenge_expired(expires_at) || (expires_at.is_none() && attempts >= DEVICE_POLL_LIMIT)
+        // The expiry the provider reports can lie far in the future, so a
+        // wall-clock cap bounds the poll in addition to the attempt count
+        // that covers the no-expiry case.
+        if challenge_expired(expires_at)
+            || started.elapsed() >= DEVICE_POLL_DURATION_LIMIT
+            || (expires_at.is_none() && attempts >= DEVICE_POLL_LIMIT)
         {
             return Err(LoginError::Flow {
                 stage: LoginStage::CompleteAuth,

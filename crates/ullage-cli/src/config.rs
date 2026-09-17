@@ -3,6 +3,8 @@ use std::time::Duration;
 use std::{fs::File, io::Read};
 
 use serde::{Deserialize, Serialize};
+
+use crate::PROVIDER_IDS;
 use ullage_auth::CredentialKey;
 use ullage_core::{ProviderId, UsageQuery, summary::MetricFilter};
 use ullage_daemon::{AccountConfig, AccountId, BackoffConfig, DaemonConfig, ProviderLimit};
@@ -10,7 +12,6 @@ use ullage_http::parse_http_bind;
 
 pub const CONFIG_VERSION: u16 = 1;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
-const PROVIDERS: [&str; 4] = ["claude", "chatgpt", "grok", "cursor"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -285,7 +286,7 @@ fn validate(config: &AppConfig) -> Result<(), String> {
     }
     let mut limited_providers = std::collections::BTreeSet::new();
     for limit in &config.daemon.provider_limits {
-        if !PROVIDERS.contains(&limit.provider.as_str())
+        if !PROVIDER_IDS.contains(&limit.provider.as_str())
             || limit.maximum_concurrency == 0
             || !limited_providers.insert(&limit.provider)
         {
@@ -296,7 +297,7 @@ fn validate(config: &AppConfig) -> Result<(), String> {
     let mut selectors = std::collections::BTreeSet::new();
     for account in &config.accounts {
         if account.id.trim().is_empty()
-            || !PROVIDERS.contains(&account.provider.as_str())
+            || !PROVIDER_IDS.contains(&account.provider.as_str())
             || CredentialKey::new(&account.provider, &account.id).is_err()
             || account
                 .id
@@ -315,10 +316,15 @@ fn validate(config: &AppConfig) -> Result<(), String> {
                 account.id
             ));
         }
-        if !ids.insert(&account.id) {
+        if !ids.insert(account.id.trim()) {
             return Err("configured account ids must be unique".into());
         }
-        if !selectors.insert((&account.provider, &account.label)) {
+        // Trim like `MetricFilter`/`ask_label` do, so `"x"` and `" x"` do not
+        // pass as distinct selectors.
+        if !selectors.insert((
+            account.provider.trim(),
+            account.label.as_deref().map(str::trim),
+        )) {
             return Err("configured provider account selectors must be unique".into());
         }
         if account.interval_seconds == 0

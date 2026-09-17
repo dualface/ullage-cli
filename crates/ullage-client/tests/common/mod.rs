@@ -49,6 +49,11 @@ impl ControlClient for MockClient {
                 ClientError::DaemonProcess => ClientError::DaemonProcess,
                 ClientError::DaemonUnavailable => ClientError::DaemonUnavailable,
                 ClientError::InvalidResponse => ClientError::InvalidResponse,
+                ClientError::InvalidEndpoint => ClientError::InvalidEndpoint,
+                ClientError::DaemonProcessOutput(detail) => {
+                    ClientError::DaemonProcessOutput(detail.clone())
+                }
+                ClientError::DaemonStillRunning => ClientError::DaemonStillRunning,
             }),
         }
     }

@@ -34,6 +34,7 @@ mod summary_render_tests;
 
 use render::{ResolvedMetricFilter, human_result, render_stopped_service, sanitize_cell};
 use table::Palette;
+use ullage_core::is_unsafe_identity_character as is_unsafe_control;
 use ullage_core::summary::MetricFilter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,8 +63,20 @@ pub enum ClientError {
     DaemonUnavailable,
     #[error("daemon response was invalid")]
     InvalidResponse,
+    /// The configured endpoint is malformed: a relative or otherwise unusable
+    /// `ULLAGE_CONTROL_SOCKET`/`ULLAGE_CONTROL_PIPE` value, reported under its
+    /// own kind instead of a protocol failure.
+    #[error("control endpoint is invalid")]
+    InvalidEndpoint,
     #[error("daemon process failed")]
     DaemonProcess,
+    /// Daemon startup or shutdown failed; carries the captured stderr tail or
+    /// the reason no tail could be collected.
+    #[error("daemon process failed: {0}")]
+    DaemonProcessOutput(String),
+    /// A daemon still answers on the control endpoint after the service stop.
+    #[error("daemon is still running")]
+    DaemonStillRunning,
 }
 
 pub trait ControlClient {
@@ -240,20 +253,9 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
-    /// Query a provider now and persist a usage snapshot.
-    ///
-    /// Contacts the provider for one account id and stores a snapshot. By default
-    /// the command waits until that snapshot is ready. `--no-wait` asks the daemon
-    /// to start the probe and returns immediately with an acknowledgement, without
-    /// printing usage.
+    // `about`/`long_about` live on `ProbeArgs`/`ShowArgs` so the help text is
+    // declared once; doc comments here would duplicate them and drift.
     Probe(ProbeArgs),
-    /// Print persisted usage snapshots without calling the provider.
-    ///
-    /// Pass an account id, or `--all` to print every stored snapshot. The
-    /// readable summary hides the rows the account's stored metric filter
-    /// names; `--metric` keeps only the rows it names for this invocation, and
-    /// `--no-metric-filter` ignores the stored filter. Both flags affect the
-    /// readable summary only: `--raw` and JSON output keep every measurement.
     Show(ShowArgs),
     /// Pair, inspect, and revoke HTTP API devices.
     #[command(arg_required_else_help = true, after_help = DEVICE_AFTER_HELP)]
@@ -272,7 +274,7 @@ pub enum DeviceCommand {
     /// Revoke one device without prompting for confirmation.
     Revoke {
         /// Stable device identifier shown by `ullage device list`.
-        #[arg(value_name = "DEVICE_ID")]
+        #[arg(value_name = "DEVICE_ID", value_parser = free_text_argument)]
         device_id: String,
     },
 }
@@ -309,10 +311,10 @@ pub enum AccountCommand {
     /// Create an account for a provider id.
     Add {
         /// Provider id such as claude, chatgpt, grok, or cursor. Not a display name.
-        #[arg(value_name = "PROVIDER_ID")]
+        #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: String,
         /// Account label sent to the provider during probes. Distinct from the account id.
-        #[arg(long, value_name = "ACCOUNT_LABEL")]
+        #[arg(long, value_name = "ACCOUNT_LABEL", value_parser = free_text_argument)]
         label: Option<String>,
     },
     /// List local accounts.
@@ -320,7 +322,7 @@ pub enum AccountCommand {
     /// Show one account by account id.
     Show {
         /// Stable account id, not the account label.
-        #[arg(value_name = "ACCOUNT_ID")]
+        #[arg(value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
     },
     /// Enable automatic scheduled probing for an account id.
@@ -328,7 +330,7 @@ pub enum AccountCommand {
     /// Manual `probe` still contacts the provider.
     Enable {
         /// Stable account id, not the account label.
-        #[arg(value_name = "ACCOUNT_ID")]
+        #[arg(value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
     },
     /// Disable automatic scheduled probing for an account id.
@@ -336,7 +338,7 @@ pub enum AccountCommand {
     /// Manual `probe` still contacts the provider.
     Disable {
         /// Stable account id, not the account label.
-        #[arg(value_name = "ACCOUNT_ID")]
+        #[arg(value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
     },
     /// Set or clear the account label of an account id.
@@ -346,10 +348,10 @@ pub enum AccountCommand {
     /// change.
     Label {
         /// Stable account id, not the account label.
-        #[arg(value_name = "ACCOUNT_ID")]
+        #[arg(value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
         /// New account label. Omit this argument to clear the current label.
-        #[arg(value_name = "ACCOUNT_LABEL")]
+        #[arg(value_name = "ACCOUNT_LABEL", value_parser = free_text_argument)]
         label: Option<String>,
     },
     /// Set or clear the display metric hide list of an account id.
@@ -360,10 +362,10 @@ pub enum AccountCommand {
     /// Invalid names fail with exit code 64 without contacting the daemon.
     Metrics {
         /// Stable account id, not the account label.
-        #[arg(value_name = "ACCOUNT_ID")]
+        #[arg(value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
         /// Display metric names to hide. Omit every value to clear.
-        #[arg(value_name = "METRIC")]
+        #[arg(value_name = "METRIC", value_parser = free_text_argument)]
         metrics: Vec<String>,
     },
     /// Delete an account id and its stored snapshots.
@@ -372,7 +374,7 @@ pub enum AccountCommand {
     /// has stored credentials.
     Remove {
         /// Stable account id, not the account label.
-        #[arg(value_name = "ACCOUNT_ID")]
+        #[arg(value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
     },
 }
@@ -418,10 +420,15 @@ pub enum AuthCommand {
     #[command(after_help = AUTH_LOGIN_AFTER_HELP)]
     Login {
         /// Provider id such as claude, chatgpt, grok, or cursor. Not a display name.
-        #[arg(value_name = "PROVIDER_ID")]
+        #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: Option<String>,
         /// Existing account id. Omit this flag to walk the interactive login flow.
-        #[arg(long, requires = "provider", value_name = "ACCOUNT_ID")]
+        #[arg(
+            long,
+            requires = "provider",
+            value_name = "ACCOUNT_ID",
+            value_parser = free_text_argument
+        )]
         account: Option<String>,
         /// Authentication method. Default is the provider's preferred method.
         #[arg(long, value_enum, value_name = "METHOD")]
@@ -442,43 +449,48 @@ pub enum AuthCommand {
     /// with `account remove`.
     Complete {
         /// Provider id such as claude, chatgpt, grok, or cursor. Not a display name.
-        #[arg(value_name = "PROVIDER_ID")]
+        #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: String,
         /// Stable account id, not the account label.
-        #[arg(long, value_name = "ACCOUNT_ID")]
+        #[arg(long, value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
         /// Flow identifier printed by `auth login`, not a completion value.
-        #[arg(value_name = "FLOW_ID")]
+        #[arg(value_name = "FLOW_ID", value_parser = free_text_argument)]
         flow_id: String,
         /// OAuth redirect URI to submit with the completion value, when required.
-        #[arg(long, value_name = "URI")]
+        #[arg(long, value_name = "URI", value_parser = free_text_argument)]
         redirect_uri: Option<String>,
         /// Environment variable that holds the provider-requested completion
         /// value (authorization code or API token). Leave unset for device-code
         /// flows. The value is never accepted as a process argument.
-        #[arg(long, default_value = "ULLAGE_AUTH_CODE", value_name = "ENV_VAR")]
+        #[arg(
+            long,
+            default_value = "ULLAGE_AUTH_CODE",
+            value_name = "ENV_VAR",
+            value_parser = free_text_argument
+        )]
         authorization_code_env: String,
     },
     /// Show the stored authentication state for an account id.
     Status {
         /// Provider id such as claude, chatgpt, grok, or cursor. Not a display name.
-        #[arg(value_name = "PROVIDER_ID")]
+        #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: String,
         /// Stable account id, not the account label.
-        #[arg(long, value_name = "ACCOUNT_ID")]
+        #[arg(long, value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
     },
     /// Forget stored credentials for an account id.
     Logout {
         /// Provider id such as claude, chatgpt, grok, or cursor. Not a display name.
-        #[arg(value_name = "PROVIDER_ID")]
+        #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: String,
         /// Stable account id, not the account label.
-        #[arg(long, value_name = "ACCOUNT_ID")]
+        #[arg(long, value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
         account: String,
         /// Optional account label forwarded to the provider with logout. Some
         /// providers ignore it.
-        #[arg(long, value_name = "ACCOUNT_LABEL")]
+        #[arg(long, value_name = "ACCOUNT_LABEL", value_parser = free_text_argument)]
         account_label: Option<String>,
     },
 }
@@ -491,7 +503,7 @@ pub enum AuthCommand {
 )]
 pub struct ProbeArgs {
     /// Stable account id, not the account label.
-    #[arg(value_name = "ACCOUNT_ID")]
+    #[arg(value_name = "ACCOUNT_ID", value_parser = free_text_argument)]
     pub account: String,
     /// Start the probe and return immediately without waiting for usage.
     #[arg(long = "no-wait", action = clap::ArgAction::SetFalse, default_value_t = true)]
@@ -509,7 +521,8 @@ pub struct ShowArgs {
     #[arg(
         required_unless_present = "all",
         conflicts_with = "all",
-        value_name = "ACCOUNT_ID"
+        value_name = "ACCOUNT_ID",
+        value_parser = free_text_argument
     )]
     pub account: Option<String>,
     /// Print every stored snapshot instead of selecting one account id.
@@ -522,7 +535,8 @@ pub struct ShowArgs {
     #[arg(
         long = "metric",
         value_name = "METRIC",
-        conflicts_with = "no_metric_filter"
+        conflicts_with = "no_metric_filter",
+        value_parser = free_text_argument
     )]
     pub metric: Vec<String>,
     /// Ignore the account's stored metric filter for this invocation.
@@ -549,15 +563,11 @@ fn classify_readiness_response(
         return Err(ClientError::InvalidResponse);
     }
     if response.version == CONTROL_PROTOCOL_VERSION
+        && !result_contains_unsafe_control(&response.result)
         && matches!(
             &response.result,
-            ControlResult::DaemonStatus(status) if !status.shutting_down
-        )
-        && response_matches_command(
-            &Command::Daemon {
-                command: DaemonCommand::Status,
-            },
-            &response.result,
+            ControlResult::DaemonStatus(status)
+                if !status.shutting_down && daemon_status_payload_is_well_formed(status)
         )
     {
         Ok(DaemonReadiness::Ready)
@@ -611,11 +621,13 @@ impl SystemClient {
         classify_readiness_response(&response, &request_id)
     }
 
+    /// `NotReady` — the daemon is draining or answered `ProtocolMismatch` — is
+    /// a transient state callers retry inside their existing budget, not a
+    /// broken reply.
     fn daemon_is_ready(&self, timeout: Duration) -> Result<bool, ClientError> {
         match self.daemon_readiness(timeout)? {
             DaemonReadiness::Ready => Ok(true),
-            DaemonReadiness::Unavailable => Ok(false),
-            DaemonReadiness::NotReady => Err(ClientError::InvalidResponse),
+            DaemonReadiness::Unavailable | DaemonReadiness::NotReady => Ok(false),
         }
     }
 
@@ -632,6 +644,16 @@ impl SystemClient {
             let stop_issued = service::stop().map_err(|_| ClientError::DaemonProcess)?;
             if stop_issued {
                 self.wait_for_service_stopped()?;
+            } else {
+                // The service stop removed nothing: a `daemon run` instance it
+                // does not manage may still answer. Success is only honest
+                // when the control endpoint is actually gone.
+                match self.daemon_readiness(Duration::from_millis(250))? {
+                    DaemonReadiness::Unavailable => {}
+                    DaemonReadiness::Ready | DaemonReadiness::NotReady => {
+                        return Err(ClientError::DaemonStillRunning);
+                    }
+                }
             }
             if action == ServiceAction::Stop {
                 return Ok(());
@@ -683,18 +705,18 @@ impl SystemClient {
         request: &ControlRequest,
         timeout: Duration,
     ) -> Result<ControlResponse, ClientError> {
-        self.send_unix(request, Some(timeout.max(Duration::from_millis(1))))
+        self.send_unix(request, timeout.max(Duration::from_millis(1)))
     }
 
     #[cfg(unix)]
     fn send_unix(
         &self,
         request: &ControlRequest,
-        timeout: Option<Duration>,
+        timeout: Duration,
     ) -> Result<ControlResponse, ClientError> {
         use std::os::unix::net::UnixStream;
 
-        let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
+        let deadline = std::time::Instant::now() + timeout;
         let endpoint = self
             .endpoint
             .as_ref()
@@ -704,12 +726,8 @@ impl SystemClient {
             UnixStream::connect(endpoint).map_err(|_| ClientError::DaemonUnavailable)?;
         validate_unix_peer(&stream)?;
         let write_timeout = deadline
-            .map(|deadline| {
-                deadline
-                    .saturating_duration_since(std::time::Instant::now())
-                    .max(Duration::from_millis(1))
-            })
-            .unwrap_or(Duration::from_secs(5))
+            .saturating_duration_since(std::time::Instant::now())
+            .max(Duration::from_millis(1))
             .min(Duration::from_secs(5));
         stream
             .set_write_timeout(Some(write_timeout))
@@ -718,15 +736,13 @@ impl SystemClient {
 
         let mut encoded = Vec::new();
         while !encoded.ends_with(b"\n") && encoded.len() as u64 <= MAX_RESPONSE_BYTES {
-            if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    return Err(ClientError::DaemonUnavailable);
-                }
-                stream
-                    .set_read_timeout(Some(remaining))
-                    .map_err(|_| ClientError::DaemonUnavailable)?;
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(ClientError::DaemonUnavailable);
             }
+            stream
+                .set_read_timeout(Some(remaining))
+                .map_err(|_| ClientError::DaemonUnavailable)?;
             let remaining = (MAX_RESPONSE_BYTES + 1).saturating_sub(encoded.len() as u64) as usize;
             let mut chunk = [0; 8192];
             let chunk_len = chunk.len().min(remaining);
@@ -750,7 +766,10 @@ impl SystemClient {
         request: &ControlRequest,
         timeout: Duration,
     ) -> Result<ControlResponse, ClientError> {
-        let endpoint = self.endpoint.as_ref().ok_or(ClientError::InvalidResponse)?;
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .ok_or(ClientError::DaemonUnavailable)?;
         send_windows_pipe_with_deadline(endpoint, request, std::time::Instant::now() + timeout)
     }
 }
@@ -767,16 +786,7 @@ fn default_unix_control_socket() -> PathBuf {
 #[cfg(unix)]
 impl ControlClient for SystemClient {
     fn send(&self, request: &ControlRequest) -> Result<ControlResponse, ClientError> {
-        self.send_unix(
-            request,
-            (!request_waits_for_probe(request)).then(|| {
-                if request_completes_a_sign_in(request) {
-                    SIGN_IN_TIMEOUT
-                } else {
-                    CONTROL_TIMEOUT
-                }
-            }),
-        )
+        self.send_unix(request, send_timeout(request))
     }
 
     fn run_daemon(&self) -> Result<(), ClientError> {
@@ -808,14 +818,9 @@ impl ControlClient for SystemClient {
         let endpoint = self
             .endpoint
             .as_ref()
-            .ok_or(ClientError::InvalidResponse)?
+            .ok_or(ClientError::DaemonUnavailable)?
             .clone();
-        let waits_for_probe = request_waits_for_probe(request);
-        let timeout = if request_completes_a_sign_in(request) {
-            SIGN_IN_TIMEOUT
-        } else {
-            CONTROL_TIMEOUT
-        };
+        let timeout = send_timeout(request);
         let request = request.clone();
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
@@ -824,15 +829,9 @@ impl ControlClient for SystemClient {
                 let _ = sender.send(send_windows_pipe(&endpoint, &request));
             })
             .map_err(|_| ClientError::DaemonUnavailable)?;
-        if waits_for_probe {
-            receiver
-                .recv()
-                .map_err(|_| ClientError::DaemonUnavailable)?
-        } else {
-            receiver
-                .recv_timeout(timeout)
-                .map_err(|_| ClientError::DaemonUnavailable)?
-        }
+        receiver
+            .recv_timeout(timeout)
+            .map_err(|_| ClientError::DaemonUnavailable)?
     }
 
     fn run_daemon(&self) -> Result<(), ClientError> {
@@ -865,6 +864,27 @@ fn is_local_windows_pipe(path: &std::path::Path) -> bool {
         .starts_with(r"\\.\pipe\")
 }
 
+/// Longest the client waits on a `Probe { wait: true }` answer. It must outlast
+/// `SIGN_IN_TIMEOUT` and the largest provider query timeout the daemon can be
+/// configured with, while still bounding the read so a wedged daemon cannot
+/// hang `ullage probe` or interactive login's duplicate-retirement probe.
+const PROBE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn send_timeout(request: &ControlRequest) -> Duration {
+    if request_completes_a_sign_in(request) {
+        SIGN_IN_TIMEOUT
+    } else if request_waits_for_probe(request) {
+        PROBE_WAIT_TIMEOUT
+    } else {
+        CONTROL_TIMEOUT
+    }
+}
+
+/// Bytes of daemon stderr kept for a startup failure report; the draining
+/// thread stays alive on the success path so a talkative daemon never blocks
+/// on a full pipe.
+const DAEMON_STDERR_TAIL_BYTES: usize = 8192;
+
 fn run_daemon_process(
     executable: PathBuf,
     arguments: &[OsString],
@@ -875,9 +895,32 @@ fn run_daemon_process(
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| ClientError::DaemonProcess)?;
+    let stderr_tail = child.stderr.take().map(|mut pipe| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name("ullage-daemon-stderr".into())
+            .spawn(move || {
+                let mut tail: Vec<u8> = Vec::new();
+                let mut chunk = [0; 4096];
+                loop {
+                    match pipe.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            tail.extend_from_slice(&chunk[..read]);
+                            let excess = tail.len().saturating_sub(DAEMON_STDERR_TAIL_BYTES);
+                            if excess > 0 {
+                                tail.drain(..excess);
+                            }
+                        }
+                    }
+                }
+                let _ = sender.send(tail);
+            });
+        receiver
+    });
     let deadline = std::time::Instant::now() + startup_timeout;
     loop {
         if child
@@ -885,7 +928,11 @@ fn run_daemon_process(
             .map_err(|_| ClientError::DaemonProcess)?
             .is_some()
         {
-            return Err(ClientError::DaemonProcess);
+            let _ = child.wait();
+            return Err(daemon_process_failure(
+                stderr_tail,
+                "daemon exited during startup",
+            ));
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         match readiness(remaining) {
@@ -893,10 +940,18 @@ fn run_daemon_process(
             Ok(false) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(25));
             }
-            Ok(false) | Err(_) => {
+            Ok(false) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(ClientError::DaemonProcess);
+                return Err(daemon_process_failure(
+                    stderr_tail,
+                    "daemon did not become ready in time",
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
             }
         }
     }
@@ -907,6 +962,24 @@ fn run_daemon_process(
         })
         .map_err(|_| ClientError::DaemonProcess)?;
     Ok(())
+}
+
+/// The error a failed daemon launch reports: `fallback` when stderr stayed
+/// empty, otherwise the sanitized tail so config, credential, and bind errors
+/// are visible instead of a bare `daemon_process_failed`.
+fn daemon_process_failure(
+    stderr_tail: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+    fallback: &str,
+) -> ClientError {
+    let tail = stderr_tail
+        .and_then(|receiver| receiver.recv().ok())
+        .unwrap_or_default();
+    let tail = sanitize_cli_text(String::from_utf8_lossy(&tail).trim());
+    if tail.is_empty() {
+        ClientError::DaemonProcessOutput(fallback.to_owned())
+    } else {
+        ClientError::DaemonProcessOutput(format!("{fallback}; daemon stderr: {tail}"))
+    }
 }
 
 fn daemon_command(windows: bool) -> Result<(PathBuf, Vec<OsString>), ClientError> {
@@ -1124,17 +1197,23 @@ fn validate_windows_pipe_server(pipe: &std::fs::File) -> Result<(), ClientError>
 fn validate_private_unix_socket(path: &std::path::Path) -> Result<(), ClientError> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
+    // A relative path can only come from the environment
+    // (`ULLAGE_CONTROL_SOCKET` or a relative `XDG_RUNTIME_DIR`): that is a
+    // configuration error, not a protocol failure.
     if !path.is_absolute() {
-        return Err(ClientError::InvalidResponse);
+        return Err(ClientError::InvalidEndpoint);
     }
     let metadata = std::fs::symlink_metadata(path).map_err(|_| ClientError::DaemonUnavailable)?;
     let current_user = unsafe { libc::geteuid() };
+    // Between the daemon's bind and its chmod the socket exists with unsafe
+    // permissions; treat every such state as unavailable so readiness probes
+    // retry instead of declaring the peer untrustworthy.
     if !metadata.file_type().is_socket()
         || metadata.file_type().is_symlink()
         || metadata.uid() != current_user
         || metadata.mode() & 0o077 != 0
     {
-        return Err(ClientError::InvalidResponse);
+        return Err(ClientError::DaemonUnavailable);
     }
     Ok(())
 }
@@ -1282,6 +1361,16 @@ pub fn execute_with(
                 cli.color,
                 &view,
             ),
+            Err(ClientError::InvalidEndpoint) => {
+                error_output(ExitCode::Usage, "invalid_control_socket", cli.output)
+            }
+            Err(ClientError::DaemonProcessOutput(detail)) => error_output_with_options(
+                ExitCode::Failure,
+                "daemon_process_failed",
+                cli.output,
+                Some(detail),
+                None,
+            ),
             Err(_) => error_output(ExitCode::Failure, "daemon_process_failed", cli.output),
         };
     }
@@ -1310,6 +1399,20 @@ pub fn execute_with(
                 false,
                 cli.color,
                 &view,
+            ),
+            Err(ClientError::InvalidEndpoint) => {
+                error_output(ExitCode::Usage, "invalid_control_socket", cli.output)
+            }
+            Err(ClientError::DaemonStillRunning) => error_output_with_options(
+                ExitCode::Failure,
+                "daemon_service_failed",
+                cli.output,
+                None,
+                Some(
+                    "a daemon still answers on the control endpoint; stop it where it was \
+                     started (`ullage daemon run` terminal or service manager)"
+                        .into(),
+                ),
             ),
             Err(_) => error_output(ExitCode::Failure, "daemon_service_failed", cli.output),
         };
@@ -1345,7 +1448,25 @@ pub fn execute_with(
                 cli.output,
             );
         }
-        Err(_) => {
+        Err(ClientError::InvalidEndpoint) => {
+            return error_output(ExitCode::Usage, "invalid_control_socket", cli.output);
+        }
+        // `send` only transports requests: a process-management variant from a
+        // `ControlClient` implementation is its own kind of failure, not a
+        // protocol problem.
+        Err(ClientError::DaemonProcess | ClientError::DaemonStillRunning) => {
+            return error_output(ExitCode::Failure, "daemon_process_failed", cli.output);
+        }
+        Err(ClientError::DaemonProcessOutput(detail)) => {
+            return error_output_with_options(
+                ExitCode::Failure,
+                "daemon_process_failed",
+                cli.output,
+                Some(detail),
+                None,
+            );
+        }
+        Err(ClientError::InvalidResponse) => {
             return error_output(
                 ExitCode::ProtocolError,
                 "invalid_daemon_response",
@@ -1427,6 +1548,11 @@ fn with_diagnostic(stderr: &str, detail: &str, format: OutputFormat) -> String {
     }
 }
 
+/// Defense in depth for a `Cli` built without `try_parse_from`: every
+/// free-text argument is already rejected at parse time by
+/// `free_text_argument`; this traversal repeats that check so a
+/// programmatically constructed command cannot smuggle control characters to
+/// the daemon either. New `String` fields must be listed here as well.
 fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
     let contains = |value: &str| value.chars().any(is_unsafe_control);
     match command {
@@ -1463,12 +1589,22 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
                 AccountCommand::Show { account }
                 | AccountCommand::Enable { account }
                 | AccountCommand::Disable { account }
-                | AccountCommand::Metrics { account, .. }
                 | AccountCommand::Remove { account },
         }
         | Command::Probe(ProbeArgs { account, .. }) => {
             if contains(account) {
                 Some("ACCOUNT_ID")
+            } else {
+                None
+            }
+        }
+        Command::Account {
+            command: AccountCommand::Metrics { account, metrics },
+        } => {
+            if contains(account) {
+                Some("ACCOUNT_ID")
+            } else if metrics.iter().any(|metric| contains(metric)) {
+                Some("METRIC")
             } else {
                 None
             }
@@ -1545,13 +1681,15 @@ fn unsafe_control_param_name(command: &Command) -> Option<&'static str> {
                 }
             }
         },
-        Command::Show(args) => args.account.as_deref().and_then(|account| {
-            if contains(account) {
+        Command::Show(args) => {
+            if args.account.as_deref().is_some_and(contains) {
                 Some("ACCOUNT_ID")
+            } else if args.metric.iter().any(|metric| contains(metric)) {
+                Some("--metric")
             } else {
                 None
             }
-        }),
+        }
     }
 }
 
@@ -1744,12 +1882,7 @@ fn response_matches_command(command: &Command, result: &ControlResult) -> bool {
                 command: DaemonCommand::Status,
             },
             ControlResult::DaemonStatus(status),
-        ) => status.accounts.iter().enumerate().all(|(index, account)| {
-            (!account.stale || account.has_snapshot)
-                && status.accounts[index + 1..]
-                    .iter()
-                    .all(|other| other.account_id != account.account_id)
-        }),
+        ) => daemon_status_payload_is_well_formed(status),
         (
             Command::Provider {
                 command: ProviderCommand::List,
@@ -1891,6 +2024,28 @@ fn response_matches_command(command: &Command, result: &ControlResult) -> bool {
     }
 }
 
+/// The payload checks a `DaemonStatus` reply must pass to be trusted, shared
+/// by the response validator and the readiness probe.
+fn daemon_status_payload_is_well_formed(status: &DaemonStatusPayload) -> bool {
+    status.accounts.iter().enumerate().all(|(index, account)| {
+        (!account.stale || account.has_snapshot)
+            && status.accounts[index + 1..]
+                .iter()
+                .all(|other| other.account_id != account.account_id)
+    })
+}
+
+/// Rejects control and bidirectional-override characters in a free-text CLI
+/// value at parse time. Every `String`/`Vec<String>` argument carries this
+/// `value_parser`; `unsafe_control_param_name` below remains the belt for a
+/// `Cli` constructed without parsing.
+fn free_text_argument(value: &str) -> Result<String, String> {
+    if value.chars().any(is_unsafe_control) {
+        return Err("contains disallowed control characters".into());
+    }
+    Ok(value.to_owned())
+}
+
 fn result_contains_unsafe_control(result: &ControlResult) -> bool {
     serde_json::to_value(result)
         .map(|value| value_contains_unsafe_control(&value))
@@ -1918,14 +2073,6 @@ fn value_contains_unsafe_control(value: &serde_json::Value) -> bool {
             false
         }
     }
-}
-
-fn is_unsafe_control(character: char) -> bool {
-    character.is_control()
-        || matches!(
-            character,
-            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-        )
 }
 
 fn error_matches_command(command: &Command, error: &ControlError) -> bool {
@@ -2262,6 +2409,12 @@ pub(crate) fn error_output_with_options(
     let stderr = match format {
         OutputFormat::Table => {
             let mut stderr = format!("error: {kind}\n");
+            if let Some(message) = message {
+                stderr.push_str(&message);
+                if !stderr.ends_with('\n') {
+                    stderr.push('\n');
+                }
+            }
             if let Some(hint) = hint {
                 stderr.push_str("hint: ");
                 stderr.push_str(&hint);
@@ -2397,10 +2550,11 @@ fn unsafe_control_reject_hint(param: &'static str) -> &'static str {
         "--authorization-code-env" => {
             "the --authorization-code-env argument contains disallowed control characters"
         }
+        "--metric" => "the --metric argument contains disallowed control characters",
         "--method" => "the --method argument contains disallowed control characters",
         "--output" => "the --output argument contains disallowed control characters",
         "--color" => "the --color argument contains disallowed control characters",
-        "PROVIDER_ID" | "ACCOUNT_ID" | "FLOW_ID" | "ACCOUNT_LABEL" => {
+        "PROVIDER_ID" | "ACCOUNT_ID" | "FLOW_ID" | "ACCOUNT_LABEL" | "DEVICE_ID" | "METRIC" => {
             "a command argument contains disallowed control characters"
         }
         _ => "a command argument contains disallowed control characters",
@@ -2431,10 +2585,9 @@ fn unsafe_control_in_raw_arguments(arguments: &[OsString]) -> Option<&'static st
             }
             return Some("argument");
         }
-        if index > 0 {
-            if let Some(label) = known_value_flag_label(args[index - 1]) {
-                return Some(label);
-            }
+        // `index` is never 0: the iterator skips the program name.
+        if let Some(label) = known_value_flag_label(args[index - 1]) {
+            return Some(label);
         }
         return Some("argument");
     }
@@ -2448,6 +2601,7 @@ fn known_value_flag_label(flag: &str) -> Option<&'static str> {
         "--account-label" => Some("--account-label"),
         "--redirect-uri" => Some("--redirect-uri"),
         "--authorization-code-env" => Some("--authorization-code-env"),
+        "--metric" => Some("--metric"),
         "--method" => Some("--method"),
         "--output" => Some("--output"),
         "--color" => Some("--color"),
@@ -2484,6 +2638,10 @@ pub(crate) fn error_hint(kind: &str) -> Option<&'static str> {
             "pass display metric names such as `usage` or `Codex`; repeat the flag or argument to \
              name several metrics",
         ),
+        "invalid_control_socket" => Some(
+            "set ULLAGE_CONTROL_SOCKET (or ULLAGE_CONTROL_PIPE on Windows) to an absolute path \
+             for a private socket owned by the current user, or unset it",
+        ),
         _ => None,
     }
 }
@@ -2493,16 +2651,26 @@ fn sanitize_cli_text(text: &str) -> String {
     let mut chars = text.chars().peekable();
     while let Some(character) = chars.next() {
         if character == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for next in chars.by_ref() {
-                    if next == 'm' {
-                        break;
-                    }
-                    if next.is_ascii_alphabetic() {
-                        continue;
+            match chars.peek() {
+                // CSI: parameter and intermediate bytes run until any final
+                // byte in 0x40..=0x7e; a truncated sequence is dropped with
+                // the rest of the input.
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&next) {
+                            break;
+                        }
                     }
                 }
+                // OSC-family sequences (OSC, DCS, SOS, PM, APC) run until BEL,
+                // a C1 ST, or an ESC \ pair; a truncated one is dropped with
+                // the rest of the input.
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    chars.next();
+                    strip_until_string_terminator(&mut chars);
+                }
+                _ => {}
             }
             continue;
         }
@@ -2511,6 +2679,18 @@ fn sanitize_cli_text(text: &str) -> String {
         }
     }
     sanitized
+}
+
+/// Consumes an OSC-family payload through BEL, C1 ST, or ESC \ — whichever
+/// comes first — or through end of input when the sequence is truncated.
+fn strip_until_string_terminator(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    let mut escaped = false;
+    for next in chars.by_ref() {
+        if next == '\u{7}' || next == '\u{9c}' || (escaped && next == '\\') {
+            break;
+        }
+        escaped = next == '\u{1b}';
+    }
 }
 
 fn redact_error_details(result: &mut ControlResult, diagnose: bool) {
@@ -2677,6 +2857,50 @@ mod error_guidance_tests {
         let sanitized = sanitize_cli_text("bad\u{1b}[31mvalue\u{009b}text");
         assert_eq!(sanitized, "badvaluetext");
     }
+
+    #[test]
+    fn sanitize_cli_text_ends_csi_on_any_final_byte() {
+        for (input, expected) in [
+            // SGR, erase-line, and private cursor sequences each end at their
+            // own final byte and must not swallow the text behind them.
+            ("bad\u{1b}[31mvalue", "badvalue"),
+            ("\u{1b}[2Kprompt", "prompt"),
+            ("show\u{1b}[?25l me", "show me"),
+            ("\u{1b}[1;2Hhere", "here"),
+            ("a\u{1b}[0Kb", "ab"),
+        ] {
+            assert_eq!(sanitize_cli_text(input), expected, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn sanitize_cli_text_strips_osc_through_bel_or_st() {
+        for (input, expected) in [
+            // BEL-terminated OSC: the whole payload, not just the ESC, goes.
+            ("pre\u{1b}]8;;https://evil.invalid\u{7}post", "prepost"),
+            ("pre\u{1b}]0;window title\u{7}post", "prepost"),
+            // ST-terminated OSC (ESC \ and C1 ST spellings).
+            ("pre\u{1b}]8;;x\u{1b}\\post", "prepost"),
+            ("pre\u{1b}]8;;x\u{9c}post", "prepost"),
+            // DCS and APC use the same string terminators as OSC.
+            ("pre\u{1b}Ppayload\u{1b}\\post", "prepost"),
+            ("pre\u{1b}_payload\u{7}post", "prepost"),
+        ] {
+            assert_eq!(sanitize_cli_text(input), expected, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn sanitize_cli_text_drops_truncated_sequences() {
+        for (input, expected) in [
+            ("visible\u{1b}[31", "visible"),
+            ("visible\u{1b}]8;;never-terminated", "visible"),
+            ("visible\u{1b}", "visible"),
+            ("kept\u{1b}[malso kept", "keptalso kept"),
+        ] {
+            assert_eq!(sanitize_cli_text(input), expected, "{input:?}");
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -2796,11 +3020,69 @@ mod tests {
                 endpoint: Some(socket_path.clone()),
             };
 
-            assert!(client.daemon_is_ready(Duration::from_secs(1)).is_err());
+            // `NotReady` is transient: the readiness probe reports "not ready"
+            // so callers retry inside their budget instead of failing.
+            assert!(matches!(
+                client.daemon_is_ready(Duration::from_secs(1)),
+                Ok(false)
+            ));
             server.join().unwrap();
             std::fs::remove_file(socket_path).unwrap();
             std::fs::remove_dir(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn readiness_retries_through_not_ready_until_ready() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-readiness-retry-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let socket_path = directory.join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut answered = 0;
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut encoded = String::new();
+                BufReader::new(&mut stream).read_line(&mut encoded).unwrap();
+                let request: ControlRequest = serde_json::from_str(&encoded).unwrap();
+                answered += 1;
+                let result = if answered < 3 {
+                    ControlResult::DaemonStatus(DaemonStatusPayload {
+                        shutting_down: true,
+                        accounts: Vec::new(),
+                        credential_backend: CredentialBackendId::native(),
+                    })
+                } else {
+                    ControlResult::DaemonStatus(DaemonStatusPayload {
+                        shutting_down: false,
+                        accounts: Vec::new(),
+                        credential_backend: CredentialBackendId::native(),
+                    })
+                };
+                let response = ControlResponse {
+                    version: CONTROL_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    result,
+                    diagnostic: None,
+                };
+                serde_json::to_writer(&mut stream, &response).unwrap();
+                stream.write_all(b"\n").unwrap();
+            }
+        });
+        let client = SystemClient {
+            endpoint: Some(socket_path.clone()),
+        };
+
+        client.wait_for_service_ready().unwrap();
+        std::fs::remove_file(socket_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+        // The accept loop stays blocked on the unlinked socket until the test
+        // process exits; dropping the handle detaches it.
+        drop(server);
     }
 
     #[test]
@@ -2948,5 +3230,218 @@ mod tests {
             endpoint.parent().unwrap().file_name().unwrap(),
             std::ffi::OsStr::new(&expected_parent)
         );
+    }
+
+    #[test]
+    fn probe_reads_are_bounded_above_the_sign_in_timeout() {
+        let probe = ControlRequest::new(
+            "t",
+            ControlCommand::Probe {
+                account_id: "claude-a".into(),
+                wait: true,
+            },
+        );
+        assert_eq!(send_timeout(&probe), PROBE_WAIT_TIMEOUT);
+        assert!(PROBE_WAIT_TIMEOUT > SIGN_IN_TIMEOUT);
+
+        let sign_in = ControlRequest::new(
+            "t",
+            ControlCommand::CompleteAuth {
+                provider: ProviderId::new("claude"),
+                account: AccountId::new("claude-a"),
+                request: ullage_protocol::AuthCompleteRequest {
+                    flow_id: "f".into(),
+                    authorization_code: None,
+                    redirect_uri: None,
+                },
+            },
+        );
+        assert_eq!(send_timeout(&sign_in), SIGN_IN_TIMEOUT);
+
+        let control = ControlRequest::new("t", ControlCommand::ListProviders);
+        assert_eq!(send_timeout(&control), CONTROL_TIMEOUT);
+    }
+
+    #[test]
+    fn relative_socket_path_is_an_endpoint_error_not_a_protocol_error() {
+        let client = SystemClient {
+            endpoint: Some(PathBuf::from("relative/control.sock")),
+        };
+        let error = client
+            .send(&ControlRequest::new("t", ControlCommand::ListProviders))
+            .unwrap_err();
+        assert!(matches!(error, ClientError::InvalidEndpoint));
+    }
+
+    #[test]
+    fn unsafe_permitted_socket_is_unavailable_so_readiness_retries() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-perms-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let socket_path = directory.join("control.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        // The state a client sees between the daemon's bind and its chmod.
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        let client = SystemClient {
+            endpoint: Some(socket_path.clone()),
+        };
+        let error = client
+            .send(&ControlRequest::new("t", ControlCommand::ListProviders))
+            .unwrap_err();
+        assert!(matches!(error, ClientError::DaemonUnavailable));
+        std::fs::remove_file(socket_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    fn daemon_script(directory: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::create_dir_all(directory).unwrap();
+        let script = directory.join(name);
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        script
+    }
+
+    #[test]
+    fn run_daemon_process_reports_stderr_tail_on_early_exit() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-daemon-early-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let script = daemon_script(
+            &directory,
+            "noisy-daemon",
+            "#!/bin/sh\nprintf 'bind failed: address in use\\n' >&2\nexit 1\n",
+        );
+
+        let error =
+            run_daemon_process(script, &[], Duration::from_secs(5), |_| Ok(false)).unwrap_err();
+        let ClientError::DaemonProcessOutput(detail) = error else {
+            panic!("expected DaemonProcessOutput, got {error:?}");
+        };
+        assert!(detail.contains("daemon exited during startup"), "{detail}");
+        assert!(detail.contains("bind failed: address in use"), "{detail}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn run_daemon_process_reports_stderr_tail_on_readiness_timeout() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-daemon-timeout-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let script = daemon_script(
+            &directory,
+            "stuck-daemon",
+            "#!/bin/sh\nprintf 'still loading plugins\\n' >&2\nsleep 30\n",
+        );
+
+        let error =
+            run_daemon_process(script, &[], Duration::from_millis(120), |_| Ok(false)).unwrap_err();
+        let ClientError::DaemonProcessOutput(detail) = error else {
+            panic!("expected DaemonProcessOutput, got {error:?}");
+        };
+        assert!(detail.contains("did not become ready"), "{detail}");
+        assert!(detail.contains("still loading plugins"), "{detail}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn run_daemon_process_returns_once_readiness_reports_ready() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-daemon-ready-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        // The daemon must outlive the first readiness check: a shorter sleep
+        // lets try_wait observe the exit first and the test flakes.
+        let script = daemon_script(&directory, "daemon", "#!/bin/sh\nsleep 30\n");
+
+        // Spawning can transiently fail (EAGAIN) when the whole suite runs in
+        // parallel; the behavior under test is the readiness return.
+        let mut result = run_daemon_process(script.clone(), &[], Duration::from_secs(5), |_| {
+            Ok(true)
+        });
+        for _ in 0..3 {
+            if result.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            result = run_daemon_process(script.clone(), &[], Duration::from_secs(5), |_| {
+                Ok(true)
+            });
+        }
+        result.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn daemon_stop_fails_while_a_non_service_daemon_still_answers() {
+        // `service::stop` must see "not installed": point the systemd unit
+        // directory at an empty temp config root.
+        let config_root = std::env::temp_dir().join(format!(
+            "ullage-cli-stop-config-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&config_root).unwrap();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &config_root);
+        }
+        let result = std::panic::catch_unwind(|| {
+            let directory = std::env::temp_dir().join(format!(
+                "ullage-cli-stop-live-{}-{}",
+                std::process::id(),
+                REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&directory).unwrap();
+            let socket_path = directory.join("control.sock");
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let server = std::thread::spawn(move || {
+                while let Ok((mut stream, _)) = listener.accept() {
+                    let mut encoded = String::new();
+                    BufReader::new(&mut stream).read_line(&mut encoded).unwrap();
+                    let request: ControlRequest = serde_json::from_str(&encoded).unwrap();
+                    let response = ControlResponse {
+                        version: CONTROL_PROTOCOL_VERSION,
+                        request_id: request.request_id,
+                        result: ControlResult::DaemonStatus(DaemonStatusPayload {
+                            shutting_down: false,
+                            accounts: Vec::new(),
+                            credential_backend: CredentialBackendId::native(),
+                        }),
+                        diagnostic: None,
+                    };
+                    serde_json::to_writer(&mut stream, &response).unwrap();
+                    stream.write_all(b"\n").unwrap();
+                }
+            });
+            let client = SystemClient {
+                endpoint: Some(socket_path.clone()),
+            };
+            let error = client.manage_service(ServiceAction::Stop).unwrap_err();
+            assert!(matches!(error, ClientError::DaemonStillRunning));
+
+            // Once nothing answers, stop succeeds again.
+            drop(server);
+            std::fs::remove_file(&socket_path).unwrap();
+            client.manage_service(ServiceAction::Stop).unwrap();
+            std::fs::remove_dir(directory).unwrap();
+        });
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        std::fs::remove_dir_all(config_root).unwrap();
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
     }
 }

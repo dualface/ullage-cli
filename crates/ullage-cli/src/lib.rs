@@ -40,6 +40,10 @@ const CHATGPT_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 const HTTP_BIND_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HTTP_BIND_RETRY_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The compiled-in provider ids, shared by the registry construction and
+/// `config` validation so a new provider cannot silently skip either.
+pub(crate) const PROVIDER_IDS: [&str; 4] = ["claude", "chatgpt", "grok", "cursor"];
+
 pub fn production_registry(config: &AppConfig) -> Result<ProviderRegistry, String> {
     Ok(production_components(config)?.0)
 }
@@ -48,14 +52,10 @@ fn production_components(
     config: &AppConfig,
 ) -> Result<(ProviderRegistry, CredentialBackendId), String> {
     let (store, backend) = assemble_credential_store(&config.credentials)?;
-    Ok((
-        registry_with_credentials(&config.providers, store)?,
-        backend,
-    ))
+    Ok((registry_with_credentials(store)?, backend))
 }
 
 pub fn registry_with_credentials(
-    _: &ProviderSettings,
     credentials: Arc<CredentialStore>,
 ) -> Result<ProviderRegistry, String> {
     let mut registry = ProviderRegistry::default();
@@ -194,6 +194,16 @@ pub async fn run_daemon_with(
     merge_configured_accounts(&engine, &config.accounts).await?;
     let service = ControlService::new(engine.clone()).with_credential_backend(credential_backend);
     service.configure_device_store(devices_path()?)?;
+
+    // The control endpoint binds first: it is instant, and `http.bind = auto`
+    // may wait up to a minute for a non-loopback address. Clients must be able
+    // to reach the daemon during that window.
+    #[cfg(unix)]
+    let server =
+        ullage_daemon::UnixControlServer::bind(control_endpoint(), service.clone()).await?;
+    #[cfg(windows)]
+    let server = ullage_daemon::WindowsControlServer::bind(control_endpoint()?, service.clone())?;
+
     let http = if config.http.enabled {
         let target = parse_http_bind(&config.http.bind)?;
         Some(match target {
@@ -229,11 +239,6 @@ pub async fn run_daemon_with(
     } else {
         None
     };
-
-    #[cfg(unix)]
-    let server = ullage_daemon::UnixControlServer::bind(control_endpoint(), service).await?;
-    #[cfg(windows)]
-    let server = ullage_daemon::WindowsControlServer::bind(control_endpoint()?, service)?;
 
     let running_engine = engine.clone();
     let engine_task = tokio::spawn(async move { running_engine.run().await });
@@ -355,6 +360,9 @@ fn merge_server_results(
 }
 
 fn http_bind_config(config: &AppConfig, binds: Vec<SocketAddr>) -> Result<HttpBindConfig, String> {
+    // `config::validate` enforces this for file-loaded configuration; the
+    // check is repeated here because `run_daemon_with` also accepts
+    // programmatically built `AppConfig` values.
     if config
         .http
         .allowed_origins
