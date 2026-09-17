@@ -757,218 +757,6 @@ pub(crate) fn sanitize_cell(value: &str) -> &str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use chrono::{TimeZone, Utc};
-    use ullage_protocol::{ProviderId, QueryOutcome, SnapshotPayload, SubscriptionUsage};
-
-    use super::*;
-
-    fn usage(provider: &str) -> SubscriptionUsage {
-        SubscriptionUsage {
-            provider: ProviderId::new(provider),
-            account_label: None,
-            plan: None,
-            subscription_expires_at: None,
-            observed_at: Utc.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap(),
-            windows: Vec::new(),
-        }
-    }
-
-    fn snapshot(account_id: &str, provider: &str) -> SnapshotPayload {
-        SnapshotPayload {
-            account_id: account_id.into(),
-            usage: QueryOutcome::Complete {
-                data: usage(provider),
-            },
-            last_success_at: Utc.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap(),
-            stale: false,
-            last_error: None,
-            last_error_at: None,
-            metrics: Vec::new(),
-        }
-    }
-
-    fn palette() -> Palette {
-        Palette::resolve(ColorMode::Never, false, None)
-    }
-
-    #[test]
-    fn snapshot_headers_redact_control_characters_in_ids() {
-        let output = render_snapshots(
-            &[snapshot(
-                "good\r==== ACCOUNT evil (x) ====\x1b[31m",
-                "claude\n==== ACCOUNT forged (x) ====",
-            )],
-            false,
-            true,
-            false,
-            &palette(),
-            &MetricFilterChoice::Persisted,
-        );
-        assert!(
-            output.starts_with("==== ACCOUNT [redacted] ([redacted]) ====\n"),
-            "{output}"
-        );
-        assert_eq!(
-            output.lines().filter(|line| line.contains("====")).count(),
-            1,
-            "{output}"
-        );
-        assert!(!output.contains("evil"), "{output}");
-        assert!(!output.contains("forged"), "{output}");
-        assert!(!output.contains('\u{1b}'), "{output}");
-        assert!(!output.contains('\r'), "{output}");
-    }
-
-    #[test]
-    fn snapshot_headers_read_provider_from_partial_outcomes() {
-        let snapshots = [SnapshotPayload {
-            account_id: "primary".into(),
-            usage: QueryOutcome::Partial {
-                data: usage("cursor"),
-                failures: Vec::new(),
-            },
-            last_success_at: Utc.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap(),
-            stale: false,
-            last_error: None,
-            last_error_at: None,
-            metrics: Vec::new(),
-        }];
-        let output = render_snapshots(
-            &snapshots,
-            false,
-            true,
-            false,
-            &palette(),
-            &MetricFilterChoice::Persisted,
-        );
-        assert!(
-            output.starts_with("==== ACCOUNT primary (cursor) ====\n"),
-            "{output}"
-        );
-    }
-
-    #[test]
-    fn summary_headers_redact_control_characters_in_ids_and_plans() {
-        let mut data = usage("claude\n==== ACCOUNT forged (x) ====");
-        data.plan = Some("pro\x1b[31m".into());
-        let output = render_snapshots(
-            &[SnapshotPayload {
-                account_id: "good\r==== ACCOUNT evil (x) ====".into(),
-                usage: QueryOutcome::Complete { data },
-                last_success_at: Utc.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap(),
-                stale: false,
-                last_error: None,
-                last_error_at: None,
-                metrics: Vec::new(),
-            }],
-            false,
-            false,
-            false,
-            &palette(),
-            &MetricFilterChoice::Persisted,
-        );
-        assert!(
-            output.starts_with("==== ACCOUNT [redacted] ([redacted] \u{b7} [redacted]) ====\n"),
-            "{output}"
-        );
-        assert_eq!(
-            output.lines().filter(|line| line.contains("====")).count(),
-            1,
-            "{output}"
-        );
-        assert!(!output.contains("evil"), "{output}");
-        assert!(!output.contains("forged"), "{output}");
-        assert!(!output.contains('\u{1b}'), "{output}");
-        assert!(!output.contains('\r'), "{output}");
-    }
-
-    #[test]
-    fn summary_headers_omit_an_absent_plan() {
-        let output = render_snapshots(
-            &[snapshot("primary", "claude")],
-            false,
-            false,
-            false,
-            &palette(),
-            &MetricFilterChoice::Persisted,
-        );
-        assert!(
-            output.starts_with("==== ACCOUNT primary (claude) ====\n"),
-            "{output}"
-        );
-    }
-
-    #[test]
-    fn a_snapshot_without_summarizable_data_falls_back_to_the_raw_table() {
-        let output = render_snapshots(
-            &[snapshot("primary", "claude")],
-            false,
-            false,
-            false,
-            &palette(),
-            &MetricFilterChoice::Persisted,
-        );
-        assert!(
-            output.contains("! no summarized metrics available; showing raw data\n"),
-            "{output}"
-        );
-        assert!(output.contains("| WINDOW | MEASUREMENT |"), "{output}");
-    }
-
-    #[test]
-    fn diagnose_redacts_control_characters_in_partial_failure_scope() {
-        use ullage_protocol::PartialFailure;
-
-        let snapshots = [SnapshotPayload {
-            account_id: "primary".into(),
-            usage: QueryOutcome::Partial {
-                data: usage("claude"),
-                failures: vec![PartialFailure {
-                    scope: "profile\x1b[31m".into(),
-                    message: "provider protocol response is incompatible".into(),
-                }],
-            },
-            last_success_at: Utc.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap(),
-            stale: false,
-            last_error: None,
-            last_error_at: None,
-            metrics: Vec::new(),
-        }];
-        let output = render_snapshots(
-            &snapshots,
-            false,
-            false,
-            true,
-            &palette(),
-            &MetricFilterChoice::Persisted,
-        );
-        assert!(!output.contains('\u{1b}'), "{output}");
-        assert!(!output.contains("[31m"), "{output}");
-        assert!(output.contains("[redacted]"), "{output}");
-    }
-}
-
-/// Which metric filter the readable summary applies to stored snapshots.
-#[derive(Clone, Debug, Default)]
-pub(crate) enum MetricFilterChoice {
-    /// Apply each account's persisted filter as a hide list; the default for
-    /// `show` and `probe`.
-    #[default]
-    Persisted,
-    /// Apply one filter as a keep list to every account: `--metric` or
-    /// `--no-metric-filter`.
-    Explicit(MetricFilter),
-}
-
-/// The readable-view choices that one command resolved before rendering.
-pub(crate) struct RenderView<'a> {
-    pub(crate) metric_choice: &'a MetricFilterChoice,
-    /// True only for the account views that own the metric filter.
-    pub(crate) account_with_metrics: bool,
-}
-
 impl RenderView<'_> {
     /// Persisted filters and the mutation account table: the login flow view.
     pub(crate) fn persisted() -> Self {
@@ -1050,4 +838,26 @@ pub(crate) fn render_result(
         output.stderr = with_diagnostic(&output.stderr, &detail, format);
     }
     output
+}
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod tests;
+
+/// Which metric filter the readable summary applies to stored snapshots.
+#[derive(Clone, Debug, Default)]
+pub(crate) enum MetricFilterChoice {
+    /// Apply each account's persisted filter as a hide list; the default for
+    /// `show` and `probe`.
+    #[default]
+    Persisted,
+    /// Apply one filter as a keep list to every account: `--metric` or
+    /// `--no-metric-filter`.
+    Explicit(MetricFilter),
+}
+
+/// The readable-view choices that one command resolved before rendering.
+pub(crate) struct RenderView<'a> {
+    pub(crate) metric_choice: &'a MetricFilterChoice,
+    /// True only for the account views that own the metric filter.
+    pub(crate) account_with_metrics: bool,
 }
