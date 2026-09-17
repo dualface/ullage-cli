@@ -968,10 +968,11 @@ fn logout_supersedes_an_in_flight_authentication_exchange_failure() {
 #[test]
 fn concurrent_refreshes_share_the_first_installed_session() {
     let release_refreshes = Arc::new(AtomicBool::new(false));
-    let provider = CursorProvider::with_api(Arc::new(ConcurrentRefreshApi {
+    let api = Arc::new(ConcurrentRefreshApi {
         exchange_calls: AtomicUsize::new(0),
         release_refreshes: release_refreshes.clone(),
-    }));
+    });
+    let provider = CursorProvider::with_api(api.clone());
     authenticate(&provider);
 
     let mut first = Box::pin(provider.refresh_auth());
@@ -989,6 +990,9 @@ fn concurrent_refreshes_share_the_first_installed_session() {
         second.as_mut().poll(&mut context),
         Poll::Ready(Ok(AuthState::Authenticated { .. }))
     ));
+    // One exchange signed in, one refreshed; the second caller shared the
+    // first refresh instead of exchanging again.
+    assert_eq!(api.exchange_calls.load(Ordering::SeqCst), 2);
     assert!(matches!(
         run_ready(provider.auth_status()).unwrap(),
         AuthState::Authenticated { .. }

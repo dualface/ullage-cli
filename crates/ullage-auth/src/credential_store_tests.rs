@@ -232,9 +232,11 @@ fn provider_message_only_surfaces_the_file_fallback_hint() {
         CredentialError::AccessDenied.provider_message("store operation failed"),
         "store operation failed"
     );
-    assert!(CredentialError::FileFallbackDisabled
-        .provider_message("store operation failed")
-        .contains("file_fallback"));
+    assert!(
+        CredentialError::FileFallbackDisabled
+            .provider_message("store operation failed")
+            .contains("file_fallback")
+    );
 }
 
 #[test]
@@ -303,10 +305,10 @@ fn windows_native_entry_accepts_maximum_length_key_components() {
 fn windows_file_reparse_attributes_are_rejected() {
     const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    assert!(crate::file_store::windows_file_attributes_are_safe(
+    assert!(crate::windows_security::windows_file_attributes_are_safe(
         FILE_ATTRIBUTE_ARCHIVE
     ));
-    assert!(!crate::file_store::windows_file_attributes_are_safe(
+    assert!(!crate::windows_security::windows_file_attributes_are_safe(
         FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT
     ));
 }
@@ -1230,11 +1232,7 @@ fn file_fallback_rejects_oversized_stored_record() {
         .expect("a stored record file exists");
 
     // Rewriting in place keeps the private permissions the store created.
-    std::fs::write(
-        &record,
-        vec![0_u8; crate::credential::MAX_RECORD_BYTES + 1],
-    )
-    .unwrap();
+    std::fs::write(&record, vec![0_u8; crate::credential::MAX_RECORD_BYTES + 1]).unwrap();
     assert_eq!(
         store.get(&key).unwrap_err(),
         CredentialError::CredentialTooLarge

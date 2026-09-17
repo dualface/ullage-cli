@@ -102,6 +102,11 @@ pub struct CursorProvider {
     state: Mutex<ProviderState>,
     credentials: Option<(Arc<CredentialStore>, CredentialKey)>,
     credential_gate: tokio::sync::Mutex<()>,
+    /// Serializes the provider token exchange across `refresh_auth` and the
+    /// query retry path so concurrent refreshes share one provider call.
+    /// Sign-in flows intentionally do not take it: they must still be able
+    /// to supersede an in-flight refresh.
+    exchange_gate: tokio::sync::Mutex<()>,
 }
 
 impl CursorProvider {
@@ -132,6 +137,7 @@ impl CursorProvider {
             }),
             credentials: None,
             credential_gate: tokio::sync::Mutex::new(()),
+            exchange_gate: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -153,6 +159,7 @@ impl CursorProvider {
             state: Mutex::new(ProviderState::default()),
             credentials: Some((credentials, key)),
             credential_gate: tokio::sync::Mutex::new(()),
+            exchange_gate: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -253,6 +260,18 @@ impl CursorProvider {
             };
             (api_key, state.generation, state.session_id)
         };
+        // The gate makes the provider exchange single-flight per account: a
+        // refresh that landed while this call waited is shared instead of
+        // repeated, so concurrent callers never trigger two exchanges.
+        let _gate = self.exchange_gate.lock().await;
+        if let Some((_, status, _)) = self.refreshed_auth_since(generation, session_id)? {
+            return Ok(status);
+        }
+        if !self.operation_is_current(generation, session_id)? {
+            return Err(ProviderError::ProtocolIncompatible {
+                message: "Cursor authentication operation was superseded".into(),
+            });
+        }
         let exchange = match self.api.exchange_user_api_key(&api_key).await {
             Ok(exchange) => exchange,
             Err(error) => match self.resolve_exchange_failure(
@@ -314,6 +333,31 @@ impl CursorProvider {
             };
         };
 
+        // The gate makes the provider exchange single-flight per account: a
+        // refresh that landed while this retry waited is reused instead of
+        // repeated.
+        let gate = self.exchange_gate.lock().await;
+        if let Some((access_token, _, refreshed_generation)) = self
+            .refreshed_auth_since(generation, expected_session_id)
+            .map_err(provider_as_api_failure)?
+        {
+            drop(gate);
+            let retried = self.call_endpoint(endpoint, &access_token).await;
+            return self.coordinate_retry_result(
+                expected_session_id,
+                refreshed_generation,
+                retried,
+            );
+        }
+        if !self
+            .operation_is_current(generation, expected_session_id)
+            .map_err(provider_as_api_failure)?
+        {
+            drop(gate);
+            return Err(ApiFailure::protocol(
+                "Cursor authentication retry was superseded",
+            ));
+        }
         let exchange = match self.api.exchange_user_api_key(&api_key).await {
             Ok(exchange) => exchange,
             Err(error) => match self
@@ -325,6 +369,7 @@ impl CursorProvider {
                     generation,
                     ..
                 } => {
+                    drop(gate);
                     let retried = self.call_endpoint(endpoint, &access_token).await;
                     return self.coordinate_retry_result(expected_session_id, generation, retried);
                 }
@@ -348,6 +393,7 @@ impl CursorProvider {
                     None => return Err(provider_as_api_failure(error)),
                 },
             };
+        drop(gate);
         let retried = self.call_endpoint(endpoint, &refreshed_access_token).await;
         self.coordinate_retry_result(expected_session_id, refreshed_generation, retried)
     }
@@ -691,6 +737,21 @@ impl CursorProvider {
         state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_key);
         state.invalid_reason = Some(error.message.clone());
         Err(error)
+    }
+
+    /// True while the snapshot taken before waiting on `credential_gate`
+    /// still names the live session; anything else means the operation was
+    /// superseded by a refresh, sign-in, or invalidation.
+    fn operation_is_current(
+        &self,
+        expected_generation: u64,
+        expected_session_id: u64,
+    ) -> ProviderResult<bool> {
+        let state = self.lock_state()?;
+        Ok(state.generation == expected_generation
+            && state.session_id == expected_session_id
+            && state.pending_flow.is_none()
+            && state.auth.is_some())
     }
 
     fn query_identity(&self) -> ProviderResult<(u64, Option<String>)> {

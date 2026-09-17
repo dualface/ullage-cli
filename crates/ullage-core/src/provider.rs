@@ -159,7 +159,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, Error, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Error, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", content = "provider", rename_all = "snake_case")]
 pub enum RegistryError {
     #[error("provider is already registered: {0}")]
@@ -187,6 +187,34 @@ pub enum RegistryError {
     /// Unclassifiable initialization failure (for example a poisoned cache).
     #[error("provider account instance could not be initialized: {0}")]
     InstanceUnavailable(ProviderId),
+}
+
+impl Serialize for RegistryError {
+    /// The control protocol version predates the richer internal variants.
+    /// Anything the stable wire shape cannot express collapses to
+    /// `instance_unavailable`, so a protocol-version-10 peer never sees an
+    /// unknown tag; the full category stays in the internal error value.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(tag = "kind", content = "provider", rename_all = "snake_case")]
+        enum Wire {
+            Duplicate(ProviderId),
+            NotFound(ProviderId),
+            InstanceUnavailable(ProviderId),
+        }
+        let wire = match self {
+            Self::Duplicate(provider) => Wire::Duplicate(provider.clone()),
+            Self::NotFound(provider) => Wire::NotFound(provider.clone()),
+            Self::InvalidId(provider)
+            | Self::DescriptorMismatch {
+                registered: provider,
+                ..
+            }
+            | Self::InstanceFailed { provider, .. }
+            | Self::InstanceUnavailable(provider) => Wire::InstanceUnavailable(provider.clone()),
+        };
+        wire.serialize(serializer)
+    }
 }
 
 type ProviderFactory =

@@ -7,15 +7,17 @@ mod redirect;
 mod store;
 #[cfg(any(windows, test))]
 mod windows_identity;
+#[cfg(windows)]
+mod windows_security;
 
 pub use credential::{Credential, CredentialKey, CredentialVersion, SecretValue, StoredCredential};
 pub use file_store::{FileFallbackOptions, FileStore};
-#[cfg(windows)]
-pub use file_store::{
-    create_private_windows_directory, create_private_windows_file, windows_handle_acl_is_private,
-};
 pub use native_store::NativeStore;
 pub use redirect::validate_loopback_http_redirect_uri;
+#[cfg(windows)]
+pub use windows_security::{
+    create_private_windows_directory, create_private_windows_file, windows_handle_acl_is_private,
+};
 
 /// Opaque form of a provider's account identity.
 ///
