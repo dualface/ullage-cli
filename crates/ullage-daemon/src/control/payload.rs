@@ -114,6 +114,7 @@ fn sanitized_error_payload(error: SanitizedError) -> SanitizedErrorPayload {
         SanitizedError::Timeout => SanitizedErrorPayload::Timeout,
         SanitizedError::Cancelled => SanitizedErrorPayload::Cancelled,
         SanitizedError::ProviderNotFound => SanitizedErrorPayload::ProviderNotFound,
+        SanitizedError::AccountNotFound => SanitizedErrorPayload::AccountNotFound,
         SanitizedError::Storage => SanitizedErrorPayload::Storage,
     }
 }

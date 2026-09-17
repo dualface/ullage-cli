@@ -113,6 +113,9 @@ pub enum ControlCommand {
     RemoveAccount {
         account: AccountId,
     },
+    // `account_id` stays a bare `String` on `Probe`/`Show`: the wire already
+    // carries unvalidated user input here and `AccountId` is just a newtype.
+    // Typed ids are a protocol v11 candidate; recorded, not changed.
     Probe {
         account_id: String,
         wait: bool,
@@ -234,7 +237,8 @@ pub enum ControlResult {
 pub struct ProbePayload {
     pub account_id: String,
     pub usage: QueryOutcome<SubscriptionUsage>,
-    /// Display metric names the account stored to hide when the probe ran.
+    /// Display metric names the account stored to hide, read when this
+    /// response was built.
     #[serde(default)]
     pub metrics: Vec<String>,
 }
@@ -271,6 +275,8 @@ pub enum ControlError {
     },
     /// The supplied display metric filter was rejected by validation.
     InvalidAccountMetrics,
+    /// The request envelope parsed but the command payload did not.
+    InvalidRequest,
     Timeout,
     Cancelled,
     Storage,
@@ -368,6 +374,7 @@ pub enum SanitizedErrorPayload {
     Timeout,
     Cancelled,
     ProviderNotFound,
+    AccountNotFound,
     Storage,
 }
 
@@ -390,309 +397,4 @@ impl From<RegistryError> for ControlError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn request_uses_the_current_protocol_version() {
-        let request = ControlRequest::new("request-1", ControlCommand::ListProviders);
-        let json = serde_json::to_string(&request).unwrap();
-        let decoded: ControlRequest = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(decoded.version, CONTROL_PROTOCOL_VERSION);
-        assert_eq!(decoded, request);
-    }
-
-    #[test]
-    fn partial_usage_preserves_data_and_failures() {
-        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:00:00Z")
-            .unwrap()
-            .to_utc();
-        let response = ControlResponse {
-            version: CONTROL_PROTOCOL_VERSION,
-            request_id: "request-2".into(),
-            diagnostic: None,
-            result: ControlResult::Usage(QueryOutcome::Partial {
-                data: SubscriptionUsage {
-                    provider: ProviderId::new("test"),
-                    account_label: None,
-                    plan: None,
-                    subscription_expires_at: None,
-                    observed_at,
-                    windows: Vec::new(),
-                },
-                failures: vec![ullage_core::PartialFailure {
-                    scope: "weekly".into(),
-                    message: "temporarily unavailable".into(),
-                }],
-            }),
-        };
-
-        let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "version": CONTROL_PROTOCOL_VERSION,
-                "request_id": "request-2",
-                "result": {
-                    "result": "usage",
-                    "payload": {
-                        "outcome": "partial",
-                        "data": {
-                            "provider": "test",
-                            "account_label": null,
-                            "plan": null,
-                            "subscription_expires_at": null,
-                            "observed_at": "2026-08-27T12:00:00Z",
-                            "windows": []
-                        },
-                        "failures": [{
-                            "scope": "weekly",
-                            "message": "temporarily unavailable"
-                        }]
-                    }
-                }
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<ControlResponse>(json).unwrap(),
-            response
-        );
-    }
-
-    #[test]
-    fn daemon_commands_and_auth_challenge_round_trip() {
-        let commands = [
-            ControlCommand::DaemonStatus,
-            ControlCommand::Probe {
-                account_id: "primary".into(),
-                wait: true,
-            },
-            ControlCommand::Show { account_id: None },
-            ControlCommand::SetAccountMetrics {
-                account: AccountId::new("account-1"),
-                metrics: vec!["usage".into(), "Codex".into()],
-            },
-        ];
-        for (index, command) in commands.into_iter().enumerate() {
-            let request = ControlRequest::new(format!("daemon-{index}"), command);
-            let encoded = serde_json::to_string(&request).unwrap();
-            assert_eq!(
-                serde_json::from_str::<ControlRequest>(&encoded).unwrap(),
-                request
-            );
-        }
-
-        let response = ControlResponse {
-            version: CONTROL_PROTOCOL_VERSION,
-            request_id: "auth-challenge".into(),
-            diagnostic: None,
-            result: ControlResult::AuthChallenge(AuthChallenge {
-                flow_id: "flow-1".into(),
-                method: ullage_auth::AuthMethod::DeviceCode,
-                verification_uri: Some("https://example.invalid/device".into()),
-                user_code: Some("code-1".into()),
-                expires_at: None,
-                input: None,
-            }),
-        };
-        let encoded = serde_json::to_string(&response).unwrap();
-        assert_eq!(
-            serde_json::from_str::<ControlResponse>(&encoded).unwrap(),
-            response
-        );
-
-        for (index, error) in [
-            ControlError::Timeout,
-            ControlError::Cancelled,
-            ControlError::Storage,
-            ControlError::InvalidAccountMetrics,
-            ControlError::AccountSelectorNotFound {
-                provider: ProviderId::new("test"),
-                account_label: Some("secondary".into()),
-            },
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let response = ControlResponse {
-                version: CONTROL_PROTOCOL_VERSION,
-                request_id: format!("daemon-error-{index}"),
-                result: ControlResult::Error(error),
-                diagnostic: Some("provider detail".into()),
-            };
-            let encoded = serde_json::to_string(&response).unwrap();
-            assert_eq!(
-                serde_json::from_str::<ControlResponse>(&encoded).unwrap(),
-                response
-            );
-        }
-    }
-
-    #[test]
-    fn account_and_payload_metrics_round_trip_and_default_to_empty() {
-        let account = Account {
-            id: AccountId::new("account-1"),
-            provider: ProviderId::new("claude"),
-            label: None,
-            enabled: true,
-            metrics: vec!["usage".into(), "Codex".into()],
-        };
-        let json = serde_json::to_value(&account).unwrap();
-        assert_eq!(json["metrics"], serde_json::json!(["usage", "Codex"]));
-        assert_eq!(serde_json::from_value::<Account>(json).unwrap(), account);
-
-        let legacy_account: Account = serde_json::from_value(serde_json::json!({
-            "id": "account-1",
-            "provider": "claude",
-            "label": null,
-            "enabled": true
-        }))
-        .unwrap();
-        assert!(legacy_account.metrics.is_empty());
-
-        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:00:00Z")
-            .unwrap()
-            .to_utc();
-        let usage = SubscriptionUsage {
-            provider: ProviderId::new("claude"),
-            account_label: None,
-            plan: None,
-            subscription_expires_at: None,
-            observed_at,
-            windows: Vec::new(),
-        };
-        let snapshot = SnapshotPayload {
-            account_id: "account-1".into(),
-            usage: QueryOutcome::Complete {
-                data: usage.clone(),
-            },
-            last_success_at: observed_at,
-            stale: false,
-            last_error: None,
-            last_error_at: None,
-            metrics: vec!["usage".into()],
-        };
-        let json = serde_json::to_value(&snapshot).unwrap();
-        assert_eq!(json["metrics"], serde_json::json!(["usage"]));
-        assert_eq!(
-            serde_json::from_value::<SnapshotPayload>(json.clone()).unwrap(),
-            snapshot
-        );
-        let mut legacy = json;
-        legacy.as_object_mut().unwrap().remove("metrics");
-        assert!(
-            serde_json::from_value::<SnapshotPayload>(legacy)
-                .unwrap()
-                .metrics
-                .is_empty()
-        );
-
-        let probe = ProbePayload {
-            account_id: "account-1".into(),
-            usage: QueryOutcome::Complete { data: usage },
-            metrics: vec!["Codex".into()],
-        };
-        let json = serde_json::to_value(&probe).unwrap();
-        assert_eq!(json["metrics"], serde_json::json!(["Codex"]));
-        assert_eq!(
-            serde_json::from_value::<ProbePayload>(json.clone()).unwrap(),
-            probe
-        );
-        let mut legacy = json;
-        legacy.as_object_mut().unwrap().remove("metrics");
-        assert!(
-            serde_json::from_value::<ProbePayload>(legacy)
-                .unwrap()
-                .metrics
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn daemon_status_serializes_the_credential_backend() {
-        let response = ControlResponse {
-            version: CONTROL_PROTOCOL_VERSION,
-            request_id: "status-1".into(),
-            diagnostic: None,
-            result: ControlResult::DaemonStatus(DaemonStatusPayload {
-                shutting_down: false,
-                accounts: Vec::new(),
-                credential_backend: CredentialBackendId::FileFallback,
-            }),
-        };
-        let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(
-            json["result"]["payload"]["credential_backend"],
-            "file_fallback"
-        );
-        assert_eq!(
-            serde_json::from_value::<ControlResponse>(json).unwrap(),
-            response
-        );
-    }
-
-    #[test]
-    fn authentication_probe_and_show_commands_accept_diagnostics() {
-        assert!(
-            ControlCommand::AuthStatus {
-                provider: ProviderId::new("claude"),
-                account: AccountId::new("account-1"),
-            }
-            .accepts_diagnostics()
-        );
-        assert!(
-            ControlCommand::Probe {
-                account_id: "account-1".into(),
-                wait: true,
-            }
-            .accepts_diagnostics()
-        );
-        assert!(
-            ControlCommand::Show {
-                account_id: Some("account-1".into()),
-            }
-            .accepts_diagnostics()
-        );
-        assert!(ControlCommand::Show { account_id: None }.accepts_diagnostics());
-        assert!(!ControlCommand::ListProviders.accepts_diagnostics());
-        assert!(
-            !ControlCommand::QueryUsage {
-                provider: ProviderId::new("claude"),
-                query: UsageQuery::default(),
-            }
-            .accepts_diagnostics()
-        );
-    }
-
-    #[test]
-    fn diagnostics_are_opt_in_and_omitted_by_default() {
-        let request = ControlRequest::new("request-3", ControlCommand::ListProviders);
-        let encoded = serde_json::to_value(&request).unwrap();
-        assert_eq!(encoded["diagnostics"], false);
-        let decoded: ControlRequest = serde_json::from_value(serde_json::json!({
-            "version": CONTROL_PROTOCOL_VERSION,
-            "request_id": "legacy",
-            "command": { "command": "list_providers" }
-        }))
-        .unwrap();
-        assert!(!decoded.diagnostics);
-
-        let response = ControlResponse::new("request-3", ControlResult::Ack);
-        let encoded = serde_json::to_value(&response).unwrap();
-        assert!(encoded.get("diagnostic").is_none());
-        let with_detail = response.with_diagnostic(Some("provider detail".into()));
-        assert_eq!(
-            serde_json::to_value(&with_detail).unwrap()["diagnostic"],
-            "provider detail"
-        );
-    }
-
-    #[test]
-    fn registry_not_found_is_a_control_error() {
-        let error = ControlError::from(RegistryError::NotFound(ProviderId::new("missing")));
-        let json = serde_json::to_string(&error).unwrap();
-
-        assert_eq!(serde_json::from_str::<ControlError>(&json).unwrap(), error);
-    }
-}
+mod tests;

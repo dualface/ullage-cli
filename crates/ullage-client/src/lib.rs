@@ -2034,7 +2034,7 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
                 command: AccountCommand::Metrics { .. }
             }
         ),
-        ControlError::UnsupportedCommand => false,
+        ControlError::UnsupportedCommand | ControlError::InvalidRequest => false,
     }
 }
 
@@ -2209,6 +2209,7 @@ fn control_error_kind(error: &ControlError) -> &'static str {
         ControlError::Cancelled => "cancelled",
         ControlError::Storage => "storage",
         ControlError::InvalidAccountMetrics => "invalid_account_metrics",
+        ControlError::InvalidRequest => "invalid_request",
         ControlError::UnsupportedCommand => "unsupported_command",
     }
 }

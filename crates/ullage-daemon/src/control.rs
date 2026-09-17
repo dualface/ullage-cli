@@ -14,8 +14,8 @@ use ullage_protocol::{
 
 use crate::model::sanitize_provider_error;
 use crate::{
-    AccountConfig, AccountId, BackoffConfig, DaemonEngine, DaemonError, DaemonStatus, ProbeError,
-    ProbeTrigger, SnapshotRecord,
+    AccountConfig, AccountId, BackoffConfig, DaemonEngine, DaemonStatus, ProbeError, ProbeTrigger,
+    SnapshotRecord,
 };
 
 mod payload;
@@ -264,7 +264,9 @@ impl ControlService {
         transport: ControlTransport,
     ) -> ControlResponse {
         let request_id = request.request_id;
-        let diagnostics = request.diagnostics;
+        // Diagnostics stay scoped to the commands that document them, even
+        // when a client sets the flag elsewhere.
+        let diagnostics = request.diagnostics && request.command.accepts_diagnostics();
         let mut diagnostic = None;
         if request.version != CONTROL_PROTOCOL_VERSION {
             return ControlResponse {
@@ -283,6 +285,8 @@ impl ControlService {
             )),
             ControlCommand::CreatePairCode => match self.create_pair_code() {
                 Ok(code) => ControlResult::PairCode(code),
+                // Generation and persistence failures share the generic
+                // storage kind; the detail is not meaningful to clients.
                 Err(_) => ControlResult::Error(ControlError::Storage),
             },
             ControlCommand::ListDevices => ControlResult::Devices(self.list_devices()),
@@ -330,8 +334,9 @@ impl ControlService {
                 Some(account_id) => {
                     let id = AccountId::new(&account_id);
                     match self.engine.show_configured_account(&id).await {
-                        Err(()) => {
-                            ControlResult::Error(ControlError::AccountNotFound { account_id })
+                        Err(error) => {
+                            diagnostic = probe_error_diagnostic(diagnostics, &error);
+                            ControlResult::Error(probe_control_error(error))
                         }
                         Ok(snapshot) => ControlResult::Snapshots({
                             let metrics = account_metrics(&self.engine, &id).await;
@@ -512,7 +517,6 @@ impl ControlService {
                 match self.engine.set_account_enabled(&id, enabled).await {
                     Ok(Some(config)) => ControlResult::Account(account_payload(config)),
                     Ok(None) => ControlResult::Error(AccountError::NotFound(account).into()),
-                    Err(DaemonError::Storage(_)) => ControlResult::Error(ControlError::Storage),
                     Err(error) => ControlResult::Error(account_control_error(error, id)),
                 }
             }
@@ -521,7 +525,6 @@ impl ControlService {
                 match self.engine.set_account_label(&id, label).await {
                     Ok(Some(config)) => ControlResult::Account(account_payload(config)),
                     Ok(None) => ControlResult::Error(AccountError::NotFound(account).into()),
-                    Err(DaemonError::Storage(_)) => ControlResult::Error(ControlError::Storage),
                     Err(error) => ControlResult::Error(account_control_error(error, id)),
                 }
             }
@@ -538,7 +541,6 @@ impl ControlService {
                 match self.engine.remove_account(&id).await {
                     Ok(Some(_)) => ControlResult::Ack,
                     Ok(None) => ControlResult::Error(AccountError::NotFound(account).into()),
-                    Err(DaemonError::Storage(_)) => ControlResult::Error(ControlError::Storage),
                     Err(error) => ControlResult::Error(account_control_error(error, id)),
                 }
             }
@@ -701,6 +703,9 @@ where
 {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+    // The budget covers the whole wire frame, newline included: a request is
+    // accepted only when `read <= MAXIMUM_REQUEST_BYTES`, so the largest
+    // decodable payload is one byte short of a MiB.
     const MAXIMUM_REQUEST_BYTES: u64 = 1024 * 1024;
     let (reader, mut writer) = tokio::io::split(stream);
     let mut bytes = Vec::new();
@@ -730,9 +735,17 @@ where
             diagnostic: None,
         }
     } else {
-        let request: ControlRequest =
-            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        service.handle(request).await
+        match serde_json::from_slice::<ControlRequest>(&bytes) {
+            Ok(request) => service.handle(request).await,
+            // The envelope carried a trustworthy request id, so the client
+            // gets a stable error instead of a bare EOF.
+            Err(_) => ControlResponse {
+                version: CONTROL_PROTOCOL_VERSION,
+                request_id: envelope.request_id,
+                result: ControlResult::Error(ControlError::InvalidRequest),
+                diagnostic: None,
+            },
+        }
     };
     let mut encoded = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
     encoded.push(b'\n');

@@ -3556,6 +3556,19 @@ async fn unix_control_socket_is_private_framed_and_cleaned_up() {
         } if supported_version == CONTROL_PROTOCOL_VERSION
     ));
 
+    // A valid envelope whose command payload does not deserialize still gets a
+    // structured error under its own request id instead of a bare EOF.
+    let malformed_command = format!(
+        "{{\"version\":{},\"request_id\":\"broken\",\"command\":{{\"command\":\"no_such_command\"}}}}\n",
+        CONTROL_PROTOCOL_VERSION
+    );
+    let broken = send_raw_control_request(&socket, malformed_command.as_bytes()).await;
+    assert_eq!(broken.request_id, "broken");
+    assert!(matches!(
+        broken.result,
+        ControlResult::Error(ControlError::InvalidRequest)
+    ));
+
     let active_path = directory.join("active.sock");
     let active_listener = std::os::unix::net::UnixListener::bind(&active_path).unwrap();
     let active_error = match UnixControlServer::bind(&active_path, service.clone()).await {
