@@ -294,7 +294,7 @@ impl DaemonEngine {
         if config.interval.is_zero() {
             return Err(DaemonError::InvalidInterval(config.id));
         }
-        if config.timeout.is_zero() {
+        if config.timeout.is_zero() || config.timeout > ullage_protocol::MAX_ACCOUNT_TIMEOUT {
             return Err(DaemonError::InvalidTimeout(config.id));
         }
         if config.backoff.initial.is_zero()

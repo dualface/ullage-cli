@@ -329,6 +329,7 @@ fn validate(config: &AppConfig) -> Result<(), String> {
         }
         if account.interval_seconds == 0
             || account.timeout_seconds == 0
+            || account.timeout_seconds > ullage_protocol::MAX_ACCOUNT_TIMEOUT.as_secs()
             || account.backoff_initial_seconds == 0
             || account.backoff_maximum_seconds == 0
             || account.backoff_initial_seconds > account.backoff_maximum_seconds
@@ -571,6 +572,26 @@ mod tests {
         .unwrap();
         make_private(&path);
         assert_eq!(load(&path).await.unwrap().http.bind, "not-a-bind");
+    }
+
+    #[tokio::test]
+    async fn rejects_account_timeouts_above_the_shared_maximum() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let maximum = ullage_protocol::MAX_ACCOUNT_TIMEOUT.as_secs();
+        for (seconds, valid) in [(1, true), (maximum, true), (maximum + 1, false), (0, false)] {
+            let bytes = format!(
+                r#"{{"version":1,"accounts":[{{"id":"claude-a","provider":"claude","timeout_seconds":{seconds}}}]}}"#
+            );
+            tokio::fs::write(&path, bytes).await.unwrap();
+            make_private(&path);
+            let result = load(&path).await;
+            assert_eq!(
+                result.is_ok(),
+                valid,
+                "timeout_seconds={seconds}: {result:?}"
+            );
+        }
     }
 
     #[tokio::test]

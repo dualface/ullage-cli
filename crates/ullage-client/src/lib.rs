@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::io::Read as _;
 #[cfg(windows)]
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,8 +64,9 @@ pub enum ClientError {
     #[error("daemon response was invalid")]
     InvalidResponse,
     /// The configured endpoint is malformed: a relative or otherwise unusable
-    /// `ULLAGE_CONTROL_SOCKET`/`ULLAGE_CONTROL_PIPE` value, reported under its
-    /// own kind instead of a protocol failure.
+    /// `ULLAGE_CONTROL_SOCKET` value, reported under its own kind instead of a
+    /// protocol failure. (Windows treats a rejected `ULLAGE_CONTROL_PIPE` as
+    /// no endpoint and reports `DaemonUnavailable`.)
     #[error("control endpoint is invalid")]
     InvalidEndpoint,
     #[error("daemon process failed")]
@@ -631,12 +632,35 @@ impl SystemClient {
         }
     }
 
+    /// Waits out a draining or protocol-mismatched daemon that still holds the
+    /// endpoint inside `deadline`. A child spawned while the endpoint is taken
+    /// exits on "already active" instead of becoming ready. Returns `true`
+    /// when the existing daemon already serves requests, `false` once the
+    /// endpoint is free to spawn on.
+    fn wait_for_endpoint(&self, deadline: std::time::Instant) -> Result<bool, ClientError> {
+        loop {
+            let remaining = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .min(Duration::from_millis(250));
+            match self.daemon_readiness(remaining)? {
+                DaemonReadiness::Ready => return Ok(true),
+                DaemonReadiness::Unavailable => return Ok(false),
+                DaemonReadiness::NotReady => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(ClientError::DaemonStillRunning);
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
+    }
+
     fn manage_service(&self, action: ServiceAction) -> Result<(), ClientError> {
         if action == ServiceAction::Start {
             if !service::installed().map_err(|_| ClientError::DaemonProcess)? {
                 return Err(ClientError::DaemonProcess);
             }
-            if self.daemon_is_ready(Duration::from_millis(250))? {
+            if self.wait_for_endpoint(std::time::Instant::now() + Duration::from_secs(5))? {
                 return Ok(());
             }
         }
@@ -791,14 +815,17 @@ impl ControlClient for SystemClient {
 
     fn run_daemon(&self) -> Result<(), ClientError> {
         let (executable, arguments) = daemon_command(false)?;
-        let started = std::time::Instant::now();
-        if self.daemon_is_ready(Duration::from_millis(250))? {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        if self.wait_for_endpoint(deadline)? {
             return Ok(());
         }
+        let (stderr_log, stderr_sink) = daemon_error_log()?;
         run_daemon_process(
             executable,
             &arguments,
-            Duration::from_secs(5).saturating_sub(started.elapsed()),
+            stderr_log,
+            stderr_sink,
+            deadline.saturating_duration_since(std::time::Instant::now()),
             |remaining| self.daemon_is_ready(remaining),
         )
     }
@@ -836,14 +863,17 @@ impl ControlClient for SystemClient {
 
     fn run_daemon(&self) -> Result<(), ClientError> {
         let (executable, arguments) = daemon_command(true)?;
-        let started = std::time::Instant::now();
-        if self.daemon_is_ready(Duration::from_millis(250))? {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        if self.wait_for_endpoint(deadline)? {
             return Ok(());
         }
+        let (stderr_log, stderr_sink) = daemon_error_log()?;
         run_daemon_process(
             executable,
             &arguments,
-            Duration::from_secs(5).saturating_sub(started.elapsed()),
+            stderr_log,
+            stderr_sink,
+            deadline.saturating_duration_since(std::time::Instant::now()),
             |remaining| self.daemon_is_ready(remaining),
         )
     }
@@ -865,10 +895,13 @@ fn is_local_windows_pipe(path: &std::path::Path) -> bool {
 }
 
 /// Longest the client waits on a `Probe { wait: true }` answer. It must outlast
-/// `SIGN_IN_TIMEOUT` and the largest provider query timeout the daemon can be
-/// configured with, while still bounding the read so a wedged daemon cannot
-/// hang `ullage probe` or interactive login's duplicate-retirement probe.
+/// `SIGN_IN_TIMEOUT` and `MAX_ACCOUNT_TIMEOUT` — the largest provider query
+/// timeout the daemon accepts — while still bounding the read so a wedged
+/// daemon cannot hang `ullage probe` or interactive login's
+/// duplicate-retirement probe.
 const PROBE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
+const _: () =
+    assert!(PROBE_WAIT_TIMEOUT.as_secs() > ullage_protocol::MAX_ACCOUNT_TIMEOUT.as_secs());
 
 fn send_timeout(request: &ControlRequest) -> Duration {
     if request_completes_a_sign_in(request) {
@@ -880,14 +913,60 @@ fn send_timeout(request: &ControlRequest) -> Duration {
     }
 }
 
-/// Bytes of daemon stderr kept for a startup failure report; the draining
-/// thread stays alive on the success path so a talkative daemon never blocks
-/// on a full pipe.
+/// Bytes of daemon stderr read back for a startup failure report. The sink is
+/// a private log file rather than a pipe: the launching CLI exits right after
+/// readiness, and a pipe drained by a thread here would break under the
+/// daemon later — a late panic-hook `eprintln!` could then abort the daemon.
 const DAEMON_STDERR_TAIL_BYTES: usize = 8192;
+
+/// The private daemon stderr sink: a per-user log under the same runtime
+/// directory scheme as the default control socket. Truncated per launch so a
+/// failure report only carries this attempt's output.
+#[cfg(unix)]
+fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    // SAFETY: `geteuid` has no arguments and no memory-safety preconditions.
+    let user_id = unsafe { libc::geteuid() };
+    let directory = std::env::temp_dir().join(format!("ullage-{user_id}"));
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&directory)
+        .map_err(|_| ClientError::DaemonProcess)?;
+    let path = directory.join("daemon-error.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|_| ClientError::DaemonProcess)?;
+    Ok((path, file))
+}
+
+#[cfg(windows)]
+fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
+    let scope = ullage_auth::current_windows_user_scope()
+        .map(|scope| format!("ullage-{scope}"))
+        .unwrap_or_else(|_| "ullage".to_owned());
+    let directory = std::env::temp_dir().join(scope);
+    std::fs::create_dir_all(&directory).map_err(|_| ClientError::DaemonProcess)?;
+    let path = directory.join("daemon-error.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|_| ClientError::DaemonProcess)?;
+    Ok((path, file))
+}
 
 fn run_daemon_process(
     executable: PathBuf,
     arguments: &[OsString],
+    stderr_log: PathBuf,
+    stderr_sink: std::fs::File,
     startup_timeout: Duration,
     mut readiness: impl FnMut(Duration) -> Result<bool, ClientError>,
 ) -> Result<(), ClientError> {
@@ -895,32 +974,9 @@ fn run_daemon_process(
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::from(stderr_sink))
         .spawn()
         .map_err(|_| ClientError::DaemonProcess)?;
-    let stderr_tail = child.stderr.take().map(|mut pipe| {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let _ = std::thread::Builder::new()
-            .name("ullage-daemon-stderr".into())
-            .spawn(move || {
-                let mut tail: Vec<u8> = Vec::new();
-                let mut chunk = [0; 4096];
-                loop {
-                    match pipe.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => {
-                            tail.extend_from_slice(&chunk[..read]);
-                            let excess = tail.len().saturating_sub(DAEMON_STDERR_TAIL_BYTES);
-                            if excess > 0 {
-                                tail.drain(..excess);
-                            }
-                        }
-                    }
-                }
-                let _ = sender.send(tail);
-            });
-        receiver
-    });
     let deadline = std::time::Instant::now() + startup_timeout;
     loop {
         if child
@@ -930,7 +986,7 @@ fn run_daemon_process(
         {
             let _ = child.wait();
             return Err(daemon_process_failure(
-                stderr_tail,
+                &stderr_log,
                 "daemon exited during startup",
             ));
         }
@@ -944,7 +1000,7 @@ fn run_daemon_process(
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(daemon_process_failure(
-                    stderr_tail,
+                    &stderr_log,
                     "daemon did not become ready in time",
                 ));
             }
@@ -967,18 +1023,38 @@ fn run_daemon_process(
 /// The error a failed daemon launch reports: `fallback` when stderr stayed
 /// empty, otherwise the sanitized tail so config, credential, and bind errors
 /// are visible instead of a bare `daemon_process_failed`.
-fn daemon_process_failure(
-    stderr_tail: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
-    fallback: &str,
-) -> ClientError {
-    let tail = stderr_tail
-        .and_then(|receiver| receiver.recv().ok())
-        .unwrap_or_default();
-    let tail = sanitize_cli_text(String::from_utf8_lossy(&tail).trim());
+fn daemon_process_failure(stderr_log: &Path, fallback: &str) -> ClientError {
+    let tail = sanitize_cli_text(String::from_utf8_lossy(&read_log_tail(stderr_log)).trim());
     if tail.is_empty() {
         ClientError::DaemonProcessOutput(fallback.to_owned())
     } else {
         ClientError::DaemonProcessOutput(format!("{fallback}; daemon stderr: {tail}"))
+    }
+}
+
+/// Last `DAEMON_STDERR_TAIL_BYTES` of the daemon stderr log; an unreadable or
+/// missing file yields an empty tail.
+fn read_log_tail(path: &Path) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+    let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    if file
+        .seek(SeekFrom::Start(
+            length.saturating_sub(DAEMON_STDERR_TAIL_BYTES as u64),
+        ))
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let mut tail = Vec::new();
+    if file.read_to_end(&mut tail).is_err() {
+        Vec::new()
+    } else {
+        tail
     }
 }
 
@@ -3307,6 +3383,17 @@ mod tests {
         script
     }
 
+    fn daemon_log(directory: &std::path::Path) -> (PathBuf, std::fs::File) {
+        let path = directory.join("daemon-error.log");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        (path, file)
+    }
+
     #[test]
     fn run_daemon_process_reports_stderr_tail_on_early_exit() {
         let directory = std::env::temp_dir().join(format!(
@@ -3319,9 +3406,17 @@ mod tests {
             "noisy-daemon",
             "#!/bin/sh\nprintf 'bind failed: address in use\\n' >&2\nexit 1\n",
         );
+        let (log_path, log_sink) = daemon_log(&directory);
 
-        let error =
-            run_daemon_process(script, &[], Duration::from_secs(5), |_| Ok(false)).unwrap_err();
+        let error = run_daemon_process(
+            script,
+            &[],
+            log_path,
+            log_sink,
+            Duration::from_secs(5),
+            |_| Ok(false),
+        )
+        .unwrap_err();
         let ClientError::DaemonProcessOutput(detail) = error else {
             panic!("expected DaemonProcessOutput, got {error:?}");
         };
@@ -3342,9 +3437,17 @@ mod tests {
             "stuck-daemon",
             "#!/bin/sh\nprintf 'still loading plugins\\n' >&2\nsleep 30\n",
         );
+        let (log_path, log_sink) = daemon_log(&directory);
 
-        let error =
-            run_daemon_process(script, &[], Duration::from_millis(120), |_| Ok(false)).unwrap_err();
+        let error = run_daemon_process(
+            script,
+            &[],
+            log_path,
+            log_sink,
+            Duration::from_millis(120),
+            |_| Ok(false),
+        )
+        .unwrap_err();
         let ClientError::DaemonProcessOutput(detail) = error else {
             panic!("expected DaemonProcessOutput, got {error:?}");
         };
@@ -3363,23 +3466,139 @@ mod tests {
         // The daemon must outlive the first readiness check: a shorter sleep
         // lets try_wait observe the exit first and the test flakes.
         let script = daemon_script(&directory, "daemon", "#!/bin/sh\nsleep 30\n");
+        let (log_path, log_sink) = daemon_log(&directory);
 
         // Spawning can transiently fail (EAGAIN) when the whole suite runs in
         // parallel; the behavior under test is the readiness return.
-        let mut result = run_daemon_process(script.clone(), &[], Duration::from_secs(5), |_| {
-            Ok(true)
-        });
+        let mut result = run_daemon_process(
+            script.clone(),
+            &[],
+            log_path.clone(),
+            log_sink.try_clone().unwrap(),
+            Duration::from_secs(5),
+            |_| Ok(true),
+        );
         for _ in 0..3 {
             if result.is_ok() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
-            result = run_daemon_process(script.clone(), &[], Duration::from_secs(5), |_| {
-                Ok(true)
-            });
+            result = run_daemon_process(
+                script.clone(),
+                &[],
+                log_path.clone(),
+                log_sink.try_clone().unwrap(),
+                Duration::from_secs(5),
+                |_| Ok(true),
+            );
         }
         result.unwrap();
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn run_daemon_waits_out_a_stopping_daemon_instead_of_spawning() {
+        // The endpoint serves NotReady twice, then Ready: `daemon run` must
+        // wait inside its budget and never spawn a colliding child.
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-run-wait-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let socket_path = directory.join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            for poll in 0..3 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut encoded = String::new();
+                if BufReader::new(&mut stream).read_line(&mut encoded).is_err() {
+                    return;
+                }
+                let Ok(request) = serde_json::from_str::<ControlRequest>(&encoded) else {
+                    return;
+                };
+                let response = ControlResponse {
+                    version: CONTROL_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    result: ControlResult::DaemonStatus(DaemonStatusPayload {
+                        shutting_down: poll < 2,
+                        accounts: Vec::new(),
+                        credential_backend: CredentialBackendId::native(),
+                    }),
+                    diagnostic: None,
+                };
+                if serde_json::to_writer(&mut stream, &response).is_err()
+                    || stream.write_all(b"\n").is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let client = SystemClient {
+            endpoint: Some(socket_path.clone()),
+        };
+
+        client.run_daemon().unwrap();
+        server.join().unwrap();
+        std::fs::remove_file(socket_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn run_daemon_reports_a_daemon_that_never_frees_the_endpoint() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-run-held-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let socket_path = directory.join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut encoded = String::new();
+                if BufReader::new(&mut stream).read_line(&mut encoded).is_err() {
+                    continue;
+                }
+                let Ok(request) = serde_json::from_str::<ControlRequest>(&encoded) else {
+                    continue;
+                };
+                let response = ControlResponse {
+                    version: CONTROL_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    result: ControlResult::DaemonStatus(DaemonStatusPayload {
+                        shutting_down: true,
+                        accounts: Vec::new(),
+                        credential_backend: CredentialBackendId::native(),
+                    }),
+                    diagnostic: None,
+                };
+                if serde_json::to_writer(&mut stream, &response).is_err()
+                    || stream.write_all(b"\n").is_err()
+                {
+                    continue;
+                }
+            }
+        });
+        let client = SystemClient {
+            endpoint: Some(socket_path.clone()),
+        };
+
+        let started = std::time::Instant::now();
+        let error = client.run_daemon().unwrap_err();
+        assert!(
+            matches!(error, ClientError::DaemonStillRunning),
+            "{error:?}"
+        );
+        assert!(started.elapsed() >= Duration::from_secs(5));
+        drop(server);
+        std::fs::remove_file(socket_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]

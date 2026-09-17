@@ -15,6 +15,11 @@ pub use ullage_core::{
 
 pub const CONTROL_PROTOCOL_VERSION: u16 = 10;
 
+/// Longest a single account query may run before the daemon gives up. The
+/// client's probe-wait read limit stays above this so a legal long query is
+/// never reported as a dead daemon.
+pub const MAX_ACCOUNT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AccountId(String);

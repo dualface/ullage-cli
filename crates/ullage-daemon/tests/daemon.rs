@@ -1104,6 +1104,34 @@ async fn duplicate_control_selectors_are_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn account_timeouts_above_the_shared_maximum_are_rejected() {
+    let engine = engine_with(
+        Arc::new(ProviderRegistry::default()),
+        Arc::new(ManualClock::new()),
+        Arc::new(MemorySnapshotStore::default()),
+        DaemonConfig::default(),
+    )
+    .await;
+    for timeout in [
+        Duration::ZERO,
+        ullage_protocol::MAX_ACCOUNT_TIMEOUT + Duration::from_secs(1),
+    ] {
+        let mut config = account("bounded", "provider", Duration::from_secs(60));
+        config.timeout = timeout;
+        assert!(
+            matches!(
+                engine.add_account(config).await,
+                Err(DaemonError::InvalidTimeout(_))
+            ),
+            "timeout {timeout:?} must be rejected"
+        );
+    }
+    let mut at_limit = account("at-limit", "provider", Duration::from_secs(60));
+    at_limit.timeout = ullage_protocol::MAX_ACCOUNT_TIMEOUT;
+    engine.add_account(at_limit).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn renaming_an_account_keeps_provider_labels_unique() {
     let provider = MockProvider::new("renamed", []);
     let mut registry = ProviderRegistry::default();
