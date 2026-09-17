@@ -4,21 +4,28 @@
 //! strings can never smuggle terminal controls into the output.
 
 use chrono::{DateTime, Utc};
+use ullage_core::is_unsafe_identity_character as is_unsafe_control;
 use ullage_core::summary::{
     MetricFilter, MetricFilterMode, UsageSummary, summarize, summarize_filtered,
 };
 use ullage_protocol::{
-    Account, AuthMethod, Capability, ControlResult, DaemonStatusPayload, DevicePayload,
+    Account, AuthMethod, AuthState, Capability, ControlResult, DaemonStatusPayload, DevicePayload,
     MeasurementUnit, PairCodePayload, ProbePayload, QueryOutcome, SnapshotPayload,
     SubscriptionUsage, UsageWindowKind,
 };
 
+use crate::cli::{ColorMode, OutputFormat};
+use crate::errors::{
+    control_error_kind, display_sensitive, error_hint_for_control, error_output,
+    error_output_with_options, json_line, redact_error_details, redact_revealable_values,
+    result_exit_code, with_diagnostic,
+};
 use crate::table::{
     Cell, Palette, Style, SummaryLayout, measure_summary_layout, relative_past, render_line,
     render_pairs, render_section_header, render_summary_rows, render_summary_rows_aligned,
     render_table,
 };
-use crate::{ColorMode, ExitCode, MetricFilterChoice, OutputFormat, RunOutput, display_sensitive};
+use crate::{ExitCode, RunOutput};
 
 /// A metric filter resolved for one account: the names plus the polarity of
 /// the entry that supplied them.
@@ -941,4 +948,106 @@ mod tests {
         assert!(!output.contains("[31m"), "{output}");
         assert!(output.contains("[redacted]"), "{output}");
     }
+}
+
+/// Which metric filter the readable summary applies to stored snapshots.
+#[derive(Clone, Debug, Default)]
+pub(crate) enum MetricFilterChoice {
+    /// Apply each account's persisted filter as a hide list; the default for
+    /// `show` and `probe`.
+    #[default]
+    Persisted,
+    /// Apply one filter as a keep list to every account: `--metric` or
+    /// `--no-metric-filter`.
+    Explicit(MetricFilter),
+}
+
+/// The readable-view choices that one command resolved before rendering.
+pub(crate) struct RenderView<'a> {
+    pub(crate) metric_choice: &'a MetricFilterChoice,
+    /// True only for the account views that own the metric filter.
+    pub(crate) account_with_metrics: bool,
+}
+
+impl RenderView<'_> {
+    /// Persisted filters and the mutation account table: the login flow view.
+    pub(crate) fn persisted() -> Self {
+        Self {
+            metric_choice: &MetricFilterChoice::Persisted,
+            account_with_metrics: false,
+        }
+    }
+}
+
+impl MetricFilterChoice {
+    pub(crate) fn for_saved(&self, saved: &[String]) -> ResolvedMetricFilter {
+        match self {
+            Self::Explicit(filter) => ResolvedMetricFilter::explicit(filter.clone()),
+            Self::Persisted => ResolvedMetricFilter::persisted(saved),
+        }
+    }
+}
+
+/// The one entry point that renders a control result into process output:
+/// error envelopes for `Error`/`ProtocolMismatch`, the redacted wire value for
+/// JSON, or the human-readable view for tables.
+pub(crate) fn render_result(
+    result: ControlResult,
+    format: OutputFormat,
+    reveal: bool,
+    raw: bool,
+    diagnose: bool,
+    color: ColorMode,
+    view: &RenderView<'_>,
+) -> RunOutput {
+    let code = result_exit_code(&result);
+    if let ControlResult::Error(error) = &result {
+        return error_output_with_options(
+            code,
+            control_error_kind(error),
+            format,
+            None,
+            error_hint_for_control(error),
+        );
+    }
+    if matches!(result, ControlResult::ProtocolMismatch { .. }) {
+        return error_output(ExitCode::ProtocolError, "protocol_mismatch", format);
+    }
+
+    let invalid_detail = match &result {
+        ControlResult::AuthState(AuthState::Invalid { reason, .. })
+            if diagnose && !reason.chars().any(is_unsafe_control) =>
+        {
+            Some(reason.clone())
+        }
+        _ => None,
+    };
+    let stdout = match format {
+        OutputFormat::Json | OutputFormat::PrettyJson => {
+            let mut output_result = result.clone();
+            redact_error_details(&mut output_result, diagnose);
+            if !reveal {
+                redact_revealable_values(&mut output_result);
+            }
+            json_line(&output_result, format == OutputFormat::PrettyJson)
+        }
+        OutputFormat::Table => human_result(
+            &result,
+            reveal,
+            raw,
+            diagnose,
+            &Palette::from_mode(color),
+            view.metric_choice,
+            view.account_with_metrics,
+        ),
+    };
+    let mut output = RunOutput {
+        stdout,
+        stderr: String::new(),
+        code,
+    };
+    if let Some(detail) = invalid_detail {
+        output.stderr = with_diagnostic(&output.stderr, &detail, format);
+    }
+    output
 }
