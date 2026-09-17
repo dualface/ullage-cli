@@ -6,11 +6,12 @@ pub mod summary;
 mod usage;
 
 pub use error::{
-    LEGACY_PARTIAL_FAILURE_MESSAGE, PartialFailure, ProviderError, ProviderResult, QueryOutcome,
+    LEGACY_PARTIAL_FAILURE_MESSAGE, PartialFailure, ProviderError, ProviderErrorKind,
+    ProviderResult, QueryOutcome,
 };
 pub use provider::{
-    Capability, Provider, ProviderDescriptor, ProviderId, ProviderRegistry, ProviderWorkspace,
-    RegisteredProvider, RegistryError, UsageQuery,
+    Capability, DEFAULT_ACCOUNT_ID, Provider, ProviderDescriptor, ProviderId, ProviderRegistry,
+    ProviderWorkspace, RegisteredProvider, RegistryError, UsageQuery,
 };
 pub use usage::{
     MeasurementUnit, SubscriptionUsage, UsageMeasurement, UsageWindow, UsageWindowKind,

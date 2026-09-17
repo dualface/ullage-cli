@@ -9,12 +9,13 @@ use cap_std::fs::{Dir, File, OpenOptions};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+use crate::credential::{MAX_RECORD_BYTES, hex};
 use crate::{
     Availability, BackendKind, BackendScope, CredentialBackend, CredentialError, CredentialKey,
 };
 
-const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 const TEMP_CREATE_ATTEMPTS: usize = 16;
+const MAX_RECORD_BYTES_U64: u64 = MAX_RECORD_BYTES as u64;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct FileFallbackOptions {
@@ -50,6 +51,7 @@ impl FileStore {
     pub fn new(options: FileFallbackOptions) -> Result<Self, CredentialError> {
         let directory = open_private_directory(&options.directory)?;
         let coordination_scope = file_coordination_scope(&directory)?;
+        sweep_stale_temp_files(&directory);
         Ok(Self {
             directory,
             coordination_scope,
@@ -63,23 +65,6 @@ impl FileStore {
     fn temp_name() -> String {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         format!(".ullage-{}-{sequence}.tmp", std::process::id())
-    }
-
-    fn create_private_file(&self, name: &str) -> Result<File, CredentialError> {
-        let mut options = OpenOptions::new();
-        options
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No);
-        set_create_mode(&mut options);
-        add_windows_dacl_access(&mut options, true);
-        let file = self
-            .directory
-            .open_with(name, &options)
-            .map_err(|_| CredentialError::FileIo)?;
-        verify_file_handle(&file)?;
-        protect_file_handle(&file)?;
-        Ok(file)
     }
 
     fn open_private_file(&self, name: &str) -> Result<File, CredentialError> {
@@ -98,12 +83,24 @@ impl FileStore {
     fn create_temporary_file(&self) -> Result<(String, File), CredentialError> {
         for _ in 0..TEMP_CREATE_ATTEMPTS {
             let name = Self::temp_name();
-            match self.directory.symlink_metadata(&name) {
-                Ok(_) => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err(CredentialError::FileIo),
-            }
-            return self.create_private_file(&name).map(|file| (name, file));
+            let mut options = OpenOptions::new();
+            options
+                .write(true)
+                .create_new(true)
+                .follow(FollowSymlinks::No);
+            set_create_mode(&mut options);
+            add_windows_dacl_access(&mut options, true);
+            // create_new reports collisions as AlreadyExists, which covers
+            // stale temp files, other processes' in-flight names, and a
+            // planted symlink; each attempt gets a fresh unique name.
+            let file = match self.directory.open_with(&name, &options) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(map_open_error(error)),
+            };
+            verify_file_handle(&file)?;
+            protect_file_handle(&file)?;
+            return Ok((name, file));
         }
         Err(CredentialError::FileIo)
     }
@@ -133,7 +130,18 @@ fn sync_directory_handle(directory: &Dir) -> Result<(), CredentialError> {
     file.sync_all().map_err(|_| CredentialError::FileIo)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn sync_directory_handle(directory: &Dir) -> Result<(), CredentialError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::FlushFileBuffers;
+    // SAFETY: directory is a live handle; FlushFileBuffers has no pointer arguments.
+    if unsafe { FlushFileBuffers(directory.as_raw_handle().cast()) } == 0 {
+        return Err(CredentialError::FileIo);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn sync_directory_handle(_directory: &Dir) -> Result<(), CredentialError> {
     Ok(())
 }
@@ -178,14 +186,14 @@ impl CredentialBackend for FileStore {
         let name = Self::credential_name(key);
         let file = self.open_private_file(&name)?;
         let metadata = file.metadata().map_err(|_| CredentialError::FileIo)?;
-        if metadata.len() > MAX_RECORD_BYTES {
+        if metadata.len() > MAX_RECORD_BYTES_U64 {
             return Err(CredentialError::CredentialTooLarge);
         }
         let mut content = Vec::with_capacity(metadata.len() as usize);
-        file.take(MAX_RECORD_BYTES + 1)
+        file.take(MAX_RECORD_BYTES_U64 + 1)
             .read_to_end(&mut content)
             .map_err(|_| CredentialError::FileIo)?;
-        if content.len() as u64 > MAX_RECORD_BYTES {
+        if content.len() as u64 > MAX_RECORD_BYTES_U64 {
             content.zeroize();
             return Err(CredentialError::CredentialTooLarge);
         }
@@ -194,7 +202,7 @@ impl CredentialBackend for FileStore {
 
     fn write(&self, key: &CredentialKey, value: &[u8]) -> Result<(), CredentialError> {
         verify_directory_handle(&self.directory)?;
-        if value.len() as u64 > MAX_RECORD_BYTES {
+        if value.len() > MAX_RECORD_BYTES {
             return Err(CredentialError::CredentialTooLarge);
         }
         let destination = Self::credential_name(key);
@@ -246,14 +254,23 @@ fn open_private_directory(path: &Path) -> Result<Dir, CredentialError> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 run_directory_create_hook(name);
                 create_directory_from_handle(&current, name, path, is_leaf)?;
-                current
-                    .open_dir_nofollow(name)
-                    .map_err(|_| CredentialError::UnsafeFallbackPath)?
+                current.open_dir_nofollow(name).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::PermissionDenied {
+                        CredentialError::AccessDenied
+                    } else {
+                        CredentialError::UnsafeFallbackPath
+                    }
+                })?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(CredentialError::AccessDenied);
             }
             Err(_) => return Err(CredentialError::UnsafeFallbackPath),
         };
     }
-    set_private_directory_handle_permissions(&current)?;
+    // A pre-existing vault directory with the wrong permissions is refused on
+    // every platform instead of silently repaired; only directories this
+    // process creates get private modes or ACLs.
     verify_directory_handle(&current)?;
     protect_directory_handle(&current)?;
     Ok(current)
@@ -299,42 +316,6 @@ fn create_directory_from_handle(
     Err(CredentialError::UnsafeFallbackPath)
 }
 
-#[cfg(unix)]
-fn set_private_directory_handle_permissions(directory: &Dir) -> Result<(), CredentialError> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    let name = b".\0";
-    // SAFETY: directory is live and name is NUL-terminated. Reopening yields a descriptor that
-    // supports fchmod even when cap-std's capability handle itself uses O_PATH.
-    let descriptor = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            name.as_ptr().cast(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if descriptor < 0 {
-        return Err(CredentialError::FileIo);
-    }
-    // SAFETY: descriptor is newly owned and valid.
-    let file = unsafe { std::fs::File::from_raw_fd(descriptor) };
-    // SAFETY: file is a live descriptor and fchmod has no pointer arguments.
-    if unsafe { libc::fchmod(file.as_raw_fd(), 0o700) } == 0 {
-        Ok(())
-    } else {
-        Err(CredentialError::FileIo)
-    }
-}
-
-#[cfg(windows)]
-fn set_private_directory_handle_permissions(_directory: &Dir) -> Result<(), CredentialError> {
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn set_private_directory_handle_permissions(_directory: &Dir) -> Result<(), CredentialError> {
-    Err(CredentialError::UnsafeFallbackPath)
-}
-
 #[cfg(all(test, unix))]
 type DirectoryCreateHook = (
     std::ffi::OsString,
@@ -347,13 +328,37 @@ static DIRECTORY_CREATE_HOOK: std::sync::Mutex<Option<DirectoryCreateHook>> =
     std::sync::Mutex::new(None);
 
 #[cfg(all(test, unix))]
-pub(crate) fn set_directory_create_hook(hook: Option<DirectoryCreateHook>) {
-    *DIRECTORY_CREATE_HOOK.lock().unwrap() = hook;
+pub(crate) struct DirectoryCreateHookGuard;
+
+#[cfg(all(test, unix))]
+impl DirectoryCreateHookGuard {
+    /// Installs the hook and returns a guard; dropping the guard clears the
+    /// hook even when the test panics. The mutex is only held for the
+    /// install/clear writes so `run_directory_create_hook` never blocks.
+    pub(crate) fn install(hook: DirectoryCreateHook) -> Self {
+        *DIRECTORY_CREATE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+        Self
+    }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for DirectoryCreateHookGuard {
+    fn drop(&mut self) {
+        *DIRECTORY_CREATE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
 }
 
 #[cfg(all(test, unix))]
 fn run_directory_create_hook(name: &std::ffi::OsStr) {
-    if let Some((target, entered, release)) = DIRECTORY_CREATE_HOOK.lock().unwrap().clone() {
+    let hook = DIRECTORY_CREATE_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some((target, entered, release)) = hook {
         if target == name {
             entered.wait();
             release.wait();
@@ -407,11 +412,17 @@ fn verify_directory_handle(directory: &Dir) -> Result<(), CredentialError> {
 
 #[cfg(windows)]
 fn verify_directory_handle(directory: &Dir) -> Result<(), CredentialError> {
+    use cap_fs_ext::OsMetadataExt;
     use std::os::windows::io::AsRawHandle;
     let metadata = directory
         .dir_metadata()
         .map_err(|_| CredentialError::UnsafeFallbackPath)?;
-    if !metadata.is_dir() || !handle_acl_is_private(directory.as_raw_handle().cast())? {
+    // Reparse points (junctions, symlinks) redirect the handle elsewhere and
+    // are rejected just like verify_file_handle rejects them for records.
+    if !metadata.is_dir()
+        || !windows_file_attributes_are_safe(metadata.file_attributes())
+        || !handle_acl_is_private(directory.as_raw_handle().cast())?
+    {
         return Err(CredentialError::UnsafeFallbackPath);
     }
     Ok(())
@@ -515,21 +526,53 @@ fn capability_metadata_is_reparse_or_symlink(metadata: &cap_std::fs::Metadata) -
 }
 
 fn map_read_error(error: std::io::Error) -> CredentialError {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        CredentialError::NotFound
+    match error.kind() {
+        std::io::ErrorKind::NotFound => CredentialError::NotFound,
+        std::io::ErrorKind::PermissionDenied => CredentialError::AccessDenied,
+        _ => {
+            // A no-follow open that hits a symlink surfaces as ELOOP on unix.
+            #[cfg(unix)]
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                return CredentialError::UnsafeFallbackPath;
+            }
+            CredentialError::FileIo
+        }
+    }
+}
+
+fn map_open_error(error: std::io::Error) -> CredentialError {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        CredentialError::AccessDenied
     } else {
         CredentialError::FileIo
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(DIGITS[(byte >> 4) as usize] as char);
-        output.push(DIGITS[(byte & 0xf) as usize] as char);
+/// Removes leftover `.ullage-<pid>-*.tmp` files whose pid is not this process.
+/// A same-pid collision is impossible while this process holds its pid, so
+/// only files from dead processes (or another live vault user) are removed;
+/// for the latter the concurrent write simply fails cleanly.
+fn sweep_stale_temp_files(directory: &Dir) {
+    let own_pid = std::process::id();
+    let Ok(entries) = directory.entries() else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix(".ullage-") else {
+            continue;
+        };
+        let Some((pid, _)) = rest.split_once('-') else {
+            continue;
+        };
+        if pid.parse::<u32>() == Ok(own_pid) {
+            continue;
+        }
+        let _ = directory.remove_file(entry.file_name());
     }
-    output
 }
 
 #[cfg(unix)]

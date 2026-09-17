@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use ullage_auth::{Credential, CredentialError, CredentialKey, CredentialStore, SecretValue};
+use ullage_auth::{
+    Credential, CredentialError, CredentialKey, CredentialStore, CredentialVersion, ReplaceOutcome,
+    SecretValue,
+};
 use ullage_provider_chatgpt::{
     ChatGptApiError, ChatGptApiErrorKind, ChatGptSession, ChatGptSessionStore, ChatGptWorkspace,
     OAuthTokenSet,
@@ -23,19 +26,30 @@ impl ClaudeVault {
 }
 
 impl ClaudeCredentialStore for ClaudeVault {
-    fn load(&self) -> ullage_core::ProviderResult<Option<ClaudeCredential>> {
-        let credential: Option<ClaudeCredential> =
+    fn load(&self) -> ullage_core::ProviderResult<Option<(ClaudeCredential, CredentialVersion)>> {
+        let loaded: Option<(ClaudeCredential, CredentialVersion)> =
             load_json(&self.store, &self.key).map_err(provider_store_error)?;
-        credential
-            .map(|credential| {
+        loaded
+            .map(|(credential, version)| {
                 credential.validate()?;
-                Ok(credential)
+                Ok((credential, version))
             })
             .transpose()
     }
 
-    fn save(&self, credential: &ClaudeCredential) -> ullage_core::ProviderResult<()> {
+    fn save(
+        &self,
+        credential: &ClaudeCredential,
+    ) -> ullage_core::ProviderResult<CredentialVersion> {
         save_json(&self.store, &self.key, credential).map_err(provider_store_error)
+    }
+
+    fn replace(
+        &self,
+        expected: CredentialVersion,
+        credential: &ClaudeCredential,
+    ) -> ullage_core::ProviderResult<Option<CredentialVersion>> {
+        replace_json(&self.store, &self.key, expected, credential).map_err(provider_store_error)
     }
 
     fn clear(&self) -> ullage_core::ProviderResult<()> {
@@ -68,12 +82,26 @@ struct PersistedChatGptSession {
     invalid_reason: Option<String>,
 }
 
+impl PersistedChatGptSession {
+    fn from_session(session: &ChatGptSession) -> Self {
+        Self {
+            access_token: session.tokens.access_token().into(),
+            refresh_token: session.tokens.refresh_token().map(str::to_owned),
+            identity_token: session.tokens.identity_token().map(str::to_owned),
+            expires_at: session.tokens.expires_at,
+            workspaces: session.workspaces.clone(),
+            selected_workspace_id: session.selected_workspace_id.clone(),
+            invalid_reason: session.invalid_reason.clone(),
+        }
+    }
+}
+
 impl ChatGptSessionStore for ChatGptVault {
-    fn load(&self) -> Result<Option<ChatGptSession>, ChatGptApiError> {
-        let persisted: Option<PersistedChatGptSession> =
+    fn load(&self) -> Result<Option<(ChatGptSession, CredentialVersion)>, ChatGptApiError> {
+        let persisted: Option<(PersistedChatGptSession, CredentialVersion)> =
             load_json(&self.store, &self.key).map_err(chatgpt_store_error)?;
         persisted
-            .map(|persisted| {
+            .map(|(persisted, version)| {
                 let tokens = OAuthTokenSet::new(
                     persisted.access_token,
                     persisted.refresh_token,
@@ -82,29 +110,38 @@ impl ChatGptSessionStore for ChatGptVault {
                 .map_err(|_| chatgpt_store_error(CredentialError::CorruptCredential))?
                 .with_identity_token(persisted.identity_token)
                 .map_err(|_| chatgpt_store_error(CredentialError::CorruptCredential))?;
-                Ok(ChatGptSession {
-                    tokens,
-                    workspaces: persisted.workspaces,
-                    selected_workspace_id: persisted.selected_workspace_id,
-                    invalid_reason: persisted.invalid_reason,
-                })
+                Ok((
+                    ChatGptSession {
+                        tokens,
+                        workspaces: persisted.workspaces,
+                        selected_workspace_id: persisted.selected_workspace_id,
+                        invalid_reason: persisted.invalid_reason,
+                    },
+                    version,
+                ))
             })
             .transpose()
     }
 
-    fn save(&self, session: &ChatGptSession) -> Result<(), ChatGptApiError> {
+    fn save(&self, session: &ChatGptSession) -> Result<CredentialVersion, ChatGptApiError> {
         save_json(
             &self.store,
             &self.key,
-            &PersistedChatGptSession {
-                access_token: session.tokens.access_token().into(),
-                refresh_token: session.tokens.refresh_token().map(str::to_owned),
-                identity_token: session.tokens.identity_token().map(str::to_owned),
-                expires_at: session.tokens.expires_at,
-                workspaces: session.workspaces.clone(),
-                selected_workspace_id: session.selected_workspace_id.clone(),
-                invalid_reason: session.invalid_reason.clone(),
-            },
+            &PersistedChatGptSession::from_session(session),
+        )
+        .map_err(chatgpt_store_error)
+    }
+
+    fn replace(
+        &self,
+        expected: CredentialVersion,
+        session: &ChatGptSession,
+    ) -> Result<Option<CredentialVersion>, ChatGptApiError> {
+        replace_json(
+            &self.store,
+            &self.key,
+            expected,
+            &PersistedChatGptSession::from_session(session),
         )
         .map_err(chatgpt_store_error)
     }
@@ -114,10 +151,12 @@ impl ChatGptSessionStore for ChatGptVault {
     }
 }
 
+/// Loads the decoded value together with the version it was observed at; the
+/// version is what `replace_json` needs to write it back safely.
 fn load_json<T: for<'de> Deserialize<'de>>(
     store: &CredentialStore,
     key: &CredentialKey,
-) -> Result<Option<T>, CredentialError> {
+) -> Result<Option<(T, CredentialVersion)>, CredentialError> {
     let stored = match store.get(key) {
         Ok(stored) => stored,
         Err(CredentialError::NotFound) => return Ok(None),
@@ -128,20 +167,40 @@ fn load_json<T: for<'de> Deserialize<'de>>(
         .get("session")
         .ok_or(CredentialError::CorruptCredential)?;
     serde_json::from_slice(payload.expose())
-        .map(Some)
+        .map(|value| Some((value, stored.version())))
         .map_err(|_| CredentialError::CorruptCredential)
 }
 
+/// Unconditional write: first sign-in or an explicit re-login only. Returns
+/// the version the record now carries.
 fn save_json<T: Serialize>(
     store: &CredentialStore,
     key: &CredentialKey,
     value: &T,
-) -> Result<(), CredentialError> {
+) -> Result<CredentialVersion, CredentialError> {
     let encoded = serde_json::to_vec(value).map_err(|_| CredentialError::CorruptCredential)?;
     let mut credential = Credential::new();
     credential.insert("session", SecretValue::new(encoded))?;
-    store.set(key, credential)?;
-    Ok(())
+    Ok(store.set(key, credential)?.version())
+}
+
+/// Compare-and-swap write for a value derived from a `load_json`. `Ok(None)`
+/// covers both a version conflict and a record that was deleted meanwhile: in
+/// either case the observed session is stale and nothing was written.
+fn replace_json<T: Serialize>(
+    store: &CredentialStore,
+    key: &CredentialKey,
+    expected: CredentialVersion,
+    value: &T,
+) -> Result<Option<CredentialVersion>, CredentialError> {
+    let encoded = serde_json::to_vec(value).map_err(|_| CredentialError::CorruptCredential)?;
+    let mut credential = Credential::new();
+    credential.insert("session", SecretValue::new(encoded))?;
+    match store.replace(key, expected, credential) {
+        Ok(ReplaceOutcome::Replaced(stored)) => Ok(Some(stored.version())),
+        Ok(ReplaceOutcome::VersionConflict) | Err(CredentialError::NotFound) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn delete(store: &CredentialStore, key: &CredentialKey) -> Result<(), CredentialError> {
@@ -214,21 +273,28 @@ mod tests {
         }
     }
 
+    fn claude_credential(access_token: &str) -> ClaudeCredential {
+        ClaudeCredential {
+            access_token: access_token.into(),
+            refresh_token: Some("claude-refresh".into()),
+            expires_at: Some(Utc::now()),
+            account_label: None,
+            account_key: None,
+        }
+    }
+
     #[test]
     fn provider_vaults_round_trip_without_crossing_keys() {
         let store = Arc::new(CredentialStore::new(MemoryBackend::default()));
         let claude = ClaudeVault::new(store.clone(), "claude-a").unwrap();
         let other_claude = ClaudeVault::new(store.clone(), "claude-b").unwrap();
         let chatgpt = ChatGptVault::new(store, "chatgpt-a").unwrap();
-        let claude_credential = ClaudeCredential {
-            access_token: "claude-access".into(),
-            refresh_token: Some("claude-refresh".into()),
-            expires_at: Some(Utc::now()),
-            account_label: None,
-            account_key: None,
-        };
+        let claude_credential = claude_credential("claude-access");
         claude.save(&claude_credential).unwrap();
-        assert_eq!(claude.load().unwrap(), Some(claude_credential));
+        assert_eq!(
+            claude.load().unwrap().map(|(credential, _)| credential),
+            Some(claude_credential)
+        );
         assert!(other_claude.load().unwrap().is_none());
         assert!(chatgpt.load().unwrap().is_none());
 
@@ -244,11 +310,49 @@ mod tests {
             invalid_reason: None,
         };
         chatgpt.save(&session).unwrap();
-        let loaded = chatgpt.load().unwrap().unwrap();
+        let (loaded, _) = chatgpt.load().unwrap().unwrap();
         assert_eq!(loaded.tokens.access_token(), "chatgpt-access");
         assert_eq!(loaded.selected_workspace_id.as_deref(), Some("workspace-a"));
         assert!(claude.load().unwrap().is_some());
         assert!(other_claude.load().unwrap().is_none());
+    }
+
+    #[test]
+    fn claude_vault_stale_replace_never_overwrites_or_resurrects() {
+        let store = Arc::new(CredentialStore::new(MemoryBackend::default()));
+        let vault = ClaudeVault::new(store.clone(), "claude-stale").unwrap();
+        let (_, first_version) = {
+            vault.save(&claude_credential("first")).unwrap();
+            vault.load().unwrap().unwrap()
+        };
+
+        // A delete tombstones the key: a stale replace must not resurrect it.
+        vault.clear().unwrap();
+        assert_eq!(
+            vault
+                .replace(first_version, &claude_credential("stale"))
+                .unwrap(),
+            None
+        );
+        assert!(vault.load().unwrap().is_none());
+
+        // A new login legitimately recreates the record at a fresh generation.
+        vault.save(&claude_credential("second")).unwrap();
+        let (_, second_version) = vault.load().unwrap().unwrap();
+        assert_ne!(first_version, second_version);
+        assert_eq!(
+            vault
+                .replace(first_version, &claude_credential("stale"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            vault
+                .load()
+                .unwrap()
+                .map(|(credential, _)| credential.access_token),
+            Some("second".to_owned())
+        );
     }
 
     #[test]

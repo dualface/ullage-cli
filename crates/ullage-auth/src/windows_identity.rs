@@ -60,11 +60,17 @@ pub fn current_windows_user_scope() -> Result<String, std::io::Error> {
     }
     let token = Token(token);
     let mut required = 0;
-    unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required) };
-    if required == 0 {
-        return Err(std::io::Error::from_raw_os_error(unsafe {
-            GetLastError() as i32
-        }));
+    // SAFETY: zero-length query obtains the required TOKEN_USER size; it must
+    // fail with ERROR_INSUFFICIENT_BUFFER.
+    let queried = unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required) };
+    if queried != 0 || required == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "TokenUser query did not report a buffer size",
+        ));
+    }
+    if unsafe { GetLastError() } != windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER {
+        return Err(std::io::Error::last_os_error());
     }
     let mut buffer = vec![0u8; required as usize];
     if unsafe {

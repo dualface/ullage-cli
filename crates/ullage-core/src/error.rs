@@ -47,6 +47,49 @@ impl<T> QueryOutcome<T> {
     }
 }
 
+/// The stable category of a [`ProviderError`], free of vendor-supplied text.
+/// Safe to persist, log, and report without sanitization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderErrorKind {
+    AuthenticationInvalid,
+    RateLimited,
+    Network,
+    ProtocolIncompatible,
+    UnsupportedCapability,
+}
+
+impl ProviderErrorKind {
+    /// The stable sanitized text for this category. `sanitized_message` and
+    /// `is_sanitized_partial_message` both derive from here so the two views
+    /// cannot drift apart.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::AuthenticationInvalid => "provider authentication is invalid",
+            Self::RateLimited => "provider rate limited the request",
+            Self::Network => "provider network request failed",
+            Self::ProtocolIncompatible => "provider protocol response is incompatible",
+            Self::UnsupportedCapability => "provider capability is not supported",
+        }
+    }
+}
+
+const PROVIDER_ERROR_KINDS: &[ProviderErrorKind] = &[
+    ProviderErrorKind::AuthenticationInvalid,
+    ProviderErrorKind::RateLimited,
+    ProviderErrorKind::Network,
+    ProviderErrorKind::ProtocolIncompatible,
+    ProviderErrorKind::UnsupportedCapability,
+];
+
+/// An error reported by a provider adapter.
+///
+/// The `message`/`capability` fields carry vendor-supplied text and may
+/// contain secrets or personal data. They are deliberately serialized and
+/// displayed verbatim because the control protocol's opt-in `diagnostic`
+/// channel exists to expose them. Every other boundary — persisted snapshots,
+/// ordinary control responses, logs — must go through [`Self::sanitized`] or
+/// [`Self::sanitized_message`] rather than reading the raw fields.
 #[derive(Clone, Debug, Error, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderError {
@@ -66,14 +109,19 @@ pub enum ProviderError {
 }
 
 impl ProviderError {
-    pub fn sanitized_message(&self) -> &'static str {
+    /// The stable error category, without any vendor-supplied text.
+    pub fn kind(&self) -> ProviderErrorKind {
         match self {
-            Self::AuthenticationInvalid { .. } => "provider authentication is invalid",
-            Self::RateLimited { .. } => "provider rate limited the request",
-            Self::Network { .. } => "provider network request failed",
-            Self::ProtocolIncompatible { .. } => "provider protocol response is incompatible",
-            Self::UnsupportedCapability { .. } => "provider capability",
+            Self::AuthenticationInvalid { .. } => ProviderErrorKind::AuthenticationInvalid,
+            Self::RateLimited { .. } => ProviderErrorKind::RateLimited,
+            Self::Network { .. } => ProviderErrorKind::Network,
+            Self::ProtocolIncompatible { .. } => ProviderErrorKind::ProtocolIncompatible,
+            Self::UnsupportedCapability { .. } => ProviderErrorKind::UnsupportedCapability,
         }
+    }
+
+    pub fn sanitized_message(&self) -> &'static str {
+        self.kind().message()
     }
 
     pub fn sanitized(self) -> Self {
@@ -96,14 +144,10 @@ impl ProviderError {
     }
 
     pub fn is_sanitized_partial_message(message: &str) -> bool {
-        matches!(
-            message,
-            "provider authentication is invalid"
-                | "provider rate limited the request"
-                | "provider network request failed"
-                | "provider protocol response is incompatible"
-                | "provider capability"
-        ) || message == LEGACY_PARTIAL_FAILURE_MESSAGE
+        PROVIDER_ERROR_KINDS
+            .iter()
+            .any(|kind| kind.message() == message)
+            || message == LEGACY_PARTIAL_FAILURE_MESSAGE
     }
 }
 

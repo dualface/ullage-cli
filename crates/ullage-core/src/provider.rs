@@ -1,25 +1,42 @@
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ullage_auth::{AuthChallenge, AuthCompleteRequest, AuthStartRequest, AuthState, LogoutRequest};
 
-use crate::{ProviderError, ProviderResult, QueryOutcome, SubscriptionUsage};
+use crate::{
+    ProviderError, ProviderErrorKind, ProviderResult, QueryOutcome, SubscriptionUsage,
+    is_unsafe_identity_character,
+};
+
+/// Account key used by `ProviderRegistry::get` and by providers that store a
+/// single credential per provider.
+pub const DEFAULT_ACCOUNT_ID: &str = "active";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProviderId(String);
 
 impl ProviderId {
+    /// Builds an id without validation; `ProviderRegistry` rejects unusable
+    /// ids at registration. Callers that need validation up front can use
+    /// [`ProviderId::is_usable`].
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Whether the id is non-empty and free of control or bidirectional
+    /// characters that could obscure it in logs and labels.
+    pub fn is_usable(&self) -> bool {
+        !self.0.is_empty() && !self.0.chars().any(is_unsafe_identity_character)
     }
 }
 
@@ -149,6 +166,25 @@ pub enum RegistryError {
     Duplicate(ProviderId),
     #[error("provider is not registered: {0}")]
     NotFound(ProviderId),
+    /// The id cannot safely name a registry entry; its text is untrusted, so
+    /// it is carried for debugging but the message does not echo it.
+    #[error("provider identifier is not usable")]
+    InvalidId(ProviderId),
+    /// The factory produced an instance whose descriptor names a different
+    /// provider; refusing it keeps lookups from returning the wrong adapter.
+    #[error("provider factory returned an instance for {actual} instead of {registered}")]
+    DescriptorMismatch {
+        registered: ProviderId,
+        actual: ProviderId,
+    },
+    /// The factory ran and failed; `kind` preserves the provider error
+    /// category while the vendor text stays in the diagnostics channel.
+    #[error("provider account instance could not be initialized: {provider} ({kind:?})")]
+    InstanceFailed {
+        provider: ProviderId,
+        kind: ProviderErrorKind,
+    },
+    /// Unclassifiable initialization failure (for example a poisoned cache).
     #[error("provider account instance could not be initialized: {0}")]
     InstanceUnavailable(ProviderId),
 }
@@ -183,6 +219,9 @@ impl ProviderRegistry {
         provider: Arc<dyn RegisteredProvider>,
     ) -> Result<(), RegistryError> {
         let id = provider.descriptor().id;
+        if !id.is_usable() {
+            return Err(RegistryError::InvalidId(id));
+        }
         if self.providers.contains_key(&id) {
             return Err(RegistryError::Duplicate(id));
         }
@@ -200,6 +239,9 @@ impl ProviderRegistry {
         F: Fn(&str) -> ProviderResult<Arc<dyn RegisteredProvider>> + Send + Sync + 'static,
     {
         let id = descriptor.id.clone();
+        if !id.is_usable() {
+            return Err(RegistryError::InvalidId(id));
+        }
         if self.providers.contains_key(&id) {
             return Err(RegistryError::Duplicate(id));
         }
@@ -215,9 +257,13 @@ impl ProviderRegistry {
     }
 
     pub fn get(&self, id: &ProviderId) -> Result<Arc<dyn RegisteredProvider>, RegistryError> {
-        self.get_for_account(id, "active")
+        self.get_for_account(id, DEFAULT_ACCOUNT_ID)
     }
 
+    /// Returns the cached instance for `(id, account_id)`, constructing one on
+    /// a miss. The factory runs without the cache lock held — factories may do
+    /// slow work such as credential-store access. If two callers race, exactly
+    /// one instance is published and the other's is dropped.
     pub fn get_for_account(
         &self,
         id: &ProviderId,
@@ -232,16 +278,34 @@ impl ProviderRegistry {
             ProviderRegistration::Factory {
                 factory, instances, ..
             } => {
-                let mut instances = instances
+                let fast_path = instances
                     .lock()
-                    .map_err(|_| RegistryError::InstanceUnavailable(id.clone()))?;
-                if let Some(provider) = instances.get(account_id) {
-                    return Ok(provider.clone());
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(account_id)
+                    .cloned();
+                if let Some(provider) = fast_path {
+                    return Ok(provider);
                 }
-                let provider = factory(account_id)
-                    .map_err(|_| RegistryError::InstanceUnavailable(id.clone()))?;
-                instances.insert(account_id.to_owned(), provider.clone());
-                Ok(provider)
+                let provider =
+                    factory(account_id).map_err(|error| RegistryError::InstanceFailed {
+                        provider: id.clone(),
+                        kind: error.kind(),
+                    })?;
+                let actual = provider.descriptor().id;
+                if actual != *id {
+                    return Err(RegistryError::DescriptorMismatch {
+                        registered: id.clone(),
+                        actual,
+                    });
+                }
+                match instances
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entry(account_id.to_owned())
+                {
+                    Entry::Occupied(entry) => Ok(entry.get().clone()),
+                    Entry::Vacant(entry) => Ok(entry.insert(provider).clone()),
+                }
             }
         }
     }

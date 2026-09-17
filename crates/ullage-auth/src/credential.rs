@@ -7,7 +7,9 @@ use crate::CredentialError;
 
 pub(crate) const NAMESPACE: &str = "dev.onevoke.ullage.credentials";
 const MAGIC: &[u8; 8] = b"ULLAGEC2";
-const MAX_RECORD_BYTES: usize = 1024 * 1024;
+/// magic + generation + revision + active flag + field count.
+const HEADER_BYTES: usize = MAGIC.len() + 8 + 8 + 1 + 4;
+pub(crate) const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_FIELDS: usize = 64;
 const MAX_FIELD_NAME_BYTES: usize = 64;
 
@@ -77,7 +79,7 @@ fn validate_component(label: &'static str, value: &str) -> Result<(), Credential
     Ok(())
 }
 
-#[derive(Clone, PartialEq, Eq, Zeroize)]
+#[derive(Clone, Eq, Zeroize)]
 #[zeroize(drop)]
 pub struct SecretValue(Vec<u8>);
 
@@ -88,6 +90,22 @@ impl SecretValue {
 
     pub fn expose(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl PartialEq for SecretValue {
+    /// Constant-time comparison: secrets are compared without an early exit so
+    /// the timing does not reveal where two values differ.
+    fn eq(&self, other: &Self) -> bool {
+        let left = self.expose();
+        let right = other.expose();
+        if left.len() != right.len() {
+            return false;
+        }
+        left.iter()
+            .zip(right.iter())
+            .fold(0_u8, |different, (a, b)| different | (a ^ b))
+            == 0
     }
 }
 
@@ -165,7 +183,9 @@ impl CredentialVersion {
         self.revision
     }
 
-    pub(crate) fn new(generation: u64, revision: u64) -> Self {
+    /// Builds a version from its parts. Backends issue versions; callers must
+    /// never fabricate one to make a stale write look current.
+    pub fn new(generation: u64, revision: u64) -> Self {
         Self {
             generation,
             revision,
@@ -239,22 +259,7 @@ impl StoredRecord {
             Self::Active(stored) => (stored.version.revision, Some(&stored.credential)),
             Self::Tombstone { .. } => (0, None),
         };
-        let mut encoded_len = MAGIC.len() + 8 + 8 + 1 + 4;
-        for (name, value) in credential.into_iter().flat_map(|value| &value.fields) {
-            let value_len = u32::try_from(value.expose().len())
-                .map_err(|_| CredentialError::CredentialTooLarge)?;
-            encoded_len = encoded_len
-                .checked_add(2)
-                .and_then(|length| length.checked_add(name.len()))
-                .and_then(|length| length.checked_add(4))
-                .and_then(|length| length.checked_add(value_len as usize))
-                .ok_or(CredentialError::CredentialTooLarge)?;
-            if encoded_len > MAX_RECORD_BYTES {
-                return Err(CredentialError::CredentialTooLarge);
-            }
-        }
-
-        let mut output = Vec::with_capacity(encoded_len);
+        let mut output = Vec::with_capacity(HEADER_BYTES);
         output.extend_from_slice(MAGIC);
         output.extend_from_slice(&self.generation().to_be_bytes());
         output.extend_from_slice(&revision.to_be_bytes());
@@ -262,16 +267,30 @@ impl StoredRecord {
         output.extend_from_slice(
             &(credential.map_or(0, |value| value.fields.len()) as u32).to_be_bytes(),
         );
-        for (name, value) in credential.into_iter().flat_map(|value| &value.fields) {
-            output.extend_from_slice(&(name.len() as u16).to_be_bytes());
-            output.extend_from_slice(name.as_bytes());
-            let value_len = u32::try_from(value.expose().len())
-                .map_err(|_| CredentialError::CredentialTooLarge)?;
-            output.extend_from_slice(&value_len.to_be_bytes());
-            output.extend_from_slice(value.expose());
+        let result = (|| {
+            for (name, value) in credential.into_iter().flat_map(|value| &value.fields) {
+                let value_len = u32::try_from(value.expose().len())
+                    .map_err(|_| CredentialError::CredentialTooLarge)?;
+                let encoded_len = output
+                    .len()
+                    .checked_add(2 + name.len() + 4)
+                    .and_then(|length| length.checked_add(value_len as usize))
+                    .ok_or(CredentialError::CredentialTooLarge)?;
+                if encoded_len > MAX_RECORD_BYTES {
+                    return Err(CredentialError::CredentialTooLarge);
+                }
+                output.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                output.extend_from_slice(name.as_bytes());
+                output.extend_from_slice(&value_len.to_be_bytes());
+                output.extend_from_slice(value.expose());
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            // The partially written record holds secret bytes.
+            output.zeroize();
         }
-        debug_assert_eq!(output.len(), encoded_len);
-        Ok(output)
+        result.map(|()| output)
     }
 
     pub(crate) fn decode(mut input: Vec<u8>) -> Result<Self, CredentialError> {
@@ -283,7 +302,7 @@ impl StoredRecord {
 
 fn decode_record(input: &[u8]) -> Result<StoredRecord, CredentialError> {
     if input.len() > MAX_RECORD_BYTES
-        || input.len() < MAGIC.len() + 21
+        || input.len() < HEADER_BYTES
         || &input[..MAGIC.len()] != MAGIC
     {
         return Err(CredentialError::CorruptCredential);
@@ -291,9 +310,7 @@ fn decode_record(input: &[u8]) -> Result<StoredRecord, CredentialError> {
     let mut cursor = MAGIC.len();
     let generation = read_u64(input, &mut cursor)?;
     let revision = read_u64(input, &mut cursor)?;
-    let active = *take(input, &mut cursor, 1)?
-        .first()
-        .ok_or(CredentialError::CorruptCredential)?;
+    let active = take(input, &mut cursor, 1)?[0];
     if generation == 0
         || active > 1
         || (active == 1 && revision == 0)
@@ -333,6 +350,16 @@ fn decode_record(input: &[u8]) -> Result<StoredRecord, CredentialError> {
         CredentialVersion::new(generation, revision),
         credential,
     )))
+}
+
+/// Lowercase hex, shared by the backends that hash store keys and identities.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 fn take<'a>(input: &'a [u8], cursor: &mut usize, len: usize) -> Result<&'a [u8], CredentialError> {

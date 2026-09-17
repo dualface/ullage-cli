@@ -51,7 +51,14 @@ impl CredentialBackend for NativeStore {
 
     fn probe(&self) -> Result<Availability, CredentialError> {
         let key = CredentialKey::new("availability-probe", "ullage-read-only-probe")?;
-        match Self::entry(&key)?.get_secret() {
+        let entry = match Self::entry(&key) {
+            Ok(entry) => entry,
+            // On platforms with no native backend, probing reports
+            // unavailability so a configured file fallback can take over.
+            Err(CredentialError::BackendUnavailable) => return Ok(Availability::Unavailable),
+            Err(error) => return Err(error),
+        };
+        match entry.get_secret() {
             Ok(mut secret) => {
                 use zeroize::Zeroize;
                 secret.zeroize();
@@ -76,18 +83,10 @@ impl CredentialBackend for NativeStore {
 
 #[cfg(any(windows, test))]
 pub(crate) fn target_name(key: &CredentialKey) -> String {
-    format!("ullage:{}", hex(&Sha256::digest(key.stable_bytes())))
-}
-
-#[cfg(any(windows, test))]
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(DIGITS[(byte >> 4) as usize] as char);
-        output.push(DIGITS[(byte & 0xf) as usize] as char);
-    }
-    output
+    format!(
+        "ullage:{}",
+        crate::credential::hex(&Sha256::digest(key.stable_bytes()))
+    )
 }
 
 #[cfg(target_os = "linux")]

@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
-    LogoutRequest, account_identity, validate_loopback_http_redirect_uri,
+    CredentialVersion, LogoutRequest, account_identity, validate_loopback_http_redirect_uri,
 };
 use ullage_core::{
     Capability, MeasurementUnit, PartialFailure, Provider, ProviderDescriptor, ProviderError,
@@ -88,8 +88,20 @@ impl std::fmt::Debug for ClaudeCredential {
 }
 
 pub trait ClaudeCredentialStore: Send + Sync {
-    fn load(&self) -> ProviderResult<Option<ClaudeCredential>>;
-    fn save(&self, credential: &ClaudeCredential) -> ProviderResult<()>;
+    /// Loads the credential with the store version it was observed at; that
+    /// version must be passed to `replace` for any update derived from it.
+    fn load(&self) -> ProviderResult<Option<(ClaudeCredential, CredentialVersion)>>;
+    /// Unconditional write, valid only for a first sign-in or an explicit
+    /// user-initiated re-login. Returns the version the record now carries.
+    fn save(&self, credential: &ClaudeCredential) -> ProviderResult<CredentialVersion>;
+    /// Compare-and-swap update for a credential derived from a `load`.
+    /// `Ok(None)` means the stored record changed or was removed since then;
+    /// the caller must reload rather than overwrite.
+    fn replace(
+        &self,
+        expected: CredentialVersion,
+        credential: &ClaudeCredential,
+    ) -> ProviderResult<Option<CredentialVersion>>;
     fn clear(&self) -> ProviderResult<()>;
 }
 
@@ -167,7 +179,7 @@ impl ClaudeProvider {
     }
 
     async fn refresh_auth_locked(&self) -> ProviderResult<AuthState> {
-        let current =
+        let (current, version) =
             self.credentials
                 .load()?
                 .ok_or_else(|| ProviderError::AuthenticationInvalid {
@@ -184,12 +196,20 @@ impl ClaudeProvider {
         // under a refresh token, so the identity recorded at sign-in stands.
         credential.account_label = current.account_label;
         credential.account_key = current.account_key;
-        self.credentials.save(&credential)?;
+        // CAS: the refreshed token is derived from the observed record, so a
+        // sign-in or logout that landed meanwhile must not be overwritten.
+        self.credentials
+            .replace(version, &credential)?
+            .ok_or_else(|| ProviderError::AuthenticationInvalid {
+                message: "stored Claude credential changed during refresh".into(),
+            })?;
         Ok(authenticated_state(&credential))
     }
 
-    async fn usable_credential_locked(&self) -> ProviderResult<ClaudeCredential> {
-        let credential =
+    async fn usable_credential_locked(
+        &self,
+    ) -> ProviderResult<(ClaudeCredential, CredentialVersion)> {
+        let (credential, version) =
             self.credentials
                 .load()?
                 .ok_or_else(|| ProviderError::AuthenticationInvalid {
@@ -207,7 +227,7 @@ impl ClaudeProvider {
                     message: "Claude credential disappeared after refresh".into(),
                 })
         } else {
-            Ok(credential)
+            Ok((credential, version))
         }
     }
 }
@@ -361,7 +381,7 @@ impl Provider for ClaudeProvider {
                 None => {}
             }
         }
-        let Some(credential) = self.credentials.load()? else {
+        let Some((credential, _)) = self.credentials.load()? else {
             return Ok(AuthState::NotAuthenticated);
         };
         if credential
@@ -388,7 +408,7 @@ impl Provider for ClaudeProvider {
     async fn logout(&self, _: LogoutRequest) -> ProviderResult<()> {
         let _guard = self.lifecycle_lock.lock().await;
         *lock(&self.pending_auth)? = None;
-        let Some(credential) = self.credentials.load()? else {
+        let Some((credential, _)) = self.credentials.load()? else {
             return Ok(());
         };
         let revoke_token = credential
@@ -408,7 +428,7 @@ impl Provider for ClaudeProvider {
 
     async fn query(&self, _request: UsageQuery) -> ProviderResult<QueryOutcome<Self::VendorUsage>> {
         let _guard = self.lifecycle_lock.lock().await;
-        let credential = self.usable_credential_locked().await?;
+        let (credential, credential_version) = self.usable_credential_locked().await?;
         let profile = self.api.profile(&credential.access_token).await;
         let usage = self.api.usage(&credential.access_token).await;
 
@@ -442,8 +462,10 @@ impl Provider for ClaudeProvider {
                     if updated.account_label.is_none() {
                         updated.account_label = profile.account_label();
                     }
-                    // Losing this only means trying again on the next query.
-                    let _ = self.credentials.save(&updated);
+                    // Losing this only means trying again on the next query,
+                    // and a conflicting write in between wins over this
+                    // bookkeeping fill-in.
+                    let _ = self.credentials.replace(credential_version, &updated);
                 }
             }
         }
@@ -847,21 +869,102 @@ mod tests {
     use super::*;
 
     #[derive(Default)]
-    struct MemoryStore(Mutex<Option<ClaudeCredential>>);
+    struct MemoryStoreState {
+        credential: Option<ClaudeCredential>,
+        generation: u64,
+        revision: u64,
+        /// Generation a recreation must use after `clear` tombstoned a record.
+        deleted_generation: u64,
+    }
 
-    impl ClaudeCredentialStore for MemoryStore {
-        fn load(&self) -> ProviderResult<Option<ClaudeCredential>> {
-            Ok(lock(&self.0)?.clone())
+    #[derive(Default)]
+    struct MemoryStore(Mutex<MemoryStoreState>);
+
+    impl MemoryStore {
+        fn with_credential(credential: ClaudeCredential) -> Self {
+            Self(Mutex::new(MemoryStoreState {
+                credential: Some(credential),
+                generation: 1,
+                revision: 1,
+                deleted_generation: 0,
+            }))
         }
 
-        fn save(&self, credential: &ClaudeCredential) -> ProviderResult<()> {
-            *lock(&self.0)? = Some(credential.clone());
-            Ok(())
+        fn with_state<R>(
+            &self,
+            action: impl FnOnce(&mut MemoryStoreState) -> R,
+        ) -> ProviderResult<R> {
+            Ok(action(&mut *lock(&self.0)?))
+        }
+    }
+
+    impl ClaudeCredentialStore for MemoryStore {
+        fn load(&self) -> ProviderResult<Option<(ClaudeCredential, CredentialVersion)>> {
+            self.with_state(|state| {
+                state
+                    .credential
+                    .clone()
+                    .map(|credential| (credential, state.version()))
+            })
+        }
+
+        fn save(&self, credential: &ClaudeCredential) -> ProviderResult<CredentialVersion> {
+            self.with_state(|state| {
+                state.save(credential.clone());
+                state.version()
+            })
+        }
+
+        fn replace(
+            &self,
+            expected: CredentialVersion,
+            credential: &ClaudeCredential,
+        ) -> ProviderResult<Option<CredentialVersion>> {
+            self.with_state(|state| state.replace(expected, credential.clone()))
         }
 
         fn clear(&self) -> ProviderResult<()> {
-            *lock(&self.0)? = None;
-            Ok(())
+            self.with_state(|state| state.clear())
+        }
+    }
+
+    impl MemoryStoreState {
+        fn version(&self) -> CredentialVersion {
+            CredentialVersion::new(self.generation, self.revision)
+        }
+
+        fn save(&mut self, credential: ClaudeCredential) {
+            if self.credential.is_some() {
+                self.revision += 1;
+            } else if self.deleted_generation > 0 {
+                // A recreation starts at the tombstone generation so an
+                // observed pre-delete version can never match again.
+                self.generation = self.deleted_generation;
+                self.revision = 1;
+            } else {
+                self.generation = 1;
+                self.revision = 1;
+            }
+            self.credential = Some(credential);
+        }
+
+        fn replace(
+            &mut self,
+            expected: CredentialVersion,
+            credential: ClaudeCredential,
+        ) -> Option<CredentialVersion> {
+            if self.credential.is_none() || self.version() != expected {
+                return None;
+            }
+            self.revision += 1;
+            self.credential = Some(credential);
+            Some(self.version())
+        }
+
+        fn clear(&mut self) {
+            if self.credential.take().is_some() {
+                self.deleted_generation = self.generation + 1;
+            }
         }
     }
 
@@ -952,12 +1055,12 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(state, AuthState::Authenticated { .. }));
-        assert_eq!(store.load().unwrap().unwrap().access_token, "access");
+        assert_eq!(store.load().unwrap().unwrap().0.access_token, "access");
 
         run_ready(provider.refresh_auth()).unwrap();
         let refreshed = store.load().unwrap().unwrap();
-        assert_eq!(refreshed.access_token, "refreshed");
-        assert_eq!(refreshed.refresh_token.as_deref(), Some("refresh"));
+        assert_eq!(refreshed.0.access_token, "refreshed");
+        assert_eq!(refreshed.0.refresh_token.as_deref(), Some("refresh"));
 
         run_ready(provider.logout(LogoutRequest::default())).unwrap();
         assert_eq!(store.load().unwrap(), None);
@@ -965,13 +1068,13 @@ mod tests {
 
     #[test]
     fn pending_reauthentication_takes_precedence_over_stored_credentials() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "old-access".into(),
             refresh_token: Some("old-refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let provider = provider(
             FakeApi {
                 profile: Ok(ClaudeProfile::default()),
@@ -1024,7 +1127,7 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(state, AuthState::Authenticated { .. }));
-        assert_eq!(store.load().unwrap().unwrap().access_token, "access");
+        assert_eq!(store.load().unwrap().unwrap().0.access_token, "access");
 
         let error = run_ready(provider.start_auth(AuthStartRequest {
             method: Some(AuthMethod::BrowserOAuth),
@@ -1137,13 +1240,13 @@ mod tests {
 
     #[test]
     fn returns_partial_data_when_one_endpoint_fails() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let provider = provider(
             FakeApi {
                 profile: Err(ProviderError::Network {
@@ -1168,13 +1271,13 @@ mod tests {
 
     #[test]
     fn query_succeeds_when_local_account_label_differs_from_profile() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let provider = provider(
             FakeApi {
                 profile: Ok(ClaudeProfile {
@@ -1204,13 +1307,13 @@ mod tests {
 
     #[test]
     fn partial_rate_limit_preserves_retry_delay() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let provider = provider(
             FakeApi {
                 profile: Err(ProviderError::RateLimited {
@@ -1233,13 +1336,13 @@ mod tests {
 
     #[test]
     fn dual_rate_limits_preserve_the_longest_retry_delay() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let provider = provider(
             FakeApi {
                 profile: Err(ProviderError::RateLimited {
@@ -1265,13 +1368,13 @@ mod tests {
 
     #[test]
     fn a_query_records_an_identity_the_stored_credential_never_had() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let provider = provider(
             FakeApi {
                 profile: Ok(ClaudeProfile {
@@ -1290,9 +1393,9 @@ mod tests {
         run_ready(provider.query(UsageQuery::default())).unwrap();
 
         let stored = store.load().unwrap().unwrap();
-        assert_eq!(stored.account_key.as_deref(), Some("acct-1"));
+        assert_eq!(stored.0.account_key.as_deref(), Some("acct-1"));
         assert_eq!(
-            stored.account_label.as_deref(),
+            stored.0.account_label.as_deref(),
             Some("user@example.invalid")
         );
         assert!(matches!(
@@ -1544,13 +1647,13 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_logout_still_clears_local_credentials() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let entered = Arc::new(tokio::sync::Notify::new());
         let provider = Arc::new(ClaudeProvider::with_api(
             Arc::new(BlockingRevokeApi {
@@ -1572,13 +1675,13 @@ mod tests {
 
     #[tokio::test]
     async fn failed_revoke_preserves_credentials_for_logout_retry() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let revoke_calls = Arc::new(AtomicUsize::new(0));
         let provider = ClaudeProvider::with_api(
             Arc::new(RetryRevokeApi {
@@ -1603,13 +1706,13 @@ mod tests {
 
     #[tokio::test]
     async fn logout_waits_for_an_inflight_usage_query() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let profile_entered = Arc::new(tokio::sync::Notify::new());
         let release_profile = Arc::new(tokio::sync::Notify::new());
         let provider = Arc::new(ClaudeProvider::with_api(
@@ -1639,13 +1742,13 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_queries_refresh_expiring_credentials_once() {
-        let store = Arc::new(MemoryStore(Mutex::new(Some(ClaudeCredential {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "expiring".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now() + Duration::seconds(1)),
             account_label: None,
             account_key: None,
-        }))));
+        }));
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let profile_entered = Arc::new(tokio::sync::Notify::new());
         let release_profile = Arc::new(tokio::sync::Notify::new());

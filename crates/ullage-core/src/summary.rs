@@ -3,7 +3,7 @@
 //! This layer is a pure projection of [`SubscriptionUsage`]: it decides which
 //! measurements a human wants to see, how to name them, and what each value
 //! means. It never formats, pads, or colors anything, so it can be unit tested
-//! without a terminal. Rendering lives in [`crate::table`].
+//! without a terminal. Rendering lives in the client crate's table layer.
 //!
 //! Provider-supplied strings are carried through verbatim; sanitizing happens
 //! in the render layer, which is the only place that emits escape sequences.
@@ -202,44 +202,47 @@ fn boolean_measurement(window: &UsageWindow, name: &str) -> Option<bool> {
 }
 
 fn measurement_value(measurement: &UsageMeasurement, unlimited: bool) -> SummaryValue {
+    // A provider can report NaN or infinite amounts; they carry no usable
+    // reading, so the summary treats them as zero rather than let NaN leak
+    // into clamped percentages and money columns.
+    let used = if measurement.used.is_finite() {
+        measurement.used
+    } else {
+        0.0
+    };
+    let limit = measurement.limit.filter(|limit| limit.is_finite());
     match &measurement.unit {
-        MeasurementUnit::Percent => match measurement.limit {
-            Some(100.0) => SummaryValue::Remains((100.0 - measurement.used).clamp(0.0, 100.0)),
-            _ => SummaryValue::Used(measurement.used.max(0.0)),
+        MeasurementUnit::Percent => match limit {
+            Some(100.0) => SummaryValue::Remains((100.0 - used).clamp(0.0, 100.0)),
+            _ => SummaryValue::Used(used.max(0.0)),
         },
         MeasurementUnit::Currency { code } => {
             let currency = Currency { code: code.clone() };
-            match measurement.limit {
+            match limit {
                 Some(limit) => SummaryValue::Spent {
-                    amount: measurement.used,
+                    amount: used,
                     limit,
                     currency,
                 },
                 None => SummaryValue::Balance {
-                    amount: measurement.used,
+                    amount: used,
                     currency,
                 },
             }
         }
         MeasurementUnit::Credits if unlimited => SummaryValue::CreditsUnlimited,
-        MeasurementUnit::Credits => SummaryValue::Credits {
-            used: measurement.used,
-            limit: measurement.limit,
-        },
+        MeasurementUnit::Credits => SummaryValue::Credits { used, limit },
         // Requests, tokens, and provider-specific units have no agreed wording
         // for what is left, so the text column reports the count itself. A
         // provider-supplied limit still gives an honest remaining ratio.
-        _ => SummaryValue::Counted {
-            used: measurement.used,
-            limit: measurement.limit,
-        },
+        _ => SummaryValue::Counted { used, limit },
     }
 }
 
 /// The share of quota left, when the value is remaining quota rather than an amount.
 fn remaining_ratio(value: &SummaryValue) -> Option<f64> {
-    match value {
-        SummaryValue::Remains(percent) => Some((percent / 100.0).clamp(0.0, 1.0)),
+    let ratio = match value {
+        SummaryValue::Remains(percent) => *percent / 100.0,
         SummaryValue::Credits {
             used: amount,
             limit: Some(limit),
@@ -247,9 +250,12 @@ fn remaining_ratio(value: &SummaryValue) -> Option<f64> {
         | SummaryValue::Counted {
             used: amount,
             limit: Some(limit),
-        } if *limit > 0.0 => Some(((limit - amount) / limit).clamp(0.0, 1.0)),
-        _ => None,
-    }
+        } if *limit > 0.0 => (limit - amount) / limit,
+        _ => return None,
+    };
+    // Guard again here: values built outside `measurement_value` can still be
+    // non-finite, and a NaN ratio must not reach a progress bar.
+    ratio.is_finite().then(|| ratio.clamp(0.0, 1.0))
 }
 
 fn window_display_name(window: &UsageWindowKind) -> String {

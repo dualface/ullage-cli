@@ -1982,12 +1982,17 @@ fn error_matches_command(command: &Command, error: &ControlError) -> bool {
             Command::Probe(ProbeArgs { wait: true, .. }) => true,
             _ => false,
         },
-        ControlError::Registry(RegistryError::InstanceUnavailable(provider)) => match command {
+        ControlError::Registry(RegistryError::InstanceUnavailable(provider))
+        | ControlError::Registry(RegistryError::InstanceFailed { provider, .. }) => match command {
             Command::Auth { command } => auth_command_names_provider(command, provider),
             Command::Probe(ProbeArgs { wait: true, .. }) => true,
             _ => false,
         },
-        ControlError::Registry(RegistryError::Duplicate(_)) => false,
+        ControlError::Registry(
+            RegistryError::Duplicate(_)
+            | RegistryError::InvalidId(_)
+            | RegistryError::DescriptorMismatch { .. },
+        ) => false,
         ControlError::AccountNotFound { account_id } => match command {
             Command::Probe(args) => args.account == *account_id,
             Command::Show(ShowArgs {

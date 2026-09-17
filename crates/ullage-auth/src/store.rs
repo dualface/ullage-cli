@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -51,6 +51,8 @@ pub enum CredentialError {
     NotFound,
     #[error("credential revision overflow")]
     RevisionOverflow,
+    #[error("credential generation overflow")]
+    GenerationOverflow,
     #[error("credential backend is unavailable; unlock or start the platform credential service")]
     BackendUnavailable,
     #[error(
@@ -104,9 +106,12 @@ impl fmt::Debug for BackendScope {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplaceOutcome {
-    Replaced,
+    /// The write landed; carries the record with its new version.
+    Replaced(StoredCredential),
+    /// The current version differs from the observed version, so nothing was
+    /// written. The caller must reload and decide again.
     VersionConflict,
 }
 
@@ -204,27 +209,26 @@ struct FlightLeaderGuard {
 }
 
 impl FlightLeaderGuard {
-    fn publish(
-        mut self,
-        result: Result<StoredCredential, RefreshError>,
-    ) -> Result<(), CredentialError> {
+    fn publish(mut self, result: Result<StoredCredential, RefreshError>) {
         *self
             .flight
             .result
             .lock()
-            .map_err(|_| CredentialError::Synchronization)? = Some(result);
+            .unwrap_or_else(PoisonError::into_inner) = Some(result);
+        // Unregister before waking waiters: a follower holding a different
+        // observed version must see a completed flight as gone and start its
+        // own, never attach to a finished one.
+        self.remove_from_registry();
         self.flight.completed.notify_waiters();
-        self.remove_from_registry()?;
         self.armed = false;
-        Ok(())
     }
 
-    fn remove_from_registry(&self) -> Result<(), CredentialError> {
+    fn remove_from_registry(&self) {
         let mut flights = self
             .coordination
             .refresh_flights
             .lock()
-            .map_err(|_| CredentialError::Synchronization)?;
+            .unwrap_or_else(PoisonError::into_inner);
         if flights
             .get(&self.key)
             .and_then(Weak::upgrade)
@@ -232,7 +236,6 @@ impl FlightLeaderGuard {
         {
             flights.remove(&self.key);
         }
-        Ok(())
     }
 }
 
@@ -241,51 +244,72 @@ impl Drop for FlightLeaderGuard {
         if !self.armed {
             return;
         }
-        if let Ok(mut result) = self.flight.result.lock() {
+        {
+            let mut result = self
+                .flight
+                .result
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if result.is_none() {
                 *result = Some(Err(RefreshError::Store(CredentialError::Synchronization)));
             }
         }
+        self.remove_from_registry();
         self.flight.completed.notify_waiters();
-        let _ = self.remove_from_registry();
     }
 }
 
+#[derive(Clone)]
 pub struct CredentialStore {
     backend: Arc<dyn CredentialBackend>,
     coordination: Arc<Coordination>,
 }
 
 impl CredentialStore {
+    /// Wraps a backend in a store. All stores sharing a backend coordination
+    /// scope share per-key operation locks and refresh single-flights.
     pub fn new(backend: impl CredentialBackend + 'static) -> Self {
+        Self::from_shared(Arc::new(backend))
+    }
+
+    /// Wraps an already shared backend, avoiding a second `Arc` layer.
+    pub fn from_shared(backend: Arc<dyn CredentialBackend>) -> Self {
         let scope = backend.coordination_scope();
         Self {
-            backend: Arc::new(backend),
+            backend,
             coordination: coordination_for(scope),
         }
     }
 
+    /// The platform kind of the wrapped backend.
     pub fn backend_kind(&self) -> BackendKind {
         self.backend.kind()
     }
 
+    /// Probes the backend without touching any credential record.
     pub fn probe(&self) -> Result<Availability, CredentialError> {
         self.backend.probe()
     }
 
+    /// Reads the current active record. `NotFound` covers both missing keys
+    /// and keys whose latest record is a tombstone.
     pub fn get(&self, key: &CredentialKey) -> Result<StoredCredential, CredentialError> {
-        let lock = self.operation_lock(key)?;
-        let _guard = lock.lock().map_err(|_| CredentialError::Synchronization)?;
+        let lock = self.operation_lock(key);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         self.get_unlocked(key)
     }
 
+    /// Unconditional write. This is only valid for a first creation or an
+    /// explicit user-initiated (re-)login, where any concurrent write is meant
+    /// to be superseded. Updates based on a previously loaded credential must
+    /// go through `replace` (or `refresh`) with the observed version instead.
     pub fn set(
         &self,
         key: &CredentialKey,
         credential: Credential,
     ) -> Result<StoredCredential, CredentialError> {
-        let lock = self.operation_lock(key)?;
-        let _guard = lock.lock().map_err(|_| CredentialError::Synchronization)?;
+        let lock = self.operation_lock(key);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let version = match self.read_optional_record(key)? {
             Some(StoredRecord::Active(stored)) => CredentialVersion::new(
                 stored.version().generation(),
@@ -302,14 +326,19 @@ impl CredentialStore {
         Ok(stored)
     }
 
+    /// Compare-and-swap write. The update lands only if the stored version
+    /// still equals `expected_version`; otherwise `VersionConflict` is
+    /// returned and the backend is untouched. A missing key or a tombstone
+    /// surfaces as `NotFound`, so a stale writer can never resurrect a
+    /// deleted credential.
     pub fn replace(
         &self,
         key: &CredentialKey,
         expected_version: CredentialVersion,
         credential: Credential,
     ) -> Result<ReplaceOutcome, CredentialError> {
-        let lock = self.operation_lock(key)?;
-        let _guard = lock.lock().map_err(|_| CredentialError::Synchronization)?;
+        let lock = self.operation_lock(key);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let current = self.get_unlocked(key)?;
         if current.version() != expected_version {
             return Ok(ReplaceOutcome::VersionConflict);
@@ -322,22 +351,29 @@ impl CredentialStore {
             CredentialVersion::new(expected_version.generation(), revision),
             credential,
         );
-        self.write_record(key, &StoredRecord::Active(stored))?;
-        Ok(ReplaceOutcome::Replaced)
+        self.write_record(key, &StoredRecord::Active(stored.clone()))?;
+        Ok(ReplaceOutcome::Replaced(stored))
     }
 
+    /// Writes a tombstone that advances the generation, so no version observed
+    /// before the delete can ever match again.
     pub fn delete(&self, key: &CredentialKey) -> Result<(), CredentialError> {
-        let lock = self.operation_lock(key)?;
-        let _guard = lock.lock().map_err(|_| CredentialError::Synchronization)?;
+        let lock = self.operation_lock(key);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let current = self.read_record(key)?.active()?;
         let generation = current
             .version()
             .generation()
             .checked_add(1)
-            .ok_or(CredentialError::RevisionOverflow)?;
+            .ok_or(CredentialError::GenerationOverflow)?;
         self.write_record(key, &StoredRecord::Tombstone { generation })
     }
 
+    /// Refreshes the credential under `key` that the caller observed at
+    /// `observed_version`. Calls for the same key and version share one
+    /// provider round-trip; callers with a different version wait for it to
+    /// finish and then re-evaluate. Backend access runs on the blocking pool
+    /// because keychain, Secret Service, and file I/O are synchronous.
     pub async fn refresh<F, Fut>(
         &self,
         key: &CredentialKey,
@@ -352,7 +388,7 @@ impl CredentialStore {
             credential: key.clone(),
         };
         let flight = loop {
-            let (flight, leader) = self.refresh_flight(&flight_key, observed_version)?;
+            let (flight, leader) = self.refresh_flight(&flight_key, observed_version);
             if leader {
                 break flight;
             }
@@ -369,20 +405,36 @@ impl CredentialStore {
             armed: true,
         };
 
-        let result = match self.get(key).map_err(RefreshError::Store) {
+        let result = match self
+            .backend_call({
+                let key = key.clone();
+                move |store| store.get(&key)
+            })
+            .await
+        {
             Ok(current) if current.version() != observed_version => Ok(current),
             Ok(current) => match refresher(current).await.map_err(RefreshError::Refresh) {
-                Ok(replacement) => match self.replace(key, observed_version, replacement) {
-                    Ok(ReplaceOutcome::Replaced | ReplaceOutcome::VersionConflict) => {
-                        self.get(key).map_err(RefreshError::Store)
+                Ok(replacement) => {
+                    let replace_key = key.clone();
+                    match self
+                        .backend_call(move |store| {
+                            store.replace(&replace_key, observed_version, replacement)
+                        })
+                        .await
+                    {
+                        Ok(ReplaceOutcome::Replaced(stored)) => Ok(stored),
+                        Ok(ReplaceOutcome::VersionConflict) => {
+                            let get_key = key.clone();
+                            self.backend_call(move |store| store.get(&get_key)).await
+                        }
+                        Err(error) => Err(error),
                     }
-                    Err(error) => Err(RefreshError::Store(error)),
-                },
+                }
                 Err(error) => Err(error),
             },
             Err(error) => Err(error),
         };
-        leader_guard.publish(result.clone())?;
+        leader_guard.publish(result.clone());
         result
     }
 
@@ -416,13 +468,35 @@ impl CredentialStore {
         result
     }
 
+    /// Runs a synchronous backend operation on the blocking pool. A failed
+    /// join means the task panicked, which is a synchronization fault, not a
+    /// backend verdict.
+    async fn backend_call<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, CredentialError> + Send + 'static,
+    ) -> Result<T, RefreshError>
+    where
+        T: Send + 'static,
+    {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || operation(&store))
+            .await
+            .map_err(|_| RefreshError::Store(CredentialError::Synchronization))?
+            .map_err(RefreshError::Store)
+    }
+
     async fn wait_for_flight(flight: &RefreshFlight) -> Result<StoredCredential, RefreshError> {
         loop {
             let notified = flight.completed.notified();
+            tokio::pin!(notified);
+            // Register interest before re-checking the result: notify_waiters
+            // only wakes registered waiters, so a publish landing between the
+            // check and a plain `.await` would be missed forever.
+            notified.as_mut().enable();
             if let Some(result) = flight
                 .result
                 .lock()
-                .map_err(|_| CredentialError::Synchronization)?
+                .unwrap_or_else(PoisonError::into_inner)
                 .clone()
             {
                 return result;
@@ -435,15 +509,15 @@ impl CredentialStore {
         &self,
         key: &FlightKey,
         observed_version: CredentialVersion,
-    ) -> Result<(Arc<RefreshFlight>, bool), CredentialError> {
+    ) -> (Arc<RefreshFlight>, bool) {
         let mut flights = self
             .coordination
             .refresh_flights
             .lock()
-            .map_err(|_| CredentialError::Synchronization)?;
+            .unwrap_or_else(PoisonError::into_inner);
         flights.retain(|_, flight| flight.strong_count() > 0);
         if let Some(flight) = flights.get(key).and_then(Weak::upgrade) {
-            return Ok((flight, false));
+            return (flight, false);
         }
         let flight = Arc::new(RefreshFlight {
             observed_version,
@@ -451,29 +525,29 @@ impl CredentialStore {
             completed: Notify::new(),
         });
         flights.insert(key.clone(), Arc::downgrade(&flight));
-        Ok((flight, true))
+        (flight, true)
     }
 
-    fn operation_lock(&self, key: &CredentialKey) -> Result<Arc<Mutex<()>>, CredentialError> {
+    fn operation_lock(&self, key: &CredentialKey) -> Arc<Mutex<()>> {
         let mut locks = self
             .coordination
             .operation_locks
             .lock()
-            .map_err(|_| CredentialError::Synchronization)?;
+            .unwrap_or_else(PoisonError::into_inner);
         locks.retain(|_, lock| lock.strong_count() > 0);
         if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
-            return Ok(lock);
+            return lock;
         }
         let lock = Arc::new(Mutex::new(()));
         locks.insert(key.clone(), Arc::downgrade(&lock));
-        Ok(lock)
+        lock
     }
 }
 
 fn coordination_for(scope: BackendScope) -> Arc<Coordination> {
     let mut scopes = COORDINATION_SCOPES
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .unwrap_or_else(PoisonError::into_inner);
     scopes.retain(|_, coordination| coordination.strong_count() > 0);
     if let Some(coordination) = scopes.get(&scope).and_then(Weak::upgrade) {
         return coordination;

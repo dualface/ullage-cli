@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
-    LogoutRequest, account_identity,
+    CredentialVersion, LogoutRequest, account_identity, validate_loopback_http_redirect_uri,
 };
 use ullage_core::{
     Capability, Provider, ProviderDescriptor, ProviderError, ProviderId, ProviderResult,
@@ -156,32 +156,88 @@ pub trait ChatGptApi: Send + Sync {
 }
 
 pub trait ChatGptSessionStore: Send + Sync {
-    fn load(&self) -> Result<Option<ChatGptSession>, ChatGptApiError>;
-    fn save(&self, session: &ChatGptSession) -> Result<(), ChatGptApiError>;
+    /// Loads the session with the store version it was observed at; that
+    /// version must be passed to `replace` for any update derived from it.
+    fn load(&self) -> Result<Option<(ChatGptSession, CredentialVersion)>, ChatGptApiError>;
+    /// Unconditional write, valid only for a first sign-in or an explicit
+    /// re-login. Returns the version the record now carries.
+    fn save(&self, session: &ChatGptSession) -> Result<CredentialVersion, ChatGptApiError>;
+    /// Compare-and-swap update for a session derived from a `load`.
+    /// `Ok(None)` means the stored record changed or was removed since then;
+    /// the caller must reload rather than overwrite.
+    fn replace(
+        &self,
+        expected: CredentialVersion,
+        session: &ChatGptSession,
+    ) -> Result<Option<CredentialVersion>, ChatGptApiError>;
     fn clear(&self) -> Result<(), ChatGptApiError>;
 }
 
 #[derive(Default)]
+struct MemorySessionState {
+    session: Option<ChatGptSession>,
+    generation: u64,
+    revision: u64,
+    /// Generation a recreation must use after `clear` tombstoned a record.
+    deleted_generation: u64,
+}
+
+impl MemorySessionState {
+    fn version(&self) -> CredentialVersion {
+        CredentialVersion::new(self.generation, self.revision)
+    }
+}
+
+#[derive(Default)]
 pub struct MemorySessionStore {
-    session: Mutex<Option<ChatGptSession>>,
+    state: Mutex<MemorySessionState>,
 }
 
 impl ChatGptSessionStore for MemorySessionStore {
-    fn load(&self) -> Result<Option<ChatGptSession>, ChatGptApiError> {
-        Ok(self
+    fn load(&self) -> Result<Option<(ChatGptSession, CredentialVersion)>, ChatGptApiError> {
+        let state = self.state.lock().map_err(|_| session_store_poisoned())?;
+        Ok(state
             .session
-            .lock()
-            .map_err(|_| session_store_poisoned())?
-            .clone())
+            .clone()
+            .map(|session| (session, state.version())))
     }
 
-    fn save(&self, session: &ChatGptSession) -> Result<(), ChatGptApiError> {
-        *self.session.lock().map_err(|_| session_store_poisoned())? = Some(session.clone());
-        Ok(())
+    fn save(&self, session: &ChatGptSession) -> Result<CredentialVersion, ChatGptApiError> {
+        let mut state = self.state.lock().map_err(|_| session_store_poisoned())?;
+        if state.session.is_some() {
+            state.revision += 1;
+        } else if state.deleted_generation > 0 {
+            // A recreation starts at the tombstone generation so an observed
+            // pre-delete version can never match again.
+            state.generation = state.deleted_generation;
+            state.revision = 1;
+        } else {
+            state.generation = 1;
+            state.revision = 1;
+        }
+        state.session = Some(session.clone());
+        Ok(state.version())
+    }
+
+    fn replace(
+        &self,
+        expected: CredentialVersion,
+        session: &ChatGptSession,
+    ) -> Result<Option<CredentialVersion>, ChatGptApiError> {
+        let mut state = self.state.lock().map_err(|_| session_store_poisoned())?;
+        if state.session.is_none() || state.version() != expected {
+            return Ok(None);
+        }
+        state.revision += 1;
+        state.session = Some(session.clone());
+        Ok(Some(state.version()))
     }
 
     fn clear(&self) -> Result<(), ChatGptApiError> {
-        *self.session.lock().map_err(|_| session_store_poisoned())? = None;
+        let mut state = self.state.lock().map_err(|_| session_store_poisoned())?;
+        if state.session.take().is_some() {
+            state.deleted_generation = state.generation + 1;
+        }
         Ok(())
     }
 }
@@ -277,8 +333,8 @@ where
 
     pub async fn refresh_auth(&self) -> ProviderResult<AuthState> {
         let _session_guard = self.session_gate.lock().await;
-        let session = self.load_session()?;
-        let session = self.refresh_session(session, true).await?;
+        let (session, version) = self.load_session()?;
+        let (session, _) = self.refresh_session(session, version, true).await?;
         Ok(authenticated_state(&session))
     }
 
@@ -288,18 +344,18 @@ where
     }
 
     async fn workspaces_locked(&self) -> ProviderResult<Vec<ChatGptWorkspace>> {
-        let mut session = self.load_refreshed_session().await?;
+        let (mut session, mut version) = self.load_refreshed_session().await?;
         let workspaces = match self.api.list_workspaces(&session.tokens).await {
             Ok(workspaces) => workspaces,
             Err(error) if error.kind == crate::ChatGptApiErrorKind::AuthenticationInvalid => {
-                session = self.refresh_session(session, true).await?;
+                (session, version) = self.refresh_session(session, version, true).await?;
                 match self.api.list_workspaces(&session.tokens).await {
                     Ok(workspaces) => workspaces,
                     Err(error)
                         if error.kind == crate::ChatGptApiErrorKind::AuthenticationInvalid =>
                     {
                         session.invalid_reason = Some(error.message.clone());
-                        self.store.save(&session).map_err(ProviderError::from)?;
+                        self.persist_invalid_reason(version, &session)?;
                         return Err(error.into());
                     }
                     Err(error) => return Err(error.into()),
@@ -316,7 +372,7 @@ where
             session.selected_workspace_id = None;
         }
         session.workspaces = workspaces.clone();
-        self.store.save(&session).map_err(ProviderError::from)?;
+        self.save_observed(version, &session)?;
         Ok(workspaces)
     }
 
@@ -331,44 +387,74 @@ where
             .find(|workspace| workspace.id == workspace_id)
             .cloned()
             .ok_or_else(|| workspace_access_denied("workspace is not available to this account"))?;
-        let mut session = self.load_session()?;
+        let (mut session, version) = self.load_session()?;
         session.selected_workspace_id = Some(selected.id.clone());
-        self.store.save(&session).map_err(ProviderError::from)?;
+        self.save_observed(version, &session)?;
         Ok(selected)
     }
 
-    fn load_session(&self) -> ProviderResult<ChatGptSession> {
-        let session = self
-            .store
-            .load()
-            .map_err(ProviderError::from)?
-            .ok_or_else(|| ProviderError::AuthenticationInvalid {
-                message: "ChatGPT is not authenticated".into(),
-            })?;
+    fn load_session(&self) -> ProviderResult<(ChatGptSession, CredentialVersion)> {
+        let (session, version) =
+            self.store
+                .load()
+                .map_err(ProviderError::from)?
+                .ok_or_else(|| ProviderError::AuthenticationInvalid {
+                    message: "ChatGPT is not authenticated".into(),
+                })?;
         if let Some(reason) = &session.invalid_reason {
             return Err(ProviderError::AuthenticationInvalid {
                 message: reason.clone(),
             });
         }
-        Ok(session)
+        Ok((session, version))
     }
 
-    async fn load_refreshed_session(&self) -> ProviderResult<ChatGptSession> {
-        let session = self.load_session()?;
-        self.refresh_session(session, false).await
+    async fn load_refreshed_session(&self) -> ProviderResult<(ChatGptSession, CredentialVersion)> {
+        let (session, version) = self.load_session()?;
+        self.refresh_session(session, version, false).await
+    }
+
+    /// Persists an update derived from the session observed at `version`. A
+    /// conflict means a sign-in or logout landed in between, so the update is
+    /// dropped and reported as an authentication change.
+    fn save_observed(
+        &self,
+        version: CredentialVersion,
+        session: &ChatGptSession,
+    ) -> ProviderResult<CredentialVersion> {
+        self.store
+            .replace(version, session)
+            .map_err(ProviderError::from)?
+            .ok_or_else(|| ProviderError::AuthenticationInvalid {
+                message: "stored ChatGPT session changed during the update".into(),
+            })
+    }
+
+    /// Marks the observed record invalid. A conflicting write means the record
+    /// no longer belongs to this session, so the original error stands alone.
+    fn persist_invalid_reason(
+        &self,
+        version: CredentialVersion,
+        session: &ChatGptSession,
+    ) -> ProviderResult<()> {
+        self.store
+            .replace(version, session)
+            .map_err(ProviderError::from)?;
+        Ok(())
     }
 
     async fn refresh_session(
         &self,
         session: ChatGptSession,
+        version: CredentialVersion,
         force: bool,
-    ) -> ProviderResult<ChatGptSession> {
+    ) -> ProviderResult<(ChatGptSession, CredentialVersion)> {
         let should_refresh = force
             || session.tokens.expires_at.is_some_and(|expires_at| {
                 expires_at <= Utc::now() + Duration::seconds(REFRESH_SKEW_SECONDS)
             });
         if !should_refresh {
-            return Ok(session);
+            return Ok((session, version));
         }
         let mut session = session;
         let refresh_token =
@@ -382,7 +468,7 @@ where
             Ok(refreshed) => refreshed,
             Err(error) if error.kind == crate::ChatGptApiErrorKind::AuthenticationInvalid => {
                 session.invalid_reason = Some(error.message.clone());
-                self.store.save(&session).map_err(ProviderError::from)?;
+                self.persist_invalid_reason(version, &session)?;
                 return Err(error.into());
             }
             Err(error) => return Err(error.into()),
@@ -395,8 +481,8 @@ where
         }
         session.tokens = refreshed;
         session.invalid_reason = None;
-        self.store.save(&session).map_err(ProviderError::from)?;
-        Ok(session)
+        let version = self.save_observed(version, &session)?;
+        Ok((session, version))
     }
 
     fn selected_workspace(
@@ -470,10 +556,19 @@ where
         let pkce_verifier = random_url_safe(64)?;
         let pkce_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(pkce_verifier.as_bytes()));
         let expires_at = Utc::now() + Duration::minutes(OAUTH_FLOW_LIFETIME_MINUTES);
-        let redirect_uri = request
-            .redirect_uri
-            .clone()
-            .unwrap_or_else(|| self.config.redirect_uri.clone());
+        let redirect_uri = match request.redirect_uri.as_deref() {
+            None => self.config.redirect_uri.clone(),
+            Some(uri) if uri == self.config.redirect_uri => uri.to_owned(),
+            // OpenAI registers loopback callbacks for this client, so a
+            // desktop client may finish sign-in on a local listener.
+            Some(uri) if validate_loopback_http_redirect_uri(uri).is_ok() => uri.to_owned(),
+            Some(_) => {
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "OAuth redirect URI must be the registered one or a loopback HTTP URI"
+                        .into(),
+                });
+            }
+        };
         let authorization_url =
             oauth_authorization_url(&self.config, &redirect_uri, &flow_id, &pkce_challenge);
         let _session_guard = self.session_gate.lock().await;
@@ -557,7 +652,7 @@ where
             let previous_session = self.store.load().map_err(ProviderError::from)?;
             let previous_selection = previous_session
                 .as_ref()
-                .and_then(|session| session.selected_workspace_id.clone());
+                .and_then(|(session, _)| session.selected_workspace_id.clone());
             let selected_workspace_id = previous_selection
                 .filter(|selected| workspaces.iter().any(|workspace| &workspace.id == selected))
                 .or_else(|| (workspaces.len() == 1).then(|| workspaces[0].id.clone()));
@@ -567,6 +662,8 @@ where
                 selected_workspace_id,
                 invalid_reason: None,
             };
+            // A completed sign-in is an explicit re-login: the unconditional
+            // save supersedes whatever session was stored before.
             self.store.save(&session).map_err(ProviderError::from)?;
             Ok::<_, ProviderError>((session, previous_session))
         };
@@ -578,7 +675,7 @@ where
             }
         };
         grant.disarm();
-        if let Some(previous_tokens) = previous_session.map(|session| session.tokens) {
+        if let Some(previous_tokens) = previous_session.map(|(session, _)| session.tokens) {
             if revocation_token(&previous_tokens) != revocation_token(&session.tokens) {
                 let _ = self.api.revoke(&previous_tokens).await;
             }
@@ -607,7 +704,7 @@ where
         if let Some(state) = pending_state {
             return Ok(state);
         }
-        let Some(session) = self.store.load().map_err(ProviderError::from)? else {
+        let Some((session, version)) = self.store.load().map_err(ProviderError::from)? else {
             return Ok(AuthState::NotAuthenticated);
         };
         let account_key = session
@@ -620,8 +717,8 @@ where
                 account_key,
             });
         }
-        match self.refresh_session(session, false).await {
-            Ok(session) => Ok(authenticated_state(&session)),
+        match self.refresh_session(session, version, false).await {
+            Ok((session, _)) => Ok(authenticated_state(&session)),
             Err(ProviderError::AuthenticationInvalid { message }) => Ok(AuthState::Invalid {
                 reason: message,
                 account_key,
@@ -636,7 +733,7 @@ where
             .store
             .load()
             .map_err(ProviderError::from)?
-            .map(|session| session.tokens);
+            .map(|(session, _)| session.tokens);
         self.store.clear().map_err(ProviderError::from)?;
         self.pending
             .lock()
@@ -671,26 +768,26 @@ where
 
     async fn query(&self, request: UsageQuery) -> ProviderResult<QueryOutcome<Self::VendorUsage>> {
         let _session_guard = self.session_gate.lock().await;
-        let mut session = self.load_refreshed_session().await?;
+        let (mut session, mut version) = self.load_refreshed_session().await?;
         let workspace_override = workspace_id_override(&session, request.account_label.as_deref());
         let mut workspace = self.selected_workspace(&session, workspace_override)?;
         if workspace_override.is_none()
             && session.selected_workspace_id.as_deref() != Some(&workspace.id)
         {
             session.selected_workspace_id = Some(workspace.id.clone());
-            self.store.save(&session).map_err(ProviderError::from)?;
+            version = self.save_observed(version, &session)?;
         }
         let response = match self.api.query_usage(&session.tokens, &workspace.id).await {
             Ok(response) => response,
             Err(error) if error.kind == crate::ChatGptApiErrorKind::AuthenticationInvalid => {
-                session = self.refresh_session(session, true).await?;
+                (session, version) = self.refresh_session(session, version, true).await?;
                 let refreshed_workspaces = match self.api.list_workspaces(&session.tokens).await {
                     Ok(workspaces) => workspaces,
                     Err(error)
                         if error.kind == crate::ChatGptApiErrorKind::AuthenticationInvalid =>
                     {
                         session.invalid_reason = Some(error.message.clone());
-                        self.store.save(&session).map_err(ProviderError::from)?;
+                        self.persist_invalid_reason(version, &session)?;
                         return Err(error.into());
                     }
                     Err(error) => return Err(error.into()),
@@ -712,7 +809,7 @@ where
                     session.selected_workspace_id = None;
                 }
                 session.workspaces = refreshed_workspaces;
-                self.store.save(&session).map_err(ProviderError::from)?;
+                version = self.save_observed(version, &session)?;
                 let Some(refreshed_workspace) = refreshed_workspace else {
                     return Err(workspace_access_denied(
                         "selected workspace is unavailable after token refresh",
@@ -725,7 +822,7 @@ where
                         if error.kind == crate::ChatGptApiErrorKind::AuthenticationInvalid =>
                     {
                         session.invalid_reason = Some(error.message.clone());
-                        self.store.save(&session).map_err(ProviderError::from)?;
+                        self.persist_invalid_reason(version, &session)?;
                         return Err(error.into());
                     }
                     Err(error) => return Err(error.into()),

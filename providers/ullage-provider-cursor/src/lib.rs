@@ -13,8 +13,8 @@ use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
-    Credential, CredentialError, CredentialKey, CredentialStore, LogoutRequest, SecretValue,
-    account_identity,
+    Credential, CredentialError, CredentialKey, CredentialStore, CredentialVersion, LogoutRequest,
+    ReplaceOutcome, SecretValue, account_identity,
 };
 use ullage_core::{
     Capability, PartialFailure, Provider, ProviderDescriptor, ProviderError, ProviderId,
@@ -46,6 +46,8 @@ struct ProviderState {
     /// the auth material, but the account it belonged to is still the account a
     /// fresh sign-in as that identity supersedes.
     invalid_account_key: Option<String>,
+    /// Store version `auth` was observed at; required for CAS updates.
+    stored_version: Option<CredentialVersion>,
     credentials_loaded: bool,
 }
 
@@ -165,11 +167,14 @@ impl CursorProvider {
         let stored = match credentials.get(key) {
             Ok(stored) => stored,
             Err(CredentialError::NotFound) => {
-                self.lock_state()?.credentials_loaded = true;
+                let mut state = self.lock_state()?;
+                state.stored_version = None;
+                state.credentials_loaded = true;
                 return Ok(());
             }
             Err(error) => return Err(credential_error(error)),
         };
+        let stored_version = stored.version();
         let saved_label = stored
             .credential()
             .get("account_label")
@@ -220,6 +225,7 @@ impl CursorProvider {
         state.generation = state.generation.wrapping_add(1);
         state.session_id = state.session_id.wrapping_add(1);
         state.auth = Some(material);
+        state.stored_version = Some(stored_version);
         state.credentials_loaded = true;
         Ok(())
     }
@@ -496,7 +502,33 @@ impl CursorProvider {
                     .insert("account_label", SecretValue::new(label.as_bytes()))
                     .map_err(credential_error)?;
             }
-            store.set(key, credential).map_err(credential_error)?;
+            state.stored_version = if expected_flow.is_some() {
+                // A completed sign-in supersedes whatever the store holds.
+                Some(
+                    store
+                        .set(key, credential)
+                        .map_err(credential_error)?
+                        .version(),
+                )
+            } else {
+                // A refresh updates the record it observed; a concurrent write
+                // (logout, another sign-in) makes the rotation stale.
+                let expected =
+                    state
+                        .stored_version
+                        .ok_or_else(|| ProviderError::ProtocolIncompatible {
+                            message: "Cursor credential has no observed store version".into(),
+                        })?;
+                match store.replace(key, expected, credential) {
+                    Ok(ReplaceOutcome::Replaced(stored)) => Some(stored.version()),
+                    Ok(ReplaceOutcome::VersionConflict) | Err(CredentialError::NotFound) => {
+                        return Err(ProviderError::ProtocolIncompatible {
+                            message: "stored Cursor credential changed during the operation".into(),
+                        });
+                    }
+                    Err(error) => return Err(credential_error(error)),
+                }
+            };
         }
         state.generation = state.generation.wrapping_add(1);
         if expected_flow.is_some() {
@@ -924,6 +956,7 @@ impl Provider for CursorProvider {
         state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = None;
         state.auth = None;
+        state.stored_version = None;
         state.invalid_reason = None;
         state.invalid_account_key = None;
         Ok(())

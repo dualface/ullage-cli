@@ -23,7 +23,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthMethod, AuthStartRequest, AuthState, Credential,
-    CredentialError, CredentialKey, CredentialStore, LogoutRequest, SecretValue,
+    CredentialError, CredentialKey, CredentialStore, CredentialVersion, LogoutRequest,
+    ReplaceOutcome, SecretValue,
 };
 use ullage_core::{
     Capability, PartialFailure, Provider, ProviderDescriptor, ProviderError, ProviderId,
@@ -39,6 +40,8 @@ struct Session {
     generation: u64,
     pending: Option<PendingAuthorization>,
     token: Option<OAuthToken>,
+    /// Store version `token` was observed at; required for CAS updates.
+    stored_version: Option<CredentialVersion>,
     credentials_loaded: bool,
 }
 
@@ -160,7 +163,7 @@ impl<T> GrokProvider<T> {
         if self.lock_session()?.credentials_loaded {
             return Ok(());
         }
-        let token = match credentials.get(key) {
+        let loaded = match credentials.get(key) {
             Ok(stored) => {
                 let payload = stored
                     .credential()
@@ -169,41 +172,80 @@ impl<T> GrokProvider<T> {
                 let token: OAuthToken = serde_json::from_slice(payload.expose())
                     .map_err(|_| credential_error(CredentialError::CorruptCredential))?;
                 token.validate_stored()?;
-                Some(token)
+                Some((token, stored.version()))
             }
             Err(CredentialError::NotFound) => None,
             Err(error) => return Err(credential_error(error)),
         };
         let mut session = self.lock_session()?;
         if !session.credentials_loaded {
-            session.token = token;
+            session.stored_version = loaded.as_ref().map(|(_, version)| *version);
+            session.token = loaded.map(|(token, _)| token);
             session.credentials_loaded = true;
         }
         Ok(())
     }
 
-    fn persist_token(&self, token: Option<&OAuthToken>) -> ProviderResult<()> {
+    fn encode_token(token: &OAuthToken) -> ProviderResult<Credential> {
+        let encoded =
+            serde_json::to_vec(token).map_err(|_| ProviderError::ProtocolIncompatible {
+                message: "Grok credential serialization failed".into(),
+            })?;
+        let mut credential = Credential::new();
+        credential
+            .insert("session", SecretValue::new(encoded))
+            .map_err(credential_error)?;
+        Ok(credential)
+    }
+
+    /// Unconditional write, valid only when installing a freshly completed
+    /// sign-in. Returns the version the record now carries.
+    fn persist_created_token(
+        &self,
+        token: &OAuthToken,
+    ) -> ProviderResult<Option<CredentialVersion>> {
+        let Some((credentials, key)) = &self.credentials else {
+            return Ok(None);
+        };
+        let stored = credentials
+            .set(key, Self::encode_token(token)?)
+            .map_err(credential_error)?;
+        Ok(Some(stored.version()))
+    }
+
+    /// CAS write for a token rotated from the record observed at `expected`.
+    /// A conflict or a deleted record means the session is stale and the
+    /// rotation is dropped instead of overwriting it.
+    fn persist_rotated_token(
+        &self,
+        expected: Option<CredentialVersion>,
+        token: &OAuthToken,
+    ) -> ProviderResult<Option<CredentialVersion>> {
+        let Some((credentials, key)) = &self.credentials else {
+            return Ok(None);
+        };
+        let expected = expected.ok_or_else(|| ProviderError::AuthenticationInvalid {
+            message: "Grok credential has no observed store version".into(),
+        })?;
+        match credentials.replace(key, expected, Self::encode_token(token)?) {
+            Ok(ReplaceOutcome::Replaced(stored)) => Ok(Some(stored.version())),
+            Ok(ReplaceOutcome::VersionConflict) | Err(CredentialError::NotFound) => {
+                Err(ProviderError::AuthenticationInvalid {
+                    message: "stored Grok credential changed during refresh".into(),
+                })
+            }
+            Err(error) => Err(credential_error(error)),
+        }
+    }
+
+    fn persist_cleared(&self) -> ProviderResult<()> {
         let Some((credentials, key)) = &self.credentials else {
             return Ok(());
         };
-        match token {
-            Some(token) => {
-                let encoded =
-                    serde_json::to_vec(token).map_err(|_| ProviderError::ProtocolIncompatible {
-                        message: "Grok credential serialization failed".into(),
-                    })?;
-                let mut credential = Credential::new();
-                credential
-                    .insert("session", SecretValue::new(encoded))
-                    .map_err(credential_error)?;
-                credentials.set(key, credential).map_err(credential_error)?;
-            }
-            None => match credentials.delete(key) {
-                Ok(()) | Err(CredentialError::NotFound) => {}
-                Err(error) => return Err(credential_error(error)),
-            },
+        match credentials.delete(key) {
+            Ok(()) | Err(CredentialError::NotFound) => Ok(()),
+            Err(error) => Err(credential_error(error)),
         }
-        Ok(())
     }
 }
 
@@ -260,7 +302,7 @@ impl<T: GrokTransport> GrokProvider<T> {
                 message: "Grok authentication state changed during refresh".into(),
             });
         }
-        self.persist_token(Some(&token))?;
+        session.stored_version = self.persist_rotated_token(session.stored_version, &token)?;
         session.token = Some(token);
         Ok(state)
     }
@@ -281,7 +323,8 @@ impl<T: GrokTransport> GrokProvider<T> {
                 message: "Grok OAuth flow is no longer current".into(),
             });
         }
-        self.persist_token(Some(&token))?;
+        // Installing a completed sign-in supersedes any stored record.
+        session.stored_version = self.persist_created_token(&token)?;
         session.pending = None;
         session.token = Some(token);
         Ok(state)
@@ -592,11 +635,13 @@ where
                 .map_err(ProviderError::from)?;
             let mut session = self.lock_session()?;
             if session.token.as_ref() == Some(&token) {
-                self.persist_token(None)?;
+                self.persist_cleared()?;
+                session.stored_version = None;
                 session.token = None;
             }
         } else {
-            self.persist_token(None)?;
+            self.persist_cleared()?;
+            self.lock_session()?.stored_version = None;
         }
         Ok(())
     }

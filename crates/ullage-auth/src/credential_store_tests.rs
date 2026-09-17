@@ -9,8 +9,8 @@ use tokio::sync::Barrier;
 
 use crate::{
     Availability, BackendKind, BackendScope, Credential, CredentialBackend, CredentialError,
-    CredentialKey, CredentialStore, FileFallbackOptions, FileStore, NativeStore, RefreshError,
-    RefreshFailure, RefreshFailureKind, ReplaceOutcome, SecretValue,
+    CredentialKey, CredentialStore, CredentialVersion, FileFallbackOptions, FileStore, NativeStore,
+    RefreshError, RefreshFailure, RefreshFailureKind, ReplaceOutcome, SecretValue,
 };
 
 #[derive(Clone)]
@@ -174,6 +174,70 @@ fn key_is_stable_and_account_scoped() {
 }
 
 #[test]
+fn key_components_reject_empty_control_and_oversized_values() {
+    for (provider, account) in [
+        ("", "account"),
+        ("claude", ""),
+        ("clau\nde", "account"),
+        ("claude", "bad\taccount"),
+    ] {
+        assert!(
+            matches!(
+                CredentialKey::new(provider, account),
+                Err(CredentialError::InvalidKey(_))
+            ),
+            "{provider:?}/{account:?}"
+        );
+    }
+    let oversized = "a".repeat(256);
+    assert!(matches!(
+        CredentialKey::new("claude", oversized),
+        Err(CredentialError::InvalidKey(_))
+    ));
+}
+
+#[test]
+fn field_names_and_field_count_are_bounded() {
+    let mut credential = Credential::new();
+    for name in ["", "has space", "has/slash", "has\nnewline"] {
+        assert_eq!(
+            credential.insert(name, SecretValue::new(b"v".to_vec())),
+            Err(CredentialError::InvalidFieldName),
+            "{name:?}"
+        );
+    }
+    let oversized = "n".repeat(65);
+    assert_eq!(
+        credential.insert(oversized, SecretValue::new(b"v".to_vec())),
+        Err(CredentialError::InvalidFieldName)
+    );
+    for index in 0..64 {
+        credential
+            .insert(format!("field-{index}"), SecretValue::new(b"v".to_vec()))
+            .unwrap();
+    }
+    assert_eq!(
+        credential.insert("field-64", SecretValue::new(b"v".to_vec())),
+        Err(CredentialError::CredentialTooLarge)
+    );
+    // Replacing an existing name still fits the field budget.
+    credential
+        .insert("field-0", SecretValue::new(b"v2".to_vec()))
+        .unwrap();
+}
+
+#[test]
+fn provider_message_only_surfaces_the_file_fallback_hint() {
+    assert_eq!(
+        CredentialError::AccessDenied.provider_message("store operation failed"),
+        "store operation failed"
+    );
+    assert!(CredentialError::FileFallbackDisabled
+        .provider_message("store operation failed")
+        .contains("file_fallback"));
+}
+
+#[test]
 fn native_target_does_not_alias_delimited_provider_and_account_pairs() {
     let first = CredentialKey::new("left.dev.onevoke.ullage.credentials.right", "acct").unwrap();
     let second = CredentialKey::new("right", "acct.dev.onevoke.ullage.credentials.left").unwrap();
@@ -286,12 +350,12 @@ fn accounts_are_isolated_and_replace_is_compare_and_swap() {
             .expose(),
         b"first-token"
     );
-    assert_eq!(
+    assert!(matches!(
         store
             .replace(&first_key, first.version(), credential(b"rotated"))
             .unwrap(),
-        ReplaceOutcome::Replaced
-    );
+        ReplaceOutcome::Replaced(_)
+    ));
     assert_eq!(
         store
             .replace(&first_key, first.version(), credential(b"stale"))
@@ -724,7 +788,7 @@ fn concurrent_stale_replacements_have_one_winner() {
     assert_eq!(
         outcomes
             .iter()
-            .filter(|outcome| **outcome == ReplaceOutcome::Replaced)
+            .filter(|outcome| matches!(outcome, ReplaceOutcome::Replaced(_)))
             .count(),
         1
     );
@@ -769,7 +833,7 @@ fn concurrent_replacements_across_store_handles_have_one_winner() {
     assert_eq!(
         outcomes
             .iter()
-            .filter(|outcome| **outcome == ReplaceOutcome::Replaced)
+            .filter(|outcome| matches!(outcome, ReplaceOutcome::Replaced(_)))
             .count(),
         1
     );
@@ -796,12 +860,12 @@ fn file_fallback_is_explicit_private_and_strictly_parsed() {
     let store = CredentialStore::new(backend);
     store.set(&key, credential(b"disk-secret")).unwrap();
     let previous = store.get(&key).unwrap();
-    assert_eq!(
+    assert!(matches!(
         store
             .replace(&key, previous.version(), credential(b"disk-rotated"))
             .unwrap(),
-        ReplaceOutcome::Replaced
-    );
+        ReplaceOutcome::Replaced(_)
+    ));
     assert_eq!(
         store
             .get(&key)
@@ -891,7 +955,7 @@ fn equivalent_file_vault_paths_share_coordination() {
     assert_eq!(
         outcomes
             .iter()
-            .filter(|outcome| **outcome == ReplaceOutcome::Replaced)
+            .filter(|outcome| matches!(outcome, ReplaceOutcome::Replaced(_)))
             .count(),
         1
     );
@@ -977,11 +1041,11 @@ fn file_fallback_rejects_leaf_symlink_creation_race() {
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
     let entered = Arc::new(ThreadBarrier::new(2));
     let release = Arc::new(ThreadBarrier::new(2));
-    crate::file_store::set_directory_create_hook(Some((
+    let _hook = crate::file_store::DirectoryCreateHookGuard::install((
         "raced-vault".into(),
         Arc::clone(&entered),
         Arc::clone(&release),
-    )));
+    ));
 
     let constructor =
         std::thread::spawn(move || FileStore::new(FileFallbackOptions::new(root).unwrap()));
@@ -989,7 +1053,6 @@ fn file_fallback_rejects_leaf_symlink_creation_race() {
     symlink(&target, temporary_root.join("raced-vault")).unwrap();
     release.wait();
     let error = constructor.join().unwrap().unwrap_err();
-    crate::file_store::set_directory_create_hook(None);
 
     assert_eq!(error, CredentialError::UnsafeFallbackPath);
     assert_eq!(
@@ -1018,4 +1081,162 @@ fn file_fallback_stays_on_open_directory_after_path_switch() {
     store.set(&key, credential(b"anchored")).unwrap();
     assert_eq!(std::fs::read_dir(&moved).unwrap().count(), 1);
     assert_eq!(std::fs::read_dir(&attacker).unwrap().count(), 0);
+}
+
+fn raw_record(generation: u64, revision: u64, active: u8, body: &[u8]) -> Vec<u8> {
+    raw_record_with_count(generation, revision, active, 0, body)
+}
+
+fn raw_record_with_count(
+    generation: u64,
+    revision: u64,
+    active: u8,
+    field_count: u32,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut encoded = b"ULLAGEC2".to_vec();
+    encoded.extend_from_slice(&generation.to_be_bytes());
+    encoded.extend_from_slice(&revision.to_be_bytes());
+    encoded.push(active);
+    encoded.extend_from_slice(&field_count.to_be_bytes());
+    encoded.extend_from_slice(body);
+    encoded
+}
+
+fn field_entry(name: &str, value: &[u8]) -> Vec<u8> {
+    let mut entry = (name.len() as u16).to_be_bytes().to_vec();
+    entry.extend_from_slice(name.as_bytes());
+    entry.extend_from_slice(&(value.len() as u32).to_be_bytes());
+    entry.extend_from_slice(value);
+    entry
+}
+
+fn raw_field_record(generation: u64, revision: u64, fields: &[Vec<u8>]) -> Vec<u8> {
+    let mut encoded = b"ULLAGEC2".to_vec();
+    encoded.extend_from_slice(&generation.to_be_bytes());
+    encoded.extend_from_slice(&revision.to_be_bytes());
+    encoded.push(1);
+    encoded.extend_from_slice(&(fields.len() as u32).to_be_bytes());
+    for field in fields {
+        encoded.extend_from_slice(field);
+    }
+    encoded
+}
+
+#[test]
+fn malformed_records_are_rejected_without_secret_output() {
+    for (name, record) in [
+        ("zero-generation", raw_record(0, 1, 1, &[])),
+        ("unknown-active-flag", raw_record(1, 1, 2, &[])),
+        ("active-without-revision", raw_record(1, 0, 1, &[])),
+        ("tombstone-with-revision", raw_record(1, 7, 0, &[])),
+        (
+            "tombstone-with-fields",
+            raw_record_with_count(1, 0, 0, 1, &field_entry("a", b"b")),
+        ),
+        ("trailing-bytes", raw_record(1, 0, 0, b"x")),
+        (
+            "duplicate-fields",
+            raw_field_record(
+                1,
+                1,
+                &[field_entry("same", b"one"), field_entry("same", b"two")],
+            ),
+        ),
+        ("truncated-header", b"ULLAGEC2\x01".to_vec()),
+        (
+            "truncated-field",
+            raw_field_record(1, 1, &[b"\x00\x04ab".to_vec()]),
+        ),
+    ] {
+        let backend = MemoryBackend::default();
+        let key = CredentialKey::new("claude", name).unwrap();
+        backend.write(&key, &record).unwrap();
+        let store = CredentialStore::new(backend);
+        assert_eq!(
+            store.get(&key).unwrap_err(),
+            CredentialError::CorruptCredential,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn replace_on_missing_or_deleted_record_is_not_found() {
+    let store = CredentialStore::new(MemoryBackend::default());
+    let key = CredentialKey::new("claude", "replace-missing").unwrap();
+    assert_eq!(
+        store
+            .replace(&key, CredentialVersion::new(1, 1), credential(b"x"))
+            .unwrap_err(),
+        CredentialError::NotFound
+    );
+
+    let stored = store.set(&key, credential(b"live")).unwrap();
+    store.delete(&key).unwrap();
+    assert_eq!(
+        store
+            .replace(&key, stored.version(), credential(b"zombie"))
+            .unwrap_err(),
+        CredentialError::NotFound
+    );
+    assert_eq!(store.get(&key).unwrap_err(), CredentialError::NotFound);
+}
+
+#[cfg(unix)]
+#[test]
+fn file_fallback_refuses_to_overwrite_a_symlinked_record() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("vault");
+    let store =
+        CredentialStore::new(FileStore::new(FileFallbackOptions::new(&root).unwrap()).unwrap());
+    let key = CredentialKey::new("claude", "linked").unwrap();
+    store.set(&key, credential(b"first")).unwrap();
+    let record = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+        .find(|name| name.to_string_lossy().ends_with(".credential"))
+        .map(|name| root.join(name))
+        .expect("a stored record file exists");
+
+    let outside = temporary.path().join("outside-target");
+    std::fs::write(&outside, b"untouched").unwrap();
+    std::fs::remove_file(&record).unwrap();
+    symlink(&outside, &record).unwrap();
+
+    assert_eq!(
+        store.set(&key, credential(b"second")).unwrap_err(),
+        CredentialError::UnsafeFallbackPath
+    );
+    assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
+}
+
+#[cfg(unix)]
+#[test]
+fn file_fallback_rejects_oversized_stored_record() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("vault");
+    let store =
+        CredentialStore::new(FileStore::new(FileFallbackOptions::new(&root).unwrap()).unwrap());
+    let key = CredentialKey::new("claude", "oversized").unwrap();
+    store.set(&key, credential(b"first")).unwrap();
+    let record = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+        .find(|name| name.to_string_lossy().ends_with(".credential"))
+        .map(|name| root.join(name))
+        .expect("a stored record file exists");
+
+    // Rewriting in place keeps the private permissions the store created.
+    std::fs::write(
+        &record,
+        vec![0_u8; crate::credential::MAX_RECORD_BYTES + 1],
+    )
+    .unwrap();
+    assert_eq!(
+        store.get(&key).unwrap_err(),
+        CredentialError::CredentialTooLarge
+    );
 }
