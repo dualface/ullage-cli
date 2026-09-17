@@ -203,9 +203,10 @@ impl<T> GrokProvider<T> {
                     session.token = Some(token);
                 }
                 // A record that will not parse is corrupt, not absent: the
-                // flag keeps every entry point able to repair or delete it.
-                // Its store version is still recorded for refresh's CAS
-                // replace; logout deletes unconditionally under `lifecycle`.
+                // flag keeps every entry point able to repair or delete it,
+                // and the observed store version stays recorded. Recovery is
+                // a sign-in overwrite or logout's unconditional delete under
+                // `lifecycle`.
                 Some((Err(_), version)) => {
                     session.stored_credential_corrupt = true;
                     session.stored_version = Some(version);
