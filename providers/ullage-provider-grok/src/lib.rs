@@ -204,7 +204,8 @@ impl<T> GrokProvider<T> {
                 }
                 // A record that will not parse is corrupt, not absent: the
                 // flag keeps every entry point able to repair or delete it.
-                // Its store version is still kept so logout can CAS-delete it.
+                // Its store version is still recorded for refresh's CAS
+                // replace; logout deletes unconditionally under `lifecycle`.
                 Some((Err(_), version)) => {
                     session.stored_credential_corrupt = true;
                     session.stored_version = Some(version);
