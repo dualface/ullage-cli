@@ -6,6 +6,7 @@ mod control;
 mod device;
 mod engine;
 mod model;
+mod privatefs;
 mod store;
 
 #[cfg(unix)]
