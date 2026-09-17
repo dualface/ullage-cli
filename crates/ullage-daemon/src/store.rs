@@ -80,8 +80,15 @@ struct StagedJsonSnapshot {
 impl StagedSnapshot for StagedJsonSnapshot {
     async fn commit(self: Box<Self>) -> Result<(), String> {
         replace_path(&self.temporary.path, &self.destination).map_err(|error| error.to_string())?;
-        // The rename is only durable once the directory entry is on disk.
-        sync_parent_directory(&self.destination)
+        // The rename is only durable once the directory entry is on disk. A
+        // failed sync is logged, not returned as a commit error: the
+        // destination already carries the new bytes and reporting failure
+        // would make callers roll back in-memory state the disk no longer
+        // matches.
+        if let Err(error) = sync_parent_directory(&self.destination) {
+            eprintln!("ullage snapshot directory sync failed after commit: {error}");
+        }
+        Ok(())
     }
 }
 
@@ -209,8 +216,10 @@ impl JsonSnapshotStore {
     }
 }
 
-/// Matches only the `.name.digits.digits.tmp` temp names `stage` generates, so
-/// the sweep never touches a user file that merely looks similar.
+/// Matches only the `.name.pid.sequence.tmp` temp names `stage` generates, so
+/// the sweep never touches a user file that merely looks similar. A file
+/// whose recorded writer is still running is not stale: two daemons racing on
+/// one state directory must not delete each other's in-flight writes.
 fn is_stale_temporary_name(name: &str, prefix: &str) -> bool {
     let Some(rest) = name.strip_prefix(prefix) else {
         return false;
@@ -219,10 +228,31 @@ fn is_stale_temporary_name(name: &str, prefix: &str) -> bool {
         return false;
     };
     let mut parts = body.split('.');
+    let Some(writer_pid) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
     let numeric = |part: Option<&str>| {
         part.is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
     };
-    numeric(parts.next()) && numeric(parts.next()) && parts.next().is_none()
+    numeric(parts.next()) && parts.next().is_none() && !writer_process_is_alive(writer_pid)
+}
+
+/// Whether the process that wrote a temp file is still running. On Windows
+/// the name check alone decides: the file stays locked while its writer holds
+/// it open, so deleting it simply fails.
+#[cfg(unix)]
+fn writer_process_is_alive(pid: u32) -> bool {
+    // kill(pid, 0) probes existence without signalling; EPERM still means the
+    // process exists.
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn writer_process_is_alive(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(unix)]

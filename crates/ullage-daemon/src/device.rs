@@ -101,6 +101,9 @@ impl DeviceStore {
 
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, String> {
         let path = path.into();
+        // Validate the private parent before touching it: a directory that
+        // fails the check must be rejected without being traversed or swept.
+        ensure_private_parent(&path)?;
         sweep_stale_temporary_files(&path);
         let devices = match read_private_file(&path)? {
             Some(bytes) => {
@@ -537,9 +540,17 @@ fn replace_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     create_private_file(&temporary, bytes)?;
     replace_path(&temporary, path)
         .map_err(|error| format!("{} could not be replaced: {error}", path.display()))?;
-    // The rename is only durable once the directory entry is on disk.
-    sync_parent_directory(path)
-        .map_err(|error| format!("{} could not be synced: {error}", path.display()))
+    // The rename is only durable once the directory entry is on disk. A
+    // failed sync is logged, not returned as a write error: the destination
+    // already carries the new bytes and reporting failure would make callers
+    // roll back in-memory state the disk no longer matches.
+    if let Err(error) = sync_parent_directory(path) {
+        eprintln!(
+            "{} could not be synced after commit: {error}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Removes temp files left behind by a crashed `replace_private_file`, matched
@@ -569,8 +580,11 @@ fn sweep_stale_temporary_files(path: &Path) {
     }
 }
 
-/// Matches only the `.name.digits.digits.tmp` temp names `replace_private_file`
-/// generates, so the sweep never touches a user file that merely looks similar.
+/// Matches only the `.name.pid.sequence.tmp` temp names `replace_private_file`
+/// generates, so the sweep never touches a user file that merely looks
+/// similar. A file whose recorded writer is still running is not stale: two
+/// daemons racing on one state directory must not delete each other's
+/// in-flight writes.
 fn is_stale_temporary_name(name: &str, prefix: &str) -> bool {
     let Some(rest) = name.strip_prefix(prefix) else {
         return false;
@@ -579,10 +593,31 @@ fn is_stale_temporary_name(name: &str, prefix: &str) -> bool {
         return false;
     };
     let mut parts = body.split('.');
+    let Some(writer_pid) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
     let numeric = |part: Option<&str>| {
         part.is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
     };
-    numeric(parts.next()) && numeric(parts.next()) && parts.next().is_none()
+    numeric(parts.next()) && parts.next().is_none() && !writer_process_is_alive(writer_pid)
+}
+
+/// Whether the process that wrote a temp file is still running. On Windows
+/// the name check alone decides: the file stays locked while its writer holds
+/// it open, so deleting it simply fails.
+#[cfg(unix)]
+fn writer_process_is_alive(pid: u32) -> bool {
+    // kill(pid, 0) probes existence without signalling; EPERM still means the
+    // process exists.
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn writer_process_is_alive(_pid: u32) -> bool {
+    false
 }
 
 /// fsyncs the directory holding `path` so a committed rename survives a crash.

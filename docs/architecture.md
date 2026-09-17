@@ -201,6 +201,11 @@ account, snapshot, and probe payloads. Version 9 added device pairing and revoca
 `credential_backend` on daemon status. Version 7 added the diagnostics opt-in
 (`diagnostics` / `diagnostic`) and `SetAccountLabel`.
 
+Snapshot payloads carry a `stale` flag with failure semantics, not age
+semantics: the daemon sets it when a refresh fails after a successful write
+and clears it on the next success. Data age is always read from
+`last_success_at`.
+
 ## HTTP query API
 
 `ullage-http` is an optional second transport beside the Unix socket / Windows named pipe. It is

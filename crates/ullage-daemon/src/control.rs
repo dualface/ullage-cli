@@ -662,7 +662,11 @@ impl UnixControlServer {
                     };
                     let service = self.service.clone();
                     tasks.spawn(async move {
-                        let _ = handle_connection(stream, service).await;
+                        // Malformed requests still get logged; the connection
+                        // closes but never silently.
+                        if let Err(error) = handle_connection(stream, service).await {
+                            eprintln!("ullage control connection dropped: {error}");
+                        }
                     });
                 }
                 _ = self.service.engine.wait_for_shutdown() => break,
@@ -786,7 +790,9 @@ impl WindowsControlServer {
                     let connected = std::mem::replace(&mut current, next);
                     let service = self.service.clone();
                     tasks.spawn(async move {
-                        let _ = handle_stream(connected, service).await;
+                        if let Err(error) = handle_stream(connected, service).await {
+                            eprintln!("ullage control connection dropped: {error}");
+                        }
                     });
                 }
                 _ = self.service.engine.wait_for_shutdown() => break,
