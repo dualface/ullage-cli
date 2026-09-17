@@ -6,12 +6,84 @@ use std::task::{Context, Poll, Waker};
 
 use async_trait::async_trait;
 use chrono::{Duration, TimeZone, Utc};
-use ullage_auth::{AuthCompleteRequest, AuthMethod, AuthStartRequest, AuthState, LogoutRequest};
+use ullage_auth::{
+    AuthCompleteRequest, AuthMethod, AuthStartRequest, AuthState, CredentialVersion, LogoutRequest,
+};
 use ullage_core::{Provider, ProviderError, QueryOutcome, UsageQuery, UsageWindowKind};
 use ullage_provider_chatgpt::{
-    ChatGptApi, ChatGptApiError, ChatGptApiErrorKind, ChatGptConfig, ChatGptProvider, ChatGptUsage,
-    ChatGptUsageResponse, ChatGptWorkspace, MemorySessionStore, OAuthTokenSet,
+    ChatGptApi, ChatGptApiError, ChatGptApiErrorKind, ChatGptConfig, ChatGptProvider,
+    ChatGptSession, ChatGptSessionStore, ChatGptUsage, ChatGptUsageResponse, ChatGptWorkspace,
+    OAuthTokenSet,
 };
+
+#[derive(Default)]
+struct MemorySessionState {
+    session: Option<ChatGptSession>,
+    generation: u64,
+    revision: u64,
+    /// Generation a recreation must use after `clear` tombstoned a record.
+    deleted_generation: u64,
+}
+
+impl MemorySessionState {
+    fn version(&self) -> CredentialVersion {
+        CredentialVersion::new(self.generation, self.revision)
+    }
+}
+
+/// In-memory `ChatGptSessionStore` for tests, with the same generation /
+/// revision / tombstone versioning the real vault implements.
+#[derive(Default)]
+struct MemorySessionStore {
+    state: Mutex<MemorySessionState>,
+}
+
+impl ChatGptSessionStore for MemorySessionStore {
+    fn load(&self) -> Result<Option<(ChatGptSession, CredentialVersion)>, ChatGptApiError> {
+        let state = self.state.lock().unwrap();
+        Ok(state
+            .session
+            .clone()
+            .map(|session| (session, state.version())))
+    }
+
+    fn save(&self, session: &ChatGptSession) -> Result<CredentialVersion, ChatGptApiError> {
+        let mut state = self.state.lock().unwrap();
+        if state.session.is_some() {
+            state.revision += 1;
+        } else if state.deleted_generation > 0 {
+            state.generation = state.deleted_generation;
+            state.revision = 1;
+        } else {
+            state.generation = 1;
+            state.revision = 1;
+        }
+        state.session = Some(session.clone());
+        Ok(state.version())
+    }
+
+    fn replace(
+        &self,
+        expected: CredentialVersion,
+        session: &ChatGptSession,
+    ) -> Result<Option<CredentialVersion>, ChatGptApiError> {
+        let mut state = self.state.lock().unwrap();
+        if state.session.is_none() || state.version() != expected {
+            return Ok(None);
+        }
+        state.revision += 1;
+        state.session = Some(session.clone());
+        Ok(Some(state.version()))
+    }
+
+    fn clear(&self) -> Result<(), ChatGptApiError> {
+        let mut state = self.state.lock().unwrap();
+        if state.session.take().is_some() {
+            state.deleted_generation = state.generation + 1;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 struct ApiCalls {
@@ -30,6 +102,7 @@ struct FakeApi {
     response: ChatGptUsageResponse,
     workspace_errors: Mutex<VecDeque<ChatGptApiError>>,
     query_errors: Mutex<VecDeque<ChatGptApiError>>,
+    revoke_errors: Mutex<VecDeque<ChatGptApiError>>,
     pause_workspace: AtomicBool,
     workspace_started: tokio::sync::Notify,
     pause_refresh: AtomicBool,
@@ -113,6 +186,9 @@ impl ChatGptApi for FakeApi {
             self.revoke_started.notify_one();
             std::future::pending::<()>().await;
         }
+        if let Some(error) = self.revoke_errors.lock().unwrap().pop_front() {
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -153,6 +229,7 @@ fn provider(
         response,
         workspace_errors: Mutex::new(VecDeque::new()),
         query_errors: Mutex::new(VecDeque::new()),
+        revoke_errors: Mutex::new(VecDeque::new()),
         pause_workspace: AtomicBool::new(false),
         workspace_started: tokio::sync::Notify::new(),
         pause_refresh: AtomicBool::new(false),
@@ -188,8 +265,8 @@ fn complete_auth(provider: &ChatGptProvider<FakeApi, MemorySessionStore>) -> Aut
     assert!(uri.contains(&format!("state={}", challenge.flow_id)));
     assert!(uri.contains("code_challenge_method=S256"));
     run_ready(provider.complete_auth(AuthCompleteRequest {
-        flow_id: challenge.flow_id,
-        authorization_code: Some("authorization-code".into()),
+        flow_id: challenge.flow_id.clone(),
+        authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
         redirect_uri: Some("http://127.0.0.1:1455/callback".into()),
     }))
     .unwrap()
@@ -211,8 +288,8 @@ fn browser_oauth_uses_per_flow_redirect_uri() {
     let uri = challenge.verification_uri.as_ref().unwrap();
     assert!(uri.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A54321%2Fauth%2Fcallback"));
     run_ready(provider.complete_auth(AuthCompleteRequest {
-        flow_id: challenge.flow_id,
-        authorization_code: Some("authorization-code".into()),
+        flow_id: challenge.flow_id.clone(),
+        authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
         redirect_uri: Some(custom.into()),
     }))
     .unwrap();
@@ -240,8 +317,8 @@ fn oauth_is_single_use_and_persists_single_workspace() {
     }))
     .unwrap();
     let request = AuthCompleteRequest {
-        flow_id: challenge.flow_id,
-        authorization_code: Some("authorization-code".into()),
+        flow_id: challenge.flow_id.clone(),
+        authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
         redirect_uri: None,
     };
     let state = run_ready(provider.complete_auth(request.clone())).unwrap();
@@ -283,15 +360,15 @@ fn reports_the_single_pending_oauth_flow() {
     ));
     assert!(matches!(
         run_ready(provider.complete_auth(AuthCompleteRequest {
-            flow_id: first.flow_id,
-            authorization_code: Some("authorization-code".into()),
+            flow_id: first.flow_id.clone(),
+            authorization_code: Some(format!("authorization-code#{}", first.flow_id)),
             redirect_uri: None,
         })),
         Err(ProviderError::AuthenticationInvalid { .. })
     ));
     run_ready(provider.complete_auth(AuthCompleteRequest {
-        flow_id: second.flow_id,
-        authorization_code: Some("authorization-code".into()),
+        flow_id: second.flow_id.clone(),
+        authorization_code: Some(format!("authorization-code#{}", second.flow_id)),
         redirect_uri: None,
     }))
     .unwrap();
@@ -332,8 +409,8 @@ fn rejects_mismatched_callback_redirect_before_exchange() {
     }))
     .unwrap();
     let result = run_ready(provider.complete_auth(AuthCompleteRequest {
-        flow_id: challenge.flow_id,
-        authorization_code: Some("authorization-code".into()),
+        flow_id: challenge.flow_id.clone(),
+        authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
         redirect_uri: Some("http://attacker.invalid/callback".into()),
     }));
     assert!(matches!(
@@ -365,8 +442,8 @@ fn revokes_new_token_when_workspace_initialization_fails() {
 
     assert!(matches!(
         run_ready(provider.complete_auth(AuthCompleteRequest {
-            flow_id: challenge.flow_id,
-            authorization_code: Some("authorization-code".into()),
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
             redirect_uri: None,
         })),
         Err(ProviderError::ProtocolIncompatible { .. })
@@ -397,8 +474,8 @@ async fn cancelled_workspace_initialization_revokes_the_new_token() {
     let login = tokio::spawn(async move {
         authenticating_provider
             .complete_auth(AuthCompleteRequest {
-                flow_id: challenge.flow_id,
-                authorization_code: Some("authorization-code".into()),
+                flow_id: challenge.flow_id.clone(),
+                authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
                 redirect_uri: None,
             })
             .await
@@ -627,8 +704,8 @@ async fn new_login_cannot_be_overwritten_by_an_in_flight_refresh() {
     let login = tokio::spawn(async move {
         authenticating_provider
             .complete_auth(AuthCompleteRequest {
-                flow_id: challenge.flow_id,
-                authorization_code: Some("authorization-code".into()),
+                flow_id: challenge.flow_id.clone(),
+                authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
                 redirect_uri: None,
             })
             .await
@@ -825,8 +902,8 @@ fn logout_cancels_pending_oauth_callback() {
     run_ready(provider.logout(LogoutRequest::default())).unwrap();
     assert!(matches!(
         run_ready(provider.complete_auth(AuthCompleteRequest {
-            flow_id: challenge.flow_id,
-            authorization_code: Some("authorization-code".into()),
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
             redirect_uri: None,
         })),
         Err(ProviderError::AuthenticationInvalid { .. })
@@ -1019,4 +1096,161 @@ fn rejects_a_callback_url_without_an_authorization_code() {
         Err(ProviderError::AuthenticationInvalid { .. })
     ));
     assert_eq!(api.calls.lock().unwrap().exchanges, 0);
+}
+
+#[test]
+fn start_auth_rejects_a_non_loopback_redirect_uri() {
+    let (provider, _) = provider(
+        vec![workspace("ws-one", "Personal")],
+        fixture("single"),
+        Some(Utc::now() + Duration::hours(1)),
+    );
+    for redirect_uri in [
+        "https://attacker.invalid/callback",
+        "http://attacker.invalid/callback",
+        "http://192.168.1.10:1455/callback",
+        "not a url",
+    ] {
+        assert!(matches!(
+            run_ready(provider.start_auth(AuthStartRequest {
+                method: None,
+                redirect_uri: Some(redirect_uri.into()),
+            })),
+            Err(ProviderError::AuthenticationInvalid { .. }),
+        ));
+    }
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::NotAuthenticated
+    ));
+}
+
+#[test]
+fn a_bare_code_is_rejected_but_the_flow_survives() {
+    let (provider, api) = provider(
+        vec![workspace("ws-one", "Personal")],
+        fixture("single"),
+        Some(Utc::now() + Duration::hours(1)),
+    );
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
+    // A bare code proves nothing about the flow it belongs to: rejected, but
+    // a mistyped paste must be retryable, so the flow stays pending.
+    assert!(matches!(
+        run_ready(provider.complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: Some("authorization-code".into()),
+            redirect_uri: None,
+        })),
+        Err(ProviderError::AuthenticationInvalid { .. })
+    ));
+    assert_eq!(api.calls.lock().unwrap().exchanges, 0);
+
+    let state = run_ready(provider.complete_auth(AuthCompleteRequest {
+        flow_id: challenge.flow_id.clone(),
+        authorization_code: Some(format!("authorization-code#{}", challenge.flow_id)),
+        redirect_uri: None,
+    }))
+    .unwrap();
+    assert!(matches!(state, AuthState::Authenticated { .. }));
+    assert_eq!(api.calls.lock().unwrap().exchanges, 1);
+}
+
+#[test]
+fn a_callback_url_must_match_the_pending_redirect_origin() {
+    let (provider, api) = provider(
+        vec![workspace("ws-one", "Personal")],
+        fixture("single"),
+        Some(Utc::now() + Duration::hours(1)),
+    );
+    for bad_callback in [
+        "http://127.0.0.1:9999/callback?code=authorization-code&state={flow}",
+        "http://localhost:1455/callback?code=authorization-code&state={flow}",
+        "https://127.0.0.1:1455/callback?code=authorization-code&state={flow}",
+        "http://127.0.0.1:1455/other?code=authorization-code&state={flow}",
+    ] {
+        let challenge = run_ready(provider.start_auth(AuthStartRequest {
+            method: None,
+            redirect_uri: None,
+        }))
+        .unwrap();
+        let callback = bad_callback.replace("{flow}", &challenge.flow_id);
+        assert!(
+            matches!(
+                run_ready(provider.complete_auth(AuthCompleteRequest {
+                    flow_id: challenge.flow_id,
+                    authorization_code: Some(callback),
+                    redirect_uri: None,
+                })),
+                Err(ProviderError::AuthenticationInvalid { .. })
+            ),
+            "{bad_callback}"
+        );
+    }
+    assert_eq!(api.calls.lock().unwrap().exchanges, 0);
+}
+
+#[test]
+fn failed_revocation_preserves_the_session_for_a_logout_retry() {
+    let (provider, api) = provider(
+        vec![workspace("ws-one", "Personal")],
+        fixture("single"),
+        Some(Utc::now() + Duration::hours(1)),
+    );
+    complete_auth(&provider);
+    api.revoke_errors
+        .lock()
+        .unwrap()
+        .push_back(ChatGptApiError::new(
+            ChatGptApiErrorKind::Network,
+            "revocation endpoint unreachable",
+        ));
+
+    assert!(matches!(
+        run_ready(provider.logout(LogoutRequest::default())),
+        Err(ProviderError::Network { .. })
+    ));
+    // The session is still stored, still valid, and the retry revokes it.
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::Authenticated { .. }
+    ));
+    run_ready(provider.logout(LogoutRequest::default())).unwrap();
+    assert_eq!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::NotAuthenticated
+    );
+    assert_eq!(api.calls.lock().unwrap().revocations, 2);
+}
+
+#[test]
+fn a_persisted_session_is_validated_like_a_fresh_one() {
+    let session = ChatGptSession {
+        tokens: OAuthTokenSet::new(
+            "access-secret",
+            Some("refresh-secret".into()),
+            Some(Utc::now() + Duration::hours(1)),
+        )
+        .unwrap()
+        .with_identity_token(Some("identity".into()))
+        .unwrap(),
+        workspaces: vec![workspace("ws-one", "Personal")],
+        selected_workspace_id: Some("ws-one".into()),
+        invalid_reason: None,
+    };
+    let encoded = serde_json::to_string(&session).unwrap();
+    let decoded: ChatGptSession = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, session);
+
+    let mut persisted: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    for bad_access_token in ["", "   ", "fine\ninjected-header: evil"] {
+        persisted["access_token"] = serde_json::json!(bad_access_token);
+        assert!(
+            serde_json::from_value::<ChatGptSession>(persisted.clone()).is_err(),
+            "{bad_access_token:?}"
+        );
+    }
 }

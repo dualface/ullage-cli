@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
@@ -19,7 +20,9 @@ use ullage_core::{
 use crate::{ChatGptApiError, ChatGptUsage, ChatGptUsageResponse, ChatGptWorkspace};
 
 const OAUTH_FLOW_LIFETIME_MINUTES: i64 = 10;
-const REFRESH_SKEW_SECONDS: i64 = 60;
+/// Same lead time as the Claude provider: refresh early enough to cover
+/// request latency and clock skew before the stored token actually expires.
+const REFRESH_SKEW_SECONDS: i64 = 300;
 const MAX_AUTHORIZATION_CODE_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,12 +49,39 @@ impl ChatGptConfig {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct OAuthTokenSet {
     access_token: String,
+    #[serde(default)]
     refresh_token: Option<String>,
+    #[serde(default)]
     identity_token: Option<String>,
-    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    expires_at: Option<DateTime<Utc>>,
+}
+
+impl<'de> Deserialize<'de> for OAuthTokenSet {
+    /// Persisted tokens go back through the same validation as fresh ones:
+    /// a stored record is untrusted input once it leaves this process.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            access_token: String,
+            #[serde(default)]
+            refresh_token: Option<String>,
+            #[serde(default)]
+            identity_token: Option<String>,
+            #[serde(default)]
+            expires_at: Option<DateTime<Utc>>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Self::new(raw.access_token, raw.refresh_token, raw.expires_at)
+            .and_then(|tokens| tokens.with_identity_token(raw.identity_token))
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl OAuthTokenSet {
@@ -70,6 +100,14 @@ impl OAuthTokenSet {
                 message: "OAuth response contained unusable token contents".into(),
             });
         }
+        // The access token is sent as an HTTP header value; reject bytes that
+        // cannot be represented as one here so every caller, including the
+        // credential-store reload path, is covered.
+        reqwest::header::HeaderValue::from_str(&access_token).map_err(|_| {
+            ProviderError::ProtocolIncompatible {
+                message: "OAuth access token cannot be used as an HTTP header".into(),
+            }
+        })?;
         Ok(Self {
             access_token,
             refresh_token: refresh_token.filter(|token| !token.is_empty()),
@@ -80,6 +118,10 @@ impl OAuthTokenSet {
 
     pub fn access_token(&self) -> &str {
         &self.access_token
+    }
+
+    pub fn expires_at(&self) -> Option<DateTime<Utc>> {
+        self.expires_at
     }
 
     pub fn refresh_token(&self) -> Option<&str> {
@@ -122,11 +164,18 @@ impl fmt::Debug for OAuthTokenSet {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Serialized as the flat persisted-session shape: the token fields sit at
+/// the top level next to `workspaces` and friends, matching what the CLI
+/// credential vault has always written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatGptSession {
+    #[serde(flatten)]
     pub tokens: OAuthTokenSet,
+    #[serde(default)]
     pub workspaces: Vec<ChatGptWorkspace>,
+    #[serde(default)]
     pub selected_workspace_id: Option<String>,
+    #[serde(default)]
     pub invalid_reason: Option<String>,
 }
 
@@ -173,75 +222,7 @@ pub trait ChatGptSessionStore: Send + Sync {
     fn clear(&self) -> Result<(), ChatGptApiError>;
 }
 
-#[derive(Default)]
-struct MemorySessionState {
-    session: Option<ChatGptSession>,
-    generation: u64,
-    revision: u64,
-    /// Generation a recreation must use after `clear` tombstoned a record.
-    deleted_generation: u64,
-}
-
-impl MemorySessionState {
-    fn version(&self) -> CredentialVersion {
-        CredentialVersion::new(self.generation, self.revision)
-    }
-}
-
-#[derive(Default)]
-pub struct MemorySessionStore {
-    state: Mutex<MemorySessionState>,
-}
-
-impl ChatGptSessionStore for MemorySessionStore {
-    fn load(&self) -> Result<Option<(ChatGptSession, CredentialVersion)>, ChatGptApiError> {
-        let state = self.state.lock().map_err(|_| session_store_poisoned())?;
-        Ok(state
-            .session
-            .clone()
-            .map(|session| (session, state.version())))
-    }
-
-    fn save(&self, session: &ChatGptSession) -> Result<CredentialVersion, ChatGptApiError> {
-        let mut state = self.state.lock().map_err(|_| session_store_poisoned())?;
-        if state.session.is_some() {
-            state.revision += 1;
-        } else if state.deleted_generation > 0 {
-            // A recreation starts at the tombstone generation so an observed
-            // pre-delete version can never match again.
-            state.generation = state.deleted_generation;
-            state.revision = 1;
-        } else {
-            state.generation = 1;
-            state.revision = 1;
-        }
-        state.session = Some(session.clone());
-        Ok(state.version())
-    }
-
-    fn replace(
-        &self,
-        expected: CredentialVersion,
-        session: &ChatGptSession,
-    ) -> Result<Option<CredentialVersion>, ChatGptApiError> {
-        let mut state = self.state.lock().map_err(|_| session_store_poisoned())?;
-        if state.session.is_none() || state.version() != expected {
-            return Ok(None);
-        }
-        state.revision += 1;
-        state.session = Some(session.clone());
-        Ok(Some(state.version()))
-    }
-
-    fn clear(&self) -> Result<(), ChatGptApiError> {
-        let mut state = self.state.lock().map_err(|_| session_store_poisoned())?;
-        if state.session.take().is_some() {
-            state.deleted_generation = state.generation + 1;
-        }
-        Ok(())
-    }
-}
-
+#[derive(Clone)]
 struct PendingOAuth {
     pkce_verifier: String,
     redirect_uri: String,
@@ -274,6 +255,36 @@ impl<A: ChatGptApi + 'static> OAuthGrantGuard<A> {
     async fn revoke_now(&mut self) {
         if let Some(tokens) = self.tokens.take() {
             let _ = self.api.revoke(&tokens).await;
+        }
+    }
+}
+
+/// Clears the session store on drop unless disarmed: `clear` on a successful
+/// revoke, `preserve` on a failed one, drop (still clearing) on cancellation.
+struct SessionClearGuard<S: ChatGptSessionStore + 'static> {
+    store: Arc<S>,
+    armed: bool,
+}
+
+impl<S: ChatGptSessionStore + 'static> SessionClearGuard<S> {
+    fn new(store: Arc<S>) -> Self {
+        Self { store, armed: true }
+    }
+
+    fn clear(mut self) -> Result<(), ChatGptApiError> {
+        self.armed = false;
+        self.store.clear()
+    }
+
+    fn preserve(mut self) {
+        self.armed = false;
+    }
+}
+
+impl<S: ChatGptSessionStore + 'static> Drop for SessionClearGuard<S> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.store.clear();
         }
     }
 }
@@ -450,7 +461,7 @@ where
         force: bool,
     ) -> ProviderResult<(ChatGptSession, CredentialVersion)> {
         let should_refresh = force
-            || session.tokens.expires_at.is_some_and(|expires_at| {
+            || session.tokens.expires_at().is_some_and(|expires_at| {
                 expires_at <= Utc::now() + Duration::seconds(REFRESH_SKEW_SECONDS)
             });
         if !should_refresh {
@@ -575,8 +586,8 @@ where
         let mut pending = self
             .pending
             .lock()
-            .map_err(|_| ProviderError::ProtocolIncompatible {
-                message: "OAuth state is unavailable".into(),
+            .map_err(|_| ProviderError::Network {
+                message: "ChatGPT provider state lock is poisoned".into(),
             })?;
         pending.clear();
         pending.insert(
@@ -594,28 +605,38 @@ where
             user_code: None,
             expires_at: Some(expires_at),
             input: Some(AuthInputRequest::visible(
-                "the full callback URL from the browser",
+                "the full callback URL from the browser, or code#state",
             )),
         })
     }
 
     async fn complete_auth(&self, request: AuthCompleteRequest) -> ProviderResult<AuthState> {
         let _session_guard = self.session_gate.lock().await;
-        let pending = self
-            .pending
-            .lock()
-            .map_err(|_| ProviderError::ProtocolIncompatible {
-                message: "OAuth state is unavailable".into(),
-            })?
-            .remove(&request.flow_id)
-            .ok_or_else(|| ProviderError::AuthenticationInvalid {
-                message: "OAuth state is missing, invalid, or already used".into(),
-            })?;
-        if pending.expires_at <= Utc::now() {
-            return Err(ProviderError::AuthenticationInvalid {
-                message: "OAuth flow expired".into(),
-            });
-        }
+        // A malformed callback must not consume the flow: the entry stays
+        // until the exchange succeeds or the flow expires, so a mistyped
+        // paste can be retried.
+        let pending = {
+            let mut flows =
+                self.pending
+                    .lock()
+                    .map_err(|_| ProviderError::Network {
+                        message: "ChatGPT provider state lock is poisoned".into(),
+                    })?;
+            match flows.get(&request.flow_id) {
+                None => {
+                    return Err(ProviderError::AuthenticationInvalid {
+                        message: "OAuth state is missing, invalid, or already used".into(),
+                    });
+                }
+                Some(flow) if flow.expires_at <= Utc::now() => {
+                    flows.remove(&request.flow_id);
+                    return Err(ProviderError::AuthenticationInvalid {
+                        message: "OAuth flow expired".into(),
+                    });
+                }
+                Some(flow) => flow.clone(),
+            }
+        };
         if request
             .redirect_uri
             .as_deref()
@@ -635,12 +656,20 @@ where
                 message: "OAuth authorization code has an invalid size".into(),
             });
         }
-        let code = browser_authorization_code(input, &request.flow_id)?;
+        let code = browser_authorization_code(input, &request.flow_id, &pending.redirect_uri)?;
         let tokens = self
             .api
             .exchange_code(&code, &pending.pkce_verifier, &pending.redirect_uri)
             .await
             .map_err(ProviderError::from)?;
+        // The exchange consumed the one-shot code, so the flow is done: only
+        // failures before this point leave it retryable.
+        self.pending
+            .lock()
+            .map_err(|_| ProviderError::Network {
+                message: "ChatGPT provider state lock is poisoned".into(),
+            })?
+            .remove(&request.flow_id);
         let mut grant = OAuthGrantGuard::new(self.api.clone(), tokens);
         let initialization = async {
             let workspaces = self
@@ -689,8 +718,8 @@ where
             let mut pending =
                 self.pending
                     .lock()
-                    .map_err(|_| ProviderError::ProtocolIncompatible {
-                        message: "OAuth state is unavailable".into(),
+                    .map_err(|_| ProviderError::Network {
+                        message: "ChatGPT provider state lock is poisoned".into(),
                     })?;
             pending.retain(|_, flow| flow.expires_at > Utc::now());
             pending
@@ -729,21 +758,31 @@ where
 
     async fn logout(&self, _: LogoutRequest) -> ProviderResult<()> {
         let _session_guard = self.session_gate.lock().await;
+        self.pending
+            .lock()
+            .map_err(|_| ProviderError::Network {
+                message: "ChatGPT provider state lock is poisoned".into(),
+            })?
+            .clear();
         let tokens = self
             .store
             .load()
             .map_err(ProviderError::from)?
             .map(|(session, _)| session.tokens);
-        self.store.clear().map_err(ProviderError::from)?;
-        self.pending
-            .lock()
-            .map_err(|_| ProviderError::ProtocolIncompatible {
-                message: "OAuth state is unavailable".into(),
-            })?
-            .clear();
-        match tokens {
-            Some(tokens) => self.api.revoke(&tokens).await.map_err(ProviderError::from),
-            None => Ok(()),
+        let Some(tokens) = tokens else {
+            return Ok(());
+        };
+        // Revoke before clearing: a failed revocation keeps the stored session
+        // so the logout can be retried with the same tokens. The guard clears
+        // the store on drop so a cancelled revoke still completes the local
+        // half of the logout.
+        let clear_guard = SessionClearGuard::new(self.store.clone());
+        match self.api.revoke(&tokens).await {
+            Ok(()) => clear_guard.clear().map_err(ProviderError::from),
+            Err(error) => {
+                clear_guard.preserve();
+                Err(error.into())
+            }
         }
     }
 
@@ -866,7 +905,7 @@ fn authenticated_state(session: &ChatGptSession) -> AuthState {
             .selected_workspace_id
             .as_deref()
             .and_then(account_identity),
-        expires_at: session.tokens.expires_at,
+        expires_at: session.tokens.expires_at(),
     }
 }
 
@@ -919,42 +958,75 @@ fn valid_authorization_endpoint(endpoint: &str) -> bool {
     })
 }
 
-/// The authorization code a pasted callback carries. A whole callback URL is
-/// accepted and reduced to its `code`, with the `state` checked against the
-/// flow it belongs to; a bare code is passed through unchanged.
-fn browser_authorization_code(input: &str, flow_id: &str) -> ProviderResult<String> {
+/// The authorization code a pasted callback carries, checked against the
+/// pending flow. Accepted shapes: the whole callback URL, whose origin and
+/// path must equal the flow's `redirect_uri`, or `code#state`. Both carry
+/// the `state`, which must equal the flow ID; a bare code proves nothing
+/// about which flow it belongs to and is rejected.
+fn browser_authorization_code(
+    input: &str,
+    flow_id: &str,
+    expected_redirect_uri: &str,
+) -> ProviderResult<String> {
     let input = input.trim();
     if input.is_empty() {
         return Err(ProviderError::AuthenticationInvalid {
             message: "OAuth callback omitted authorization code".into(),
         });
     }
-    if !input.contains("://") {
-        return Ok(input.to_owned());
-    }
-    let url = reqwest::Url::parse(input).map_err(|_| ProviderError::AuthenticationInvalid {
-        message: "OAuth callback URL is invalid".into(),
-    })?;
-    let state = url
-        .query_pairs()
-        .find(|(key, _)| key == "state")
-        .map(|(_, value)| value.into_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ProviderError::AuthenticationInvalid {
-            message: "OAuth callback omitted the state".into(),
+    let (code, state) = if input.contains("://") {
+        let url = reqwest::Url::parse(input).map_err(|_| ProviderError::AuthenticationInvalid {
+            message: "OAuth callback URL is invalid".into(),
         })?;
+        let expected = reqwest::Url::parse(expected_redirect_uri).map_err(|_| {
+            ProviderError::ProtocolIncompatible {
+                message: "OAuth expected redirect URI is invalid".into(),
+            }
+        })?;
+        if url.scheme() != expected.scheme()
+            || url.host_str() != expected.host_str()
+            || url.port_or_known_default() != expected.port_or_known_default()
+            || url.path() != expected.path()
+        {
+            return Err(ProviderError::AuthenticationInvalid {
+                message: "OAuth callback URL has an unexpected origin or path".into(),
+            });
+        }
+        let code = url
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .map(|(_, value)| value.into_owned())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ProviderError::AuthenticationInvalid {
+                message: "OAuth callback omitted authorization code".into(),
+            })?;
+        let state = url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .map(|(_, value)| value.into_owned())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ProviderError::AuthenticationInvalid {
+                message: "OAuth callback omitted the state".into(),
+            })?;
+        (code, state)
+    } else if let Some((code, state)) = input.split_once('#') {
+        if code.is_empty() || state.is_empty() {
+            return Err(ProviderError::AuthenticationInvalid {
+                message: "OAuth callback code or state is empty".into(),
+            });
+        }
+        (code.to_owned(), state.to_owned())
+    } else {
+        return Err(ProviderError::AuthenticationInvalid {
+            message: "OAuth callback must be the full URL or code#state".into(),
+        });
+    };
     if state != flow_id {
         return Err(ProviderError::AuthenticationInvalid {
             message: "OAuth callback state does not match".into(),
         });
     }
-    url.query_pairs()
-        .find(|(key, _)| key == "code")
-        .map(|(_, value)| value.into_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ProviderError::AuthenticationInvalid {
-            message: "OAuth callback omitted authorization code".into(),
-        })
+    Ok(code)
 }
 
 fn valid_redirect_uri(redirect_uri: &str) -> bool {
@@ -985,13 +1057,6 @@ fn workspace_id_override<'a>(
             .iter()
             .any(|workspace| workspace.id == *requested)
     })
-}
-
-fn session_store_poisoned() -> ChatGptApiError {
-    ChatGptApiError::new(
-        crate::ChatGptApiErrorKind::ProtocolIncompatible,
-        "session store is unavailable",
-    )
 }
 
 fn oauth_authorization_url(

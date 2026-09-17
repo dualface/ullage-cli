@@ -12,8 +12,7 @@ pub use dto::{
 pub use error::{ChatGptApiError, ChatGptApiErrorKind};
 pub use http::{ChatGptHttpConfig, ReqwestChatGptApi};
 pub use provider::{
-    ChatGptApi, ChatGptConfig, ChatGptProvider, ChatGptSession, ChatGptSessionStore,
-    MemorySessionStore, OAuthTokenSet,
+    ChatGptApi, ChatGptConfig, ChatGptProvider, ChatGptSession, ChatGptSessionStore, OAuthTokenSet,
 };
 
 pub fn normalize(
