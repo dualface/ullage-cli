@@ -305,8 +305,10 @@ async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<()
 }
 
 /// Errors that mean "the peer or the process ran out of room", not "the
-/// listener is broken": fd-table exhaustion, aborted handshakes. Everything
-/// else (a closed or invalid socket) is fatal.
+/// listener is broken": fd-table exhaustion, aborted handshakes, and the
+/// pending network errors Linux passes through accept(2) on the new socket,
+/// which accept(2) requires retrying like EAGAIN. Everything else (a closed
+/// or invalid socket) is fatal.
 fn accept_error_is_transient(error: &std::io::Error) -> bool {
     if error.kind() == std::io::ErrorKind::ConnectionAborted {
         return true;
@@ -315,7 +317,20 @@ fn accept_error_is_transient(error: &std::io::Error) -> bool {
     {
         matches!(
             error.raw_os_error(),
-            Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+            Some(
+                libc::EMFILE
+                    | libc::ENFILE
+                    | libc::ENOBUFS
+                    | libc::ENOMEM
+                    | libc::ENETDOWN
+                    | libc::EPROTO
+                    | libc::ENOPROTOOPT
+                    | libc::EHOSTDOWN
+                    | libc::ENONET
+                    | libc::EHOSTUNREACH
+                    | libc::EOPNOTSUPP
+                    | libc::ENETUNREACH
+            )
         )
     }
     #[cfg(windows)]
@@ -1194,7 +1209,20 @@ mod tests {
         )));
         #[cfg(unix)]
         {
-            for code in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+            for code in [
+                libc::EMFILE,
+                libc::ENFILE,
+                libc::ENOBUFS,
+                libc::ENOMEM,
+                libc::ENETDOWN,
+                libc::EPROTO,
+                libc::ENOPROTOOPT,
+                libc::EHOSTDOWN,
+                libc::ENONET,
+                libc::EHOSTUNREACH,
+                libc::EOPNOTSUPP,
+                libc::ENETUNREACH,
+            ] {
                 assert!(
                     accept_error_is_transient(&std::io::Error::from_raw_os_error(code)),
                     "errno {code}"
