@@ -694,7 +694,7 @@ impl SystemClient {
     }
 
     fn wait_for_service_ready(&self) -> Result<(), ClientError> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + DAEMON_STARTUP_TIMEOUT;
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if self.daemon_is_ready(remaining.min(Duration::from_millis(250)))? {
@@ -825,7 +825,7 @@ impl ControlClient for SystemClient {
             &arguments,
             stderr_log,
             stderr_sink,
-            deadline.saturating_duration_since(std::time::Instant::now()),
+            DAEMON_STARTUP_TIMEOUT,
             |remaining| self.daemon_is_ready(remaining),
         )
     }
@@ -873,7 +873,7 @@ impl ControlClient for SystemClient {
             &arguments,
             stderr_log,
             stderr_sink,
-            deadline.saturating_duration_since(std::time::Instant::now()),
+            DAEMON_STARTUP_TIMEOUT,
             |remaining| self.daemon_is_ready(remaining),
         )
     }
@@ -903,6 +903,12 @@ const PROBE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 const _: () =
     assert!(PROBE_WAIT_TIMEOUT.as_secs() > ullage_protocol::MAX_ACCOUNT_TIMEOUT.as_secs());
 
+/// Longest a spawned or service-started daemon may take to answer Ready. The
+/// daemon reports not-ready while fatal startup steps — notably an HTTP bind
+/// that retries for about a minute — can still terminate it, so this budget
+/// must outlast that window plus process startup slack.
+const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
+
 fn send_timeout(request: &ControlRequest) -> Duration {
     if request_completes_a_sign_in(request) {
         SIGN_IN_TIMEOUT
@@ -920,8 +926,30 @@ fn send_timeout(request: &ControlRequest) -> Duration {
 const DAEMON_STDERR_TAIL_BYTES: usize = 8192;
 
 /// The private daemon stderr sink: a per-user log under the same runtime
-/// directory scheme as the default control socket. Truncated per launch so a
-/// failure report only carries this attempt's output.
+/// directory scheme as the default control socket. Each launch gets its own
+/// file — concurrent launchers must never truncate or interleave each
+/// other's diagnostics — and stale logs from earlier launches are swept
+/// best-effort.
+fn daemon_error_log_name() -> String {
+    format!(
+        "daemon-error-{}-{}.log",
+        std::process::id(),
+        REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn sweep_daemon_error_logs(directory: &Path) {
+    if let Ok(entries) = std::fs::read_dir(directory) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("daemon-error-") && name.ends_with(".log") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -934,11 +962,11 @@ fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
         .mode(0o700)
         .create(&directory)
         .map_err(|_| ClientError::DaemonProcess)?;
-    let path = directory.join("daemon-error.log");
+    sweep_daemon_error_logs(&directory);
+    let path = directory.join(daemon_error_log_name());
     let file = std::fs::OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
         .mode(0o600)
         .open(&path)
         .map_err(|_| ClientError::DaemonProcess)?;
@@ -952,11 +980,11 @@ fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
         .unwrap_or_else(|_| "ullage".to_owned());
     let directory = std::env::temp_dir().join(scope);
     std::fs::create_dir_all(&directory).map_err(|_| ClientError::DaemonProcess)?;
-    let path = directory.join("daemon-error.log");
+    sweep_daemon_error_logs(&directory);
+    let path = directory.join(daemon_error_log_name());
     let file = std::fs::OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
         .open(&path)
         .map_err(|_| ClientError::DaemonProcess)?;
     Ok((path, file))
@@ -3408,15 +3436,31 @@ mod tests {
         );
         let (log_path, log_sink) = daemon_log(&directory);
 
-        let error = run_daemon_process(
-            script,
+        // Spawning can transiently fail (EAGAIN) when the whole suite runs in
+        // parallel; the behavior under test is the early-exit report.
+        let mut result = run_daemon_process(
+            script.clone(),
             &[],
-            log_path,
-            log_sink,
+            log_path.clone(),
+            log_sink.try_clone().unwrap(),
             Duration::from_secs(5),
             |_| Ok(false),
-        )
-        .unwrap_err();
+        );
+        for _ in 0..3 {
+            if !matches!(result, Err(ClientError::DaemonProcess)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            result = run_daemon_process(
+                script.clone(),
+                &[],
+                log_path.clone(),
+                log_sink.try_clone().unwrap(),
+                Duration::from_secs(5),
+                |_| Ok(false),
+            );
+        }
+        let error = result.unwrap_err();
         let ClientError::DaemonProcessOutput(detail) = error else {
             panic!("expected DaemonProcessOutput, got {error:?}");
         };
@@ -3439,15 +3483,31 @@ mod tests {
         );
         let (log_path, log_sink) = daemon_log(&directory);
 
-        let error = run_daemon_process(
-            script,
+        // Spawning can transiently fail (EAGAIN) when the whole suite runs in
+        // parallel; the behavior under test is the readiness-timeout report.
+        let mut result = run_daemon_process(
+            script.clone(),
             &[],
-            log_path,
-            log_sink,
+            log_path.clone(),
+            log_sink.try_clone().unwrap(),
             Duration::from_millis(120),
             |_| Ok(false),
-        )
-        .unwrap_err();
+        );
+        for _ in 0..3 {
+            if !matches!(result, Err(ClientError::DaemonProcess)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            result = run_daemon_process(
+                script.clone(),
+                &[],
+                log_path.clone(),
+                log_sink.try_clone().unwrap(),
+                Duration::from_millis(120),
+                |_| Ok(false),
+            );
+        }
+        let error = result.unwrap_err();
         let ClientError::DaemonProcessOutput(detail) = error else {
             panic!("expected DaemonProcessOutput, got {error:?}");
         };

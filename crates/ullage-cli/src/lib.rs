@@ -210,6 +210,10 @@ where
     merge_configured_accounts(&engine, &config.accounts).await?;
     let service = ControlService::new(engine.clone()).with_credential_backend(credential_backend);
     service.configure_device_store(devices_path()?)?;
+    // Status answers stay not-ready until HTTP setup — a step that can still
+    // terminate the process — completes, so launchers cannot see Ready and
+    // return success for a daemon that then exits.
+    service.defer_readiness();
 
     #[cfg(unix)]
     let server =
@@ -240,6 +244,7 @@ where
             return Err(error);
         }
     };
+    service.mark_initialized();
 
     let result = match http {
         Some(http) => run_control_and_http(control_task, http, engine.clone()).await,
@@ -708,12 +713,22 @@ mod tests {
     }
 
     #[cfg(unix)]
+    static CONTROL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // The env lock guard is held across awaits; on the current-thread test
+    // runtime both contenders always progress, so no deadlock is possible.
+    #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn control_endpoint_answers_while_auto_bind_waits_for_a_remote_address() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
         use std::os::unix::fs::DirBuilderExt;
 
+        // These tests set process-wide endpoint env vars; serialize them.
+        let _guard = CONTROL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
         let directory = std::env::temp_dir().join(format!(
             "ullage-cli-autobind-{}-{}",
@@ -768,10 +783,100 @@ mod tests {
             .expect("control endpoint did not answer during http auto-discovery")
             .unwrap();
         let response: ControlResponse = serde_json::from_str(&line).unwrap();
-        assert!(matches!(
-            response.result,
-            ullage_protocol::ControlResult::DaemonStatus(_)
+        let ullage_protocol::ControlResult::DaemonStatus(status) = response.result else {
+            panic!("expected DaemonStatus, got {:?}", response.result);
+        };
+        // The daemon must not look Ready while HTTP setup can still kill it.
+        assert!(status.shutting_down, "endpoint reported ready during init");
+
+        daemon.abort();
+        // SAFETY: the daemon task is aborted and no other test reads these.
+        unsafe {
+            std::env::remove_var("ULLAGE_CONTROL_SOCKET");
+            std::env::remove_var("ULLAGE_STATE_FILE");
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn control_endpoint_reports_ready_once_fatal_init_completes() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        use std::os::unix::fs::DirBuilderExt;
+
+        let _guard = CONTROL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-ready-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let socket = directory.join("control.sock");
+        // SAFETY: no other test in this process reads these variables.
+        unsafe {
+            std::env::set_var("ULLAGE_CONTROL_SOCKET", &socket);
+            std::env::set_var("ULLAGE_STATE_FILE", directory.join("state.json"));
+        }
+
+        // HTTP disabled: setup completes immediately, then status must go
+        // ready — otherwise launchers could never declare success.
+        let daemon = tokio::spawn(run_daemon_with_discovery(
+            AppConfig::default(),
+            ProviderRegistry::default(),
+            CredentialBackendId::native(),
+            |_| Ok(Vec::new()),
+        ));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let ready = loop {
+            assert!(!daemon.is_finished(), "daemon task exited early");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "control endpoint never reported ready"
+            );
+            if !socket.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
+            let Ok(mut stream) = tokio::net::UnixStream::connect(&socket).await else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            };
+            let request =
+                ControlRequest::new("ready-poll", ullage_protocol::ControlCommand::DaemonStatus);
+            let mut encoded = serde_json::to_string(&request).unwrap();
+            encoded.push('\n');
+            if stream.write_all(encoded.as_bytes()).await.is_err() {
+                continue;
+            }
+            let mut reader = tokio::io::BufReader::new(stream);
+            let mut line = String::new();
+            let Ok(Ok(_)) =
+                tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await
+            else {
+                continue;
+            };
+            let Ok(response) = serde_json::from_str::<ControlResponse>(&line) else {
+                continue;
+            };
+            match response.result {
+                ullage_protocol::ControlResult::DaemonStatus(status) if !status.shutting_down => {
+                    break true;
+                }
+                _ => {}
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert!(ready);
 
         daemon.abort();
         // SAFETY: the daemon task is aborted and no other test reads these.

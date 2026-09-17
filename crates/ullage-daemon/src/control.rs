@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -69,6 +70,10 @@ pub struct ControlService {
     /// One gate per provider, held across a duplicate cleanup. Scoped per
     /// provider so a slow cleanup only delays cleanups for that same provider.
     auth_gates: Arc<Mutex<HashMap<ullage_core::ProviderId, Arc<tokio::sync::Mutex<()>>>>>,
+    /// False while fatal startup steps (for example a still-retrying HTTP
+    /// bind) can still terminate the process. Until then `daemon_status`
+    /// reports not-ready so a launcher cannot declare success early.
+    initialized: Arc<AtomicBool>,
 }
 
 impl ControlService {
@@ -78,7 +83,20 @@ impl ControlService {
             credential_backend: CredentialBackendId::native(),
             device_store: Arc::new(RwLock::new(DeviceStore::memory())),
             auth_gates: Arc::default(),
+            initialized: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Marks fatal startup initialization as still pending: status answers
+    /// stay not-ready until `mark_initialized` runs.
+    pub fn defer_readiness(&self) {
+        self.initialized.store(false, Ordering::Release);
+    }
+
+    /// Called once every startup step that can still terminate the process
+    /// has completed; status answers then report the real daemon state.
+    pub fn mark_initialized(&self) {
+        self.initialized.store(true, Ordering::Release);
     }
 
     pub fn configure_device_store(&self, path: impl Into<PathBuf>) -> Result<(), String> {
@@ -138,7 +156,9 @@ impl ControlService {
     }
 
     pub async fn daemon_status(&self) -> DaemonStatus {
-        self.engine.status().await
+        let mut status = self.engine.status().await;
+        status.shutting_down |= !self.initialized.load(Ordering::Acquire);
+        status
     }
 
     pub async fn wait_for_shutdown(&self) {
@@ -280,7 +300,7 @@ impl ControlService {
         }
         let result = match request.command {
             ControlCommand::DaemonStatus => ControlResult::DaemonStatus(status_payload(
-                self.engine.status().await,
+                self.daemon_status().await,
                 self.credential_backend,
             )),
             ControlCommand::CreatePairCode => match self.create_pair_code() {
