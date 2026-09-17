@@ -16,7 +16,8 @@ use hyper::{Method, Request, Response, StatusCode, header};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use ullage_daemon::{ControlService, PairDeviceError};
+use tokio::sync::Semaphore;
+use ullage_daemon::{AccountId, ControlService, PairDeviceError};
 use ullage_protocol::{
     ControlCommand, ControlError, ControlRequest, ControlResponse, ControlResult, ProviderError,
 };
@@ -27,9 +28,18 @@ use crate::{BindAddressClass, classify_bind_address};
 
 const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_PAIR_REQUEST_BYTES: usize = 4 * 1024;
+const MAXIMUM_CONNECTIONS: usize = 256;
 const PAIR_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const PAIR_RATE_LIMIT_CAPACITY: usize = 4096;
+const PROBE_RATE_LIMIT_CAPACITY: usize = 4096;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Accept errors classified as transient back off exponentially from this
+/// delay so an exhausted fd table cannot spin the accept loop.
+const ACCEPT_BACKOFF_INITIAL: Duration = Duration::from_millis(10);
+const ACCEPT_BACKOFF_MAXIMUM: Duration = Duration::from_secs(1);
+/// A transient accept error that outlives this many consecutive attempts is
+/// treated as fatal: the socket itself is almost certainly broken.
+const ACCEPT_FAILURE_LIMIT: u32 = 32;
 const UNAUTHORIZED_BODY: &str = "{\"error\":\"unauthorized\"}";
 
 #[derive(Clone, Debug)]
@@ -88,6 +98,9 @@ impl From<HttpBindError> for String {
 struct HttpState {
     service: ControlService,
     binds: Vec<SocketAddr>,
+    /// Precomputed `Host` header whitelist; rebuilt once at bind so requests
+    /// never allocate it.
+    allowed_hosts: Vec<String>,
     allowed_origins: Vec<String>,
     probe_min_interval: Duration,
     last_probe: Mutex<HashMap<String, Instant>>,
@@ -110,6 +123,9 @@ impl HttpServer {
         config: HttpBindConfig,
         service: ControlService,
     ) -> Result<Self, HttpBindError> {
+        // The authoritative `*` rejection lives here so library callers that
+        // skip the CLI layers stay safe; the config loader and
+        // `http_bind_config` repeat the check to fail earlier for CLI users.
         if config.allowed_origins.iter().any(|origin| origin == "*") {
             return Err(HttpBindError::message(
                 "http.allowed_origins must not contain *",
@@ -138,6 +154,9 @@ impl HttpServer {
                     .ok_or_else(|| HttpBindError::message(INVALID_BIND_MESSAGE))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // `run_daemon_with` configures the store once up front; this call
+        // covers direct library users and is idempotent for the same path, so
+        // the explicit-bind retry loop can re-enter `bind` freely.
         service
             .configure_device_store(&config.device_store_path)
             .map_err(HttpBindError::message)?;
@@ -178,11 +197,13 @@ impl HttpServer {
                 None => HttpBindError::message("http.bind did not resolve to any address"),
             });
         }
+        let allowed_hosts = allowed_hosts(&binds);
         Ok(Self {
             listeners,
             state: Arc::new(HttpState {
                 service,
                 binds,
+                allowed_hosts,
                 allowed_origins: config.allowed_origins,
                 probe_min_interval: config.probe_min_interval,
                 last_probe: Mutex::new(HashMap::new()),
@@ -212,20 +233,56 @@ impl HttpServer {
 }
 
 async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<(), String> {
+    let connection_limit = Arc::new(Semaphore::new(MAXIMUM_CONNECTIONS));
     let mut connections = tokio::task::JoinSet::new();
+    let mut consecutive_failures = 0u32;
     let result = loop {
         tokio::select! {
             accepted = listener.accept() => {
                 let (stream, remote_address) = match accepted {
-                    Ok(accepted) => accepted,
-                    Err(error) => break Err(error.to_string()),
+                    Ok(accepted) => {
+                        consecutive_failures = 0;
+                        accepted
+                    }
+                    Err(error) if accept_error_is_transient(&error) => {
+                        consecutive_failures += 1;
+                        if consecutive_failures >= ACCEPT_FAILURE_LIMIT {
+                            break Err(format!(
+                                "http accept failed {consecutive_failures} consecutive times; last error: {error}"
+                            ));
+                        }
+                        let shift = (consecutive_failures - 1).min(7);
+                        let delay = (ACCEPT_BACKOFF_INITIAL * 2u32.pow(shift))
+                            .min(ACCEPT_BACKOFF_MAXIMUM);
+                        eprintln!(
+                            "warning: http accept failed ({error}); retrying in {} seconds",
+                            delay.as_secs_f64()
+                        );
+                        // The sleep stays select-able so shutdown is not held
+                        // back by a resource-exhaustion backoff.
+                        tokio::select! {
+                            _ = tokio::time::sleep(delay) => continue,
+                            _ = state.service.wait_for_shutdown() => break Ok(()),
+                        }
+                    }
+                    Err(error) => {
+                        break Err(format!("http accept failed permanently: {error}"));
+                    }
                 };
                 let state = state.clone();
+                // A saturated server closes the accepted socket at once: the
+                // permit must cover the whole connection task, so it is moved
+                // in rather than dropped when the handler finishes a request.
+                let Ok(permit) = connection_limit.clone().try_acquire_owned() else {
+                    drop(stream);
+                    continue;
+                };
                 connections.spawn(async move {
+                    let _permit = permit;
                     let io = TokioIo::new(stream);
                     let service = service_fn(move |request| {
                         let state = state.clone();
-                        async move { handle_connection(state, remote_address.ip(), request).await }
+                        async move { Ok::<_, Infallible>(handle_request(state, remote_address.ip(), request).await) }
                     });
                     let _ = http1::Builder::new()
                         .timer(TokioTimer::new())
@@ -238,17 +295,46 @@ async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<()
             _ = connections.join_next(), if !connections.is_empty() => {}
         }
     };
+    // In-flight connections are aborted rather than drained: keep-alive
+    // sessions have no natural end point, and engine-level work is already
+    // awaited by `wait_for_idle` in the Unix control server that shares this
+    // shutdown path (both tasks are awaited by `run_control_and_http`).
     connections.abort_all();
     while connections.join_next().await.is_some() {}
     result
 }
 
-async fn handle_connection(
-    state: Arc<HttpState>,
-    remote_ip: IpAddr,
-    request: Request<Incoming>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    Ok(handle_request(state, remote_ip, request).await)
+/// Errors that mean "the peer or the process ran out of room", not "the
+/// listener is broken": fd-table exhaustion, aborted handshakes. Everything
+/// else (a closed or invalid socket) is fatal.
+fn accept_error_is_transient(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::ConnectionAborted {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        matches!(
+            error.raw_os_error(),
+            Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+        )
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Networking::WinSock;
+        matches!(
+            error.raw_os_error(),
+            Some(
+                WinSock::WSAEMFILE
+                    | WinSock::WSAENOBUFS
+                    | WinSock::WSAENETDOWN
+                    | WinSock::WSAECONNRESET
+            )
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
 }
 
 async fn handle_request(
@@ -262,7 +348,7 @@ async fn handle_request(
     let headers = request.headers().clone();
     let origin = header_str(&headers, &header::ORIGIN).map(str::to_owned);
 
-    if !host_is_allowed(header_str(&headers, &header::HOST), &state.binds) {
+    if !host_is_allowed(header_str(&headers, &header::HOST), &state.allowed_hosts) {
         return finish(
             json_status(
                 StatusCode::FORBIDDEN,
@@ -273,14 +359,20 @@ async fn handle_request(
         );
     }
 
+    // The path is decoded once here; `Err` means bad percent-encoding or a
+    // NUL byte. Preflight answers before auth like the rest of CORS, so it
+    // reports the decode failure directly as 400; other methods keep the
+    // existing order and see it after authentication and the body read.
+    let matched = match_path(&path);
+
     if method == Method::OPTIONS {
-        return match parse_route(&method, &path) {
-            Ok(_) | Err(RouteError::MethodNotAllowed) => finish(
+        return match &matched {
+            Ok(Some(_)) => finish_preflight(
                 empty_status(StatusCode::NO_CONTENT),
                 origin.as_deref(),
                 &state.allowed_origins,
             ),
-            Err(RouteError::NotFound) | Err(RouteError::BadRequest) => finish(
+            Ok(None) => finish(
                 json_status(
                     StatusCode::NOT_FOUND,
                     serde_json::json!({"error":"not_found"}),
@@ -288,10 +380,20 @@ async fn handle_request(
                 origin.as_deref(),
                 &state.allowed_origins,
             ),
+            Err(()) => finish(
+                json_status(
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({"error":"bad_request"}),
+                ),
+                origin.as_deref(),
+                &state.allowed_origins,
+            ),
         };
     }
 
-    if matches!(parse_route(&Method::POST, &path), Ok(Route::Pair)) {
+    // Pairing answers before bearer auth because it exists to mint that
+    // token; `matched` is reused so the path is never decoded twice.
+    if matches!(matched, Ok(Some(Route::Pair))) {
         let response = if method == Method::POST {
             match QueryParams::parse(&query).and_then(|params| params.validate_for(&Route::Pair)) {
                 Ok(()) => handle_pair_request(&state, remote_ip, &headers, request).await,
@@ -301,24 +403,23 @@ async fn handle_request(
                 ),
             }
         } else {
-            json_status(
-                StatusCode::METHOD_NOT_ALLOWED,
-                serde_json::json!({"error":"method_not_allowed"}),
-            )
+            method_not_allowed(&Route::Pair)
         };
         return finish(response, origin.as_deref(), &state.allowed_origins);
     }
 
     let presented = bearer_token(header_str(&headers, &header::AUTHORIZATION));
-    match state
-        .service
-        .authenticate_device(presented.unwrap_or_default())
-    {
-        Ok(true) if presented.is_some() => {}
-        Ok(_) => {
+    let has_token = presented.is_some();
+    // `authenticate` can persist `last_seen_at` under the store mutex; keep
+    // that blocking file I/O off the async executor.
+    let service = state.service.clone();
+    let token = presented.unwrap_or_default().to_owned();
+    match tokio::task::spawn_blocking(move || service.authenticate_device(&token)).await {
+        Ok(Ok(true)) if has_token => {}
+        Ok(Ok(_)) => {
             return finish(unauthorized(), origin.as_deref(), &state.allowed_origins);
         }
-        Err(_) => {
+        Ok(Err(_)) | Err(_) => {
             return finish(
                 json_status(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -341,9 +442,16 @@ async fn handle_request(
         }
     }
 
-    let route = match parse_route(&method, &path) {
-        Ok(route) => route,
-        Err(RouteError::NotFound) => {
+    let route = match matched {
+        Ok(Some(route)) if method_allowed(&route, &method) => route,
+        Ok(Some(route)) => {
+            return finish(
+                method_not_allowed(&route),
+                origin.as_deref(),
+                &state.allowed_origins,
+            );
+        }
+        Ok(None) => {
             return finish(
                 json_status(
                     StatusCode::NOT_FOUND,
@@ -353,17 +461,7 @@ async fn handle_request(
                 &state.allowed_origins,
             );
         }
-        Err(RouteError::MethodNotAllowed) => {
-            return finish(
-                json_status(
-                    StatusCode::METHOD_NOT_ALLOWED,
-                    serde_json::json!({"error":"method_not_allowed"}),
-                ),
-                origin.as_deref(),
-                &state.allowed_origins,
-            );
-        }
-        Err(RouteError::BadRequest) => {
+        Err(()) => {
             return finish(
                 json_status(
                     StatusCode::BAD_REQUEST,
@@ -410,12 +508,23 @@ async fn handle_request(
     };
 
     if let Route::Probe { id } = &route {
-        if let Some(retry_after) = probe_retry_after(&state, id) {
-            return finish(
-                rate_limited(retry_after),
-                origin.as_deref(),
-                &state.allowed_origins,
-            );
+        // Cooldown state is only spent on accounts that exist: recording
+        // attempts for arbitrary names would grow the table unboundedly and
+        // turn a 404 into a 429. The account is confirmed first, then the
+        // check-and-record runs atomically under the cooldown lock, so two
+        // concurrent probes for one account cannot both pass.
+        if state
+            .service
+            .account_exists(&AccountId::new(id.as_str()))
+            .await
+        {
+            if let Some(retry_after) = probe_retry_after(&state, id, Instant::now()) {
+                return finish(
+                    rate_limited(retry_after),
+                    origin.as_deref(),
+                    &state.allowed_origins,
+                );
+            }
         }
     }
 
@@ -454,7 +563,12 @@ async fn collect_body(
     .await
     {
         Ok(Ok(body)) => Ok(body.to_bytes()),
-        Ok(Err(_)) => Err(StatusCode::PAYLOAD_TOO_LARGE),
+        // Only the declared length cap is a 413; a truncated or malformed
+        // stream is a client error, not an oversized payload.
+        Ok(Err(error)) if error.is::<http_body_util::LengthLimitError>() => {
+            Err(StatusCode::PAYLOAD_TOO_LARGE)
+        }
+        Ok(Err(_)) => Err(StatusCode::BAD_REQUEST),
         Err(_) => Err(StatusCode::REQUEST_TIMEOUT),
     }
 }
@@ -471,6 +585,10 @@ async fn handle_pair_request(
     headers: &hyper::HeaderMap,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
+    // The attempt is recorded before the request is validated on purpose: the
+    // limiter throttles requests that reach the handler, so flooding with
+    // malformed bodies still costs the sender its per-IP interval. Query
+    // errors rejected in `handle_request` never reach here and stay free.
     if let Some(retry_after) = pair_retry_after(state, remote_ip, Instant::now()) {
         return rate_limited(retry_after);
     }
@@ -493,10 +611,14 @@ async fn handle_pair_request(
             );
         }
     };
-    match state
-        .service
-        .pair_device(&request.pair_code, &request.device_name)
-    {
+    // `pair` persists the new device under the store mutex; keep that
+    // blocking file I/O off the async executor.
+    let service = state.service.clone();
+    let pairing = tokio::task::spawn_blocking(move || {
+        service.pair_device(&request.pair_code, &request.device_name)
+    })
+    .await;
+    match pairing.unwrap_or(Err(PairDeviceError::Storage("pairing task failed".into()))) {
         Ok(credential) => json_status(
             StatusCode::OK,
             serde_json::json!({
@@ -521,10 +643,10 @@ async fn handle_pair_request(
 }
 
 fn request_body_error(status: StatusCode) -> Response<Full<Bytes>> {
-    let error = if status == StatusCode::PAYLOAD_TOO_LARGE {
-        "payload_too_large"
-    } else {
-        "request_timeout"
+    let error = match status {
+        StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+        StatusCode::REQUEST_TIMEOUT => "request_timeout",
+        _ => "bad_request",
     };
     json_status(status, serde_json::json!({"error": error}))
 }
@@ -570,20 +692,19 @@ impl QueryParams {
     }
 }
 
-enum RouteError {
-    NotFound,
-    MethodNotAllowed,
-    BadRequest,
-}
-
-fn parse_route(method: &Method, path: &str) -> Result<Route, RouteError> {
+/// Decodes the path once and maps it to a route. `Ok(None)` is a legal path
+/// that names no route (404); `Err` is a decode failure (400). Method checks
+/// live in [`method_allowed`] so the split never decodes a segment twice.
+fn match_path(path: &str) -> Result<Option<Route>, ()> {
     let mut segments = Vec::new();
     for segment in path.split('/') {
         if segment.is_empty() {
             continue;
         }
-        segments.push(decode_component(segment).map_err(|()| RouteError::BadRequest)?);
+        segments.push(decode_component(segment)?);
     }
+    // `split('/')` drops no characters, and empty segments are skipped above,
+    // so a matched `id` segment is never empty.
     let matched = match segments
         .iter()
         .map(String::as_str)
@@ -594,34 +715,52 @@ fn parse_route(method: &Method, path: &str) -> Result<Route, RouteError> {
         ["v1", "status"] => Some(Route::Status),
         ["v1", "providers"] => Some(Route::Providers),
         ["v1", "accounts"] => Some(Route::Accounts),
-        ["v1", "accounts", id] if !id.is_empty() => Some(Route::Account {
+        ["v1", "accounts", id] => Some(Route::Account {
             id: (*id).to_owned(),
         }),
         ["v1", "usage"] => Some(Route::Usage),
-        ["v1", "accounts", id, "probe"] if !id.is_empty() => Some(Route::Probe {
+        ["v1", "accounts", id, "probe"] => Some(Route::Probe {
             id: (*id).to_owned(),
         }),
         _ => None,
     };
-    match (method, matched) {
-        (_, None) => Err(RouteError::NotFound),
-        (&Method::OPTIONS, Some(_)) => Ok(Route::Status),
-        (&Method::GET, Some(Route::Probe { .. } | Route::Pair))
-        | (&Method::POST, Some(Route::Status)) => Err(RouteError::MethodNotAllowed),
-        (&Method::GET, Some(route)) if !matches!(route, Route::Probe { .. }) => Ok(route),
-        (&Method::POST, Some(route @ (Route::Probe { .. } | Route::Pair))) => Ok(route),
-        (_, Some(_)) => Err(RouteError::MethodNotAllowed),
+    Ok(matched)
+}
+
+fn method_allowed(route: &Route, method: &Method) -> bool {
+    match route {
+        Route::Pair | Route::Probe { .. } => *method == Method::POST,
+        _ => *method == Method::GET,
     }
 }
 
-fn host_is_allowed(host: Option<&str>, binds: &[SocketAddr]) -> bool {
-    let Some(host) = host else {
-        return false;
-    };
+fn allowed_methods(route: &Route) -> &'static str {
+    match route {
+        Route::Pair | Route::Probe { .. } => "POST, OPTIONS",
+        _ => "GET, OPTIONS",
+    }
+}
+
+fn method_not_allowed(route: &Route) -> Response<Full<Bytes>> {
+    let mut response = json_status(
+        StatusCode::METHOD_NOT_ALLOWED,
+        serde_json::json!({"error":"method_not_allowed"}),
+    );
+    set_header(
+        &mut response,
+        header::ALLOW,
+        HeaderValue::from_static(allowed_methods(route)),
+    );
+    response
+}
+
+/// Builds the `Host` whitelist once at bind time. A `Host` without an
+/// explicit port (`localhost` alone) is deliberately not matched: the port
+/// binds the origin check to this server instance.
+fn allowed_hosts(binds: &[SocketAddr]) -> Vec<String> {
     let Some(port) = binds.first().map(SocketAddr::port) else {
-        return false;
+        return Vec::new();
     };
-    let normalized = host.trim().to_ascii_lowercase();
     let mut allowed = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")];
     allowed.extend(
         binds
@@ -631,7 +770,15 @@ fn host_is_allowed(host: Option<&str>, binds: &[SocketAddr]) -> bool {
     if binds.iter().any(SocketAddr::is_ipv6) {
         allowed.push(format!("[::1]:{port}"));
     }
-    allowed.iter().any(|candidate| candidate == &normalized)
+    allowed
+}
+
+fn host_is_allowed(host: Option<&str>, allowed_hosts: &[String]) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let normalized = host.trim().to_ascii_lowercase();
+    allowed_hosts.iter().any(|candidate| candidate == &normalized)
 }
 
 fn bearer_token(authorization: Option<&str>) -> Option<&str> {
@@ -657,7 +804,7 @@ fn pair_retry_after(state: &HttpState, remote_ip: IpAddr, now: Instant) -> Optio
     None
 }
 
-fn probe_retry_after(state: &HttpState, account_id: &str) -> Option<u64> {
+fn probe_retry_after(state: &HttpState, account_id: &str, now: Instant) -> Option<u64> {
     if state.probe_min_interval.is_zero() {
         return None;
     }
@@ -665,12 +812,14 @@ fn probe_retry_after(state: &HttpState, account_id: &str) -> Option<u64> {
         .last_probe
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let now = Instant::now();
+    last_probe
+        .retain(|_, probed| now.saturating_duration_since(*probed) < state.probe_min_interval);
     if let Some(previous) = last_probe.get(account_id) {
-        if now.saturating_duration_since(*previous) < state.probe_min_interval {
-            let remaining = state.probe_min_interval - now.saturating_duration_since(*previous);
-            return Some(remaining.as_secs().max(1));
-        }
+        let remaining = state.probe_min_interval - now.saturating_duration_since(*previous);
+        return Some(remaining.as_secs().max(1));
+    }
+    if last_probe.len() >= PROBE_RATE_LIMIT_CAPACITY {
+        return Some(state.probe_min_interval.as_secs().max(1));
     }
     last_probe.insert(account_id.to_owned(), now);
     None
@@ -682,18 +831,20 @@ fn map_control_response(response: ControlResponse, diagnose: bool) -> Response<F
             error,
             response.diagnostic.filter(|_| diagnose),
             response.version,
+            response.request_id,
         ),
         ControlResult::ProtocolMismatch { supported_version } => json_status(
             StatusCode::BAD_REQUEST,
             serde_json::json!({
                 "version": response.version,
+                "request_id": response.request_id,
                 "error": "protocol_mismatch",
                 "supported_version": supported_version,
             }),
         ),
         result => json_status(
             success_status(&result),
-            with_protocol_version(response.version, result),
+            response_document(response.version, response.request_id, result),
         ),
     }
 }
@@ -709,9 +860,10 @@ fn map_control_error(
     error: ControlError,
     diagnostic: Option<String>,
     version: u16,
+    request_id: String,
 ) -> Response<Full<Bytes>> {
     let (status, retry_after) = control_error_status(&error);
-    let mut response = json_error_payload(status, error, diagnostic, version);
+    let mut response = json_error_payload(status, error, diagnostic, version, request_id);
     if status == StatusCode::TOO_MANY_REQUESTS {
         set_header(
             &mut response,
@@ -751,6 +903,7 @@ fn control_error_status(error: &ControlError) -> (StatusCode, u64) {
 #[derive(Serialize)]
 struct ErrorDocument<T: Serialize> {
     version: u16,
+    request_id: String,
     #[serde(flatten)]
     error: T,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -762,22 +915,29 @@ fn json_error_payload(
     error: ControlError,
     diagnostic: Option<String>,
     version: u16,
+    request_id: String,
 ) -> Response<Full<Bytes>> {
     json_status(
         status,
         ErrorDocument {
             version,
+            request_id,
             error,
             diagnostic,
         },
     )
 }
 
-fn with_protocol_version(version: u16, value: impl Serialize) -> serde_json::Value {
+fn response_document(
+    version: u16,
+    request_id: String,
+    value: impl Serialize,
+) -> serde_json::Value {
     let mut encoded =
         serde_json::to_value(value).unwrap_or_else(|_| serde_json::json!({"error":"storage"}));
     if let serde_json::Value::Object(map) = &mut encoded {
         map.insert("version".into(), serde_json::json!(version));
+        map.insert("request_id".into(), serde_json::json!(request_id));
     }
     encoded
 }
@@ -833,18 +993,39 @@ fn rate_limited(retry_after: u64) -> Response<Full<Bytes>> {
 }
 
 fn finish(
-    mut response: Response<Full<Bytes>>,
+    response: Response<Full<Bytes>>,
     origin: Option<&str>,
     allowed_origins: &[String],
 ) -> Response<Full<Bytes>> {
-    apply_cors(&mut response, origin, allowed_origins);
+    finish_with_cors(response, origin, allowed_origins, false)
+}
+
+fn finish_preflight(
+    response: Response<Full<Bytes>>,
+    origin: Option<&str>,
+    allowed_origins: &[String],
+) -> Response<Full<Bytes>> {
+    finish_with_cors(response, origin, allowed_origins, true)
+}
+
+fn finish_with_cors(
+    mut response: Response<Full<Bytes>>,
+    origin: Option<&str>,
+    allowed_origins: &[String],
+    preflight: bool,
+) -> Response<Full<Bytes>> {
+    apply_cors(&mut response, origin, allowed_origins, preflight);
     response
 }
 
+/// `Access-Control-Allow-Methods`/`Headers` answer the preflight question and
+/// are only meaningful there; ordinary responses get just the echoed origin
+/// and the `Vary` marker.
 fn apply_cors(
     response: &mut Response<Full<Bytes>>,
     origin: Option<&str>,
     allowed_origins: &[String],
+    preflight: bool,
 ) {
     let Some(origin) = origin else {
         return;
@@ -859,16 +1040,18 @@ fn apply_cors(
     if let Ok(value) = HeaderValue::from_str(origin) {
         set_header(response, header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
         set_header(response, header::VARY, HeaderValue::from_static("Origin"));
-        set_header(
-            response,
-            header::ACCESS_CONTROL_ALLOW_METHODS,
-            HeaderValue::from_static("GET, POST, OPTIONS"),
-        );
-        set_header(
-            response,
-            header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("Authorization, Content-Type"),
-        );
+        if preflight {
+            set_header(
+                response,
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                HeaderValue::from_static("GET, POST, OPTIONS"),
+            );
+            set_header(
+                response,
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                HeaderValue::from_static("Authorization, Content-Type"),
+            );
+        }
     }
 }
 
@@ -911,12 +1094,14 @@ mod tests {
     #[test]
     fn host_whitelist_accepts_loopback_spellings() {
         let bind = "127.0.0.1:7878".parse().unwrap();
-        assert!(host_is_allowed(Some("127.0.0.1:7878"), &[bind]));
-        assert!(host_is_allowed(Some("localhost:7878"), &[bind]));
-        assert!(host_is_allowed(Some("LOCALHOST:7878"), &[bind]));
-        assert!(!host_is_allowed(Some("example.com"), &[bind]));
-        assert!(!host_is_allowed(Some("127.0.0.1"), &[bind]));
-        assert!(!host_is_allowed(None, &[bind]));
+        let allowed = allowed_hosts(&[bind]);
+        assert!(host_is_allowed(Some("127.0.0.1:7878"), &allowed));
+        assert!(host_is_allowed(Some("localhost:7878"), &allowed));
+        assert!(host_is_allowed(Some("LOCALHOST:7878"), &allowed));
+        assert!(!host_is_allowed(Some("example.com"), &allowed));
+        assert!(!host_is_allowed(Some("127.0.0.1"), &allowed));
+        assert!(!host_is_allowed(Some("localhost"), &allowed));
+        assert!(!host_is_allowed(None, &allowed));
     }
 
     #[test]
@@ -926,10 +1111,11 @@ mod tests {
             "100.64.0.1:7878".parse().unwrap(),
             "192.168.50.10:7878".parse().unwrap(),
         ];
-        assert!(host_is_allowed(Some("100.64.0.1:7878"), &binds));
-        assert!(host_is_allowed(Some("192.168.50.10:7878"), &binds));
-        assert!(!host_is_allowed(Some("100.64.0.2:7878"), &binds));
-        assert!(!host_is_allowed(Some("evil.example:7878"), &binds));
+        let allowed = allowed_hosts(&binds);
+        assert!(host_is_allowed(Some("100.64.0.1:7878"), &allowed));
+        assert!(host_is_allowed(Some("192.168.50.10:7878"), &allowed));
+        assert!(!host_is_allowed(Some("100.64.0.2:7878"), &allowed));
+        assert!(!host_is_allowed(Some("evil.example:7878"), &allowed));
     }
 
     #[test]
@@ -944,8 +1130,7 @@ mod tests {
         assert_eq!(bearer_token(Some("Bearer ")), None);
     }
 
-    #[test]
-    fn pair_rate_limiter_rejects_overflow_without_evicting_active_ips() {
+    fn test_state(probe_min_interval: Duration) -> HttpState {
         let engine = tokio::runtime::Runtime::new().unwrap().block_on(async {
             ullage_daemon::DaemonEngine::new(
                 ullage_daemon::DaemonConfig::default(),
@@ -956,14 +1141,87 @@ mod tests {
             .await
             .unwrap()
         });
-        let state = HttpState {
+        let binds = vec!["127.0.0.1:7878".parse().unwrap()];
+        HttpState {
             service: ControlService::new(engine),
-            binds: vec!["127.0.0.1:7878".parse().unwrap()],
+            allowed_hosts: allowed_hosts(&binds),
+            binds,
             allowed_origins: Vec::new(),
-            probe_min_interval: Duration::ZERO,
+            probe_min_interval,
             last_probe: Mutex::new(HashMap::new()),
             last_pair_attempt: Mutex::new(HashMap::new()),
-        };
+        }
+    }
+
+    #[test]
+    fn probe_limiter_is_per_account_bounded_and_expires() {
+        let state = test_state(Duration::from_secs(60));
+        let now = Instant::now();
+        assert_eq!(probe_retry_after(&state, "alpha", now), None);
+        assert!(probe_retry_after(&state, "alpha", now).is_some());
+        assert_eq!(
+            probe_retry_after(&state, "beta", now),
+            None,
+            "cooldown must not leak across accounts"
+        );
+        let later = now + Duration::from_secs(61);
+        assert_eq!(
+            probe_retry_after(&state, "alpha", later),
+            None,
+            "an expired entry frees its slot"
+        );
+    }
+
+    #[test]
+    fn probe_limiter_rejects_overflow_without_evicting_active_accounts() {
+        let state = test_state(Duration::from_secs(60));
+        let now = Instant::now();
+        for index in 0..PROBE_RATE_LIMIT_CAPACITY {
+            assert_eq!(probe_retry_after(&state, &format!("a{index}"), now), None);
+        }
+        assert_eq!(probe_retry_after(&state, "overflow", now), Some(60));
+        assert_eq!(probe_retry_after(&state, "a0", now), Some(60));
+        assert_eq!(
+            state.last_probe.lock().unwrap().len(),
+            PROBE_RATE_LIMIT_CAPACITY
+        );
+    }
+
+    #[test]
+    fn accept_errors_classify_transient_resource_failures() {
+        assert!(accept_error_is_transient(&std::io::Error::from(
+            std::io::ErrorKind::ConnectionAborted
+        )));
+        #[cfg(unix)]
+        {
+            for code in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+                assert!(
+                    accept_error_is_transient(&std::io::Error::from_raw_os_error(code)),
+                    "errno {code}"
+                );
+            }
+            assert!(!accept_error_is_transient(
+                &std::io::Error::from_raw_os_error(libc::EINVAL)
+            ));
+        }
+        assert!(!accept_error_is_transient(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+    }
+
+    #[test]
+    fn json_content_type_matches_case_and_parameters() {
+        assert!(content_type_is_json(Some("application/json")));
+        assert!(content_type_is_json(Some("APPLICATION/JSON")));
+        assert!(content_type_is_json(Some("application/JSON; charset=utf-8")));
+        assert!(!content_type_is_json(Some("text/json")));
+        assert!(!content_type_is_json(Some("application/jsonx")));
+        assert!(!content_type_is_json(None));
+    }
+
+    #[test]
+    fn pair_rate_limiter_rejects_overflow_without_evicting_active_ips() {
+        let state = test_state(Duration::ZERO);
         let now = Instant::now();
         let oldest = IpAddr::V6(std::net::Ipv6Addr::from(0_u128));
         for suffix in 0..PAIR_RATE_LIMIT_CAPACITY {

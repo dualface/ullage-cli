@@ -261,10 +261,16 @@ impl RawResponse {
 }
 
 pub fn exchange(addr: SocketAddr, request: &str) -> RawResponse {
+    exchange_with_timeout(addr, request, Duration::from_secs(2))
+}
+
+pub fn exchange_with_timeout(
+    addr: SocketAddr,
+    request: &str,
+    read_timeout: Duration,
+) -> RawResponse {
     let mut stream = TcpStream::connect(addr).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
+    stream.set_read_timeout(Some(read_timeout)).unwrap();
     if let Err(error) = stream.write_all(request.as_bytes()) {
         assert!(
             matches!(

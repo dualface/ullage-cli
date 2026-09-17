@@ -82,6 +82,9 @@ impl QueryParams {
     }
 }
 
+/// Percent-decodes one path segment or query component. `+` is left literal
+/// on purpose: this API uses percent-encoding, not `application/x-www-form-
+/// urlencoded`, so a plus is data rather than a space.
 pub(crate) fn decode_component(value: &str) -> Result<String, ()> {
     let decoded = percent_decode_str(value).decode_utf8().map_err(|_| ())?;
     if decoded.contains('\0') {

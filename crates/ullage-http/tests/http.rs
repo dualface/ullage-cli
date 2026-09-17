@@ -190,17 +190,15 @@ async fn pairs_without_bearer_authenticates_and_honors_revocation() {
     assert_eq!(device_id.len(), 12);
     assert_eq!(payload["device_name"], "pro2026");
     assert_eq!(get(harness.addr, "/v1/status", Some(token), "").status, 200);
-    assert_eq!(
-        exchange(
-            harness.addr,
-            &format!(
-                "GET /v1/pair HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-                harness.addr.port()
-            ),
-        )
-        .status,
-        405
+    let wrong_method = exchange(
+        harness.addr,
+        &format!(
+            "GET /v1/pair HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            harness.addr.port()
+        ),
     );
+    assert_eq!(wrong_method.status, 405);
+    assert_eq!(wrong_method.header("allow"), Some("POST, OPTIONS"));
     let devices = harness.service.list_devices();
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0].name, "pro2026");
@@ -458,6 +456,360 @@ async fn oversized_bodies_are_rejected_without_taking_the_listener_down() {
     let status = get(harness.addr, "/v1/status", Some(&harness.token), "");
     assert_eq!(status.status, 200);
     harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_host_header_is_forbidden() {
+    let harness = Harness::start(Vec::new(), Duration::from_secs(60)).await;
+    let response = exchange(
+        harness.addr,
+        "GET /v1/status HTTP/1.1\r\nConnection: close\r\n\r\n",
+    );
+    assert_eq!(response.status, 403, "{}", response.body);
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ipv6_loopback_host_gate_accepts_bracketed_localhost() {
+    let engine = DaemonEngine::new(
+        ullage_daemon::DaemonConfig::default(),
+        Arc::new(ProviderRegistry::default()),
+        Arc::new(SystemClock),
+        Arc::new(MemorySnapshotStore::default()),
+    )
+    .await
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let server = HttpServer::bind(
+        HttpBindConfig {
+            binds: vec!["[::1]:0".parse().unwrap()],
+            allowed_origins: Vec::new(),
+            probe_min_interval: Duration::from_secs(60),
+            device_store_path: directory.path().join("devices.json"),
+        },
+        ControlService::new(engine.clone()),
+    )
+    .await
+    .unwrap();
+    let addr = server.local_addrs()[0];
+    let task = tokio::spawn(server.run());
+
+    let gated = exchange(
+        addr,
+        &format!(
+            "GET /v1/status HTTP/1.1\r\nHost: [::1]:{}\r\nConnection: close\r\n\r\n",
+            addr.port()
+        ),
+    );
+    assert_eq!(gated.status, 401, "{}", gated.body);
+    let portless = exchange(
+        addr,
+        "GET /v1/status HTTP/1.1\r\nHost: [::1]\r\nConnection: close\r\n\r\n",
+    );
+    assert_eq!(portless.status, 403);
+
+    engine.shutdown();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn options_preflight_maps_known_unknown_and_malformed_paths() {
+    let harness = Harness::start(Vec::new(), Duration::from_secs(60)).await;
+    for (path, expected) in [
+        ("/v1/pair", 204),
+        ("/v1/status", 204),
+        ("/v1/missing", 404),
+        ("/v1/%ff", 400),
+        ("/v1/%00", 400),
+    ] {
+        let response = exchange(
+            harness.addr,
+            &format!(
+                "OPTIONS {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                harness.addr.port()
+            ),
+        );
+        assert_eq!(response.status, expected, "{path}: {}", response.body);
+    }
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_duplicate_and_malformed_query_parameters() {
+    let harness = Harness::start(Vec::new(), Duration::from_secs(60)).await;
+    let duplicate = get(
+        harness.addr,
+        "/v1/usage?account=a&account=b",
+        Some(&harness.token),
+        "",
+    );
+    assert_eq!(duplicate.status, 400, "{}", duplicate.body);
+    let bad_wait = post(
+        harness.addr,
+        "/v1/accounts/primary/probe?wait=bogus",
+        &harness.token,
+        "",
+    );
+    assert_eq!(bad_wait.status, 400, "{}", bad_wait.body);
+    let bare_flag = get(
+        harness.addr,
+        "/v1/status?flag",
+        Some(&harness.token),
+        "",
+    );
+    assert_eq!(bare_flag.status, 400, "{}", bare_flag.body);
+    let diagnose_off = get(
+        harness.addr,
+        "/v1/status?diagnose=0",
+        Some(&harness.token),
+        "",
+    );
+    assert_eq!(diagnose_off.status, 200, "{}", diagnose_off.body);
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_cooldown_is_per_account_and_never_poisons_missing_accounts() {
+    let harness = Harness::start(Vec::new(), Duration::from_secs(60)).await;
+    for attempt in 0..2 {
+        let missing = post(
+            harness.addr,
+            "/v1/accounts/ghost/probe?wait=false",
+            &harness.token,
+            "",
+        );
+        assert_eq!(missing.status, 404, "attempt {attempt}: {}", missing.body);
+    }
+    let first = post(
+        harness.addr,
+        "/v1/accounts/primary/probe?wait=false",
+        &harness.token,
+        "",
+    );
+    assert!(first.status == 202 || first.status == 200, "{}", first.body);
+    let other = post(
+        harness.addr,
+        "/v1/accounts/team%2Fa/probe?wait=false",
+        &harness.token,
+        "",
+    );
+    assert!(
+        other.status == 202 || other.status == 200,
+        "cooldown leaked across accounts: {}",
+        other.body
+    );
+    let limited = post(
+        harness.addr,
+        "/v1/accounts/primary/probe?wait=false",
+        &harness.token,
+        "",
+    );
+    assert_eq!(limited.status, 429);
+    harness.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn authenticate_storage_failure_maps_to_500() {
+    use std::os::unix::fs::PermissionsExt;
+    let engine = DaemonEngine::new(
+        ullage_daemon::DaemonConfig::default(),
+        Arc::new(ProviderRegistry::default()),
+        Arc::new(SystemClock),
+        Arc::new(MemorySnapshotStore::default()),
+    )
+    .await
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    // A device whose stored `last_seen_at` is old makes `authenticate` persist
+    // the new timestamp; the read-only directory turns that into a storage
+    // error instead of a silent pass.
+    let store_path = directory.path().join("devices.json");
+    std::fs::write(
+        &store_path,
+        serde_json::json!({
+            "devices": [{
+                "id": "ABCDEFGHJKMN",
+                "name": "stale-device",
+                // hex sha256 of "test-device-token"
+                "token_hash": "fdc2f4194f79710d879d596f606d94f5e85f07f53b42d2b13f2e9aeb74d78c39",
+                "created_at": "2020-01-01T00:00:00Z",
+                "last_seen_at": "2020-01-01T00:00:00Z"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // The store only fails on write; lock the directory before binding so the
+    // open-time read still succeeds but the persist-time tmp file cannot be
+    // created.
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let server = HttpServer::bind(
+        HttpBindConfig {
+            binds: vec!["127.0.0.1:0".parse().unwrap()],
+            allowed_origins: Vec::new(),
+            probe_min_interval: Duration::from_secs(60),
+            device_store_path: store_path,
+        },
+        ControlService::new(engine.clone()),
+    )
+    .await
+    .unwrap();
+    let addr = server.local_addrs()[0];
+    let task = tokio::spawn(server.run());
+
+    let response = get(addr, "/v1/status", Some("test-device-token"), "");
+    assert_eq!(response.status, 500, "{}", response.body);
+    assert!(response.body.contains("storage"), "{}", response.body);
+
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    engine.shutdown();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_request_body_times_out_as_408() {
+    let harness = Harness::start(Vec::new(), Duration::from_secs(60)).await;
+    let response = exchange_with_timeout(
+        harness.addr,
+        &format!(
+            "POST /v1/accounts/primary/probe HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial-body",
+            harness.addr.port(),
+            harness.token
+        ),
+        Duration::from_secs(20),
+    );
+    assert_eq!(response.status, 408, "{}", response.body);
+    assert!(response.body.contains("request_timeout"), "{}", response.body);
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chunked_body_over_the_limit_is_413() {
+    let harness = Harness::start(Vec::new(), Duration::from_secs(60)).await;
+    let oversized = "x".repeat(1024 * 1024 + 1);
+    let response = exchange_with_timeout(
+        harness.addr,
+        &format!(
+            "POST /v1/accounts/primary/probe HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            harness.addr.port(),
+            harness.token,
+            oversized.len(),
+            oversized
+        ),
+        Duration::from_secs(5),
+    );
+    assert_eq!(response.status, 413, "{}", response.body);
+    let status = get(harness.addr, "/v1/status", Some(&harness.token), "");
+    assert_eq!(status.status, 200);
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connection_limit_closes_overflow_connections() {
+    use std::io::Read;
+    let harness = Harness::start(Vec::new(), Duration::from_secs(60)).await;
+    let mut held = Vec::new();
+    for _ in 0..256 {
+        held.push(std::net::TcpStream::connect(harness.addr).unwrap());
+    }
+    // Once every permit is held, the next accepted socket is closed at once.
+    // Probe until that happens so the test does not depend on accept timing.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut probe = std::net::TcpStream::connect(harness.addr).unwrap();
+        probe
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        match probe.read(&mut byte) {
+            Ok(0) => break,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                break;
+            }
+            _ => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "connection limit did not engage"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    drop(held);
+    harness.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn unavailable_non_loopback_bind_is_skipped() {
+    let engine = DaemonEngine::new(
+        ullage_daemon::DaemonConfig::default(),
+        Arc::new(ProviderRegistry::default()),
+        Arc::new(SystemClock),
+        Arc::new(MemorySnapshotStore::default()),
+    )
+    .await
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    let loopback = SocketAddr::from(([127, 0, 0, 1], port));
+    // A private-range address no local interface holds: the bind fails and the
+    // server must keep only the working listener instead of dying.
+    let missing = SocketAddr::from(([10, 255, 255, 1], port));
+    let service = ControlService::new(engine.clone());
+    let server = HttpServer::bind(
+        HttpBindConfig {
+            binds: vec![loopback, missing],
+            allowed_origins: Vec::new(),
+            probe_min_interval: Duration::from_secs(60),
+            device_store_path: directory.path().join("devices.json"),
+        },
+        service.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(server.local_addrs(), vec![loopback]);
+    drop(server);
+
+    let error = match HttpServer::bind(
+        HttpBindConfig {
+            binds: vec![missing],
+            allowed_origins: Vec::new(),
+            probe_min_interval: Duration::from_secs(60),
+            device_store_path: directory.path().join("devices.json"),
+        },
+        service,
+    )
+    .await
+    {
+        Ok(_) => panic!("unavailable non-loopback bind should fail"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("could not listen"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

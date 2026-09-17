@@ -152,6 +152,13 @@ impl ControlService {
         self.engine.probe(account_id, ProbeTrigger::Manual).await
     }
 
+    /// Reports whether `account_id` names a configured account. The HTTP
+    /// probe cooldown uses this so attempts on names that do not exist never
+    /// consume rate-limit state.
+    pub async fn account_exists(&self, account_id: &AccountId) -> bool {
+        self.engine.account_config(account_id).await.is_some()
+    }
+
     pub async fn show(&self, account_id: &AccountId) -> Option<SnapshotRecord> {
         self.engine.show(account_id).await
     }
