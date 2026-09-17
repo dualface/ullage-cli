@@ -170,6 +170,10 @@ pub struct CursorProvider {
     /// Sign-in flows intentionally do not take it: they must still be able
     /// to supersede an in-flight refresh.
     exchange_gate: tokio::sync::Mutex<()>,
+    /// Test-only seam: concurrency tests hold this to park `auth_status`
+    /// between flow expiry and its `invalid_reason` write/snapshot.
+    #[cfg(test)]
+    auth_status_test_gate: Mutex<()>,
 }
 
 impl CursorProvider {
@@ -201,6 +205,8 @@ impl CursorProvider {
             credentials: None,
             credential_gate: tokio::sync::Mutex::new(()),
             exchange_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            auth_status_test_gate: Mutex::new(()),
         }
     }
 
@@ -223,6 +229,8 @@ impl CursorProvider {
             credentials: Some((credentials, key)),
             credential_gate: tokio::sync::Mutex::new(()),
             exchange_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            auth_status_test_gate: Mutex::new(()),
         })
     }
 
@@ -1280,10 +1288,13 @@ impl Provider for CursorProvider {
         // gate, so a fresh challenge is never masked by a stale expiry result.
         let _persist_gate = self.credential_gate.lock().await;
         let mut state = self.lock_state()?;
-        if state.expire_pending_flow()
-            && state.auth.is_none()
-            && state.invalid_account_key.is_some()
-        {
+        let expired_flow = state.expire_pending_flow();
+        // The seam stays inside the credential_gate section: a test holding
+        // it observes whether a start_auth install can interleave between
+        // expiry and the invalid_reason write/snapshot.
+        #[cfg(test)]
+        let _test_gate = self.auth_status_test_gate.lock().unwrap();
+        if expired_flow && state.auth.is_none() && state.invalid_account_key.is_some() {
             state.invalid_reason = Some("the Cursor sign-in was not completed".into());
         }
         let state = state;
@@ -1787,12 +1798,14 @@ mod tests {
 
         let provider = &provider;
         std::thread::scope(|scope| {
-            // Park auth_status on the state lock, then prove through
-            // try_lock that it keeps holding credential_gate while it waits:
-            // expiry, the invalid_reason write, and the snapshot must share
-            // one gate section so start_auth's install cannot interleave.
-            let state_guard = provider.lock_state().unwrap();
+            // Hold the test seam: auth_status expires the abandoned flow,
+            // then parks between expiry and the invalid_reason write/snapshot
+            // while still holding credential_gate.
+            let seam = provider.auth_status_test_gate.lock().unwrap();
             let status = scope.spawn(|| block_on(provider.auth_status()));
+            // The gate staying held across the suspension is the handshake
+            // that auth_status reached the seam inside its serialized
+            // section; a transient acquire would show up as free.
             let mut acquired = false;
             for _ in 0..5_000 {
                 if provider.credential_gate.try_lock().is_err() {
@@ -1803,24 +1816,30 @@ mod tests {
             }
             assert!(
                 acquired,
-                "auth_status never held credential_gate on its state wait"
+                "auth_status never held credential_gate at the seam"
             );
-            // A transient hold would release between expiry and snapshot;
-            // the serialized section keeps the gate for the whole wait.
             for _ in 0..50 {
                 assert!(
                     provider.credential_gate.try_lock().is_err(),
-                    "auth_status released credential_gate mid-section"
+                    "auth_status released credential_gate between expiry and snapshot"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
+            // start_auth must stay blocked on the held gate for the whole
+            // seam; only after auth_status finishes its snapshot may the
+            // replacement flow install.
             let restart = scope.spawn(|| {
                 block_on(provider.start_auth(AuthStartRequest {
                     method: Some(AuthMethod::ApiToken),
                     redirect_uri: None,
                 }))
             });
-            drop(state_guard);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(
+                !restart.is_finished(),
+                "start_auth interleaved inside auth_status's gate section"
+            );
+            drop(seam);
             assert!(matches!(
                 status.join().unwrap().unwrap(),
                 AuthState::Invalid { .. }
