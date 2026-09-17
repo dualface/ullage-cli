@@ -49,25 +49,27 @@ struct ProviderState {
     /// Store version `auth` was observed at; required for CAS updates.
     stored_version: Option<CredentialVersion>,
     credentials_loaded: bool,
-    /// Bumped each time a provider exchange starts under `exchange_gate`;
-    /// lets a caller tell "queued while that exchange ran" from "arrived
-    /// after it completed".
+    /// Ticked when a provider exchange starts under `exchange_gate` and
+    /// again when its outcome is published; comparing it against a snapshot
+    /// only establishes ordering, not whether the caller was queued.
     exchange_epoch: u64,
-    /// The most recent failed exchange, shared with callers whose snapshot
-    /// predates it so a failed refresh stays a single provider call.
+    /// The most recent failed exchange, shared with callers whose auth
+    /// snapshot predates it so a failed refresh stays a single provider
+    /// call.
     exchange_verdict: Option<ExchangeVerdict>,
 }
 
-/// The outcome of a provider exchange attempted on a state snapshot. Only
+/// The outcome of a provider exchange attempted on an auth snapshot. Only
 /// failures are stored: success is observable through `generation`
-/// advancing, a failure leaves the snapshot current and would otherwise be
-/// retried by every queued caller.
+/// advancing, while a failure either leaves the snapshot unchanged (a
+/// transient error) or invalidates it (an authentication error that bumps
+/// generation and session); both kinds are shared through this verdict.
 struct ExchangeVerdict {
     /// (generation, session_id) the failed exchange was attempted on.
     observed_generation: u64,
     observed_session_id: u64,
-    /// `exchange_epoch` value after the attempt completed; a caller whose
-    /// snapshot predates it was already queued while the exchange ran.
+    /// `exchange_epoch` tick at which the failure was published; a snapshot
+    /// taken before this verdict compares older than it.
     epoch: u64,
     failure: ProviderError,
 }
@@ -797,11 +799,12 @@ impl CursorProvider {
         Ok(state.exchange_epoch)
     }
 
-    /// Shares the failed exchange a concurrent caller completed for the same
-    /// observed state. `observed_epoch` bounds sharing to callers that were
-    /// already queued while that attempt ran; a caller arriving later sees
-    /// the same epoch and becomes the next leader instead of inheriting a
-    /// stale failure forever.
+    /// Shares the failed exchange another caller completed for the same
+    /// observed auth state. `observed_epoch` only orders the snapshot
+    /// against the verdict: an older value means the snapshot predates the
+    /// published failure, while an equal value means the caller arrived
+    /// afterwards and becomes the next leader instead of inheriting a stale
+    /// failure forever.
     fn failed_exchange_since(
         &self,
         expected_generation: u64,
@@ -821,11 +824,11 @@ impl CursorProvider {
         })
     }
 
-    /// Publishes the failure an exchange attempt produced so queued callers
-    /// on the same snapshot receive it instead of calling the provider. The
-    /// epoch is bumped again on completion: a snapshot taken while the
-    /// attempt was in flight then compares older than the verdict, while a
-    /// snapshot taken after it compares equal and leads a new attempt.
+    /// Publishes the failure an exchange attempt produced so callers that
+    /// observed the same auth snapshot before it was published receive it
+    /// instead of calling the provider. The epoch is ticked again here so a
+    /// snapshot taken while the attempt was in flight compares older than
+    /// the verdict, while one taken after compares equal.
     fn record_exchange_failure(
         &self,
         expected_generation: u64,
