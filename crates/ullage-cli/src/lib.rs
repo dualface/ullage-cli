@@ -65,7 +65,7 @@ pub fn registry_with_credentials(
     );
     let claude_credentials = credentials.clone();
     registry
-        .register_factory(descriptor("claude", "Claude", true), move |account_id| {
+        .register_factory(descriptor(PROVIDER_IDS[0], "Claude", true), move |account_id| {
             let store = Arc::new(
                 ClaudeVault::new(claude_credentials.clone(), account_id)
                     .map_err(|_| credential_init_error())?,
@@ -83,7 +83,7 @@ pub fn registry_with_credentials(
             .map_err(|_| "ChatGPT provider initialization failed")?,
     );
     let chatgpt_credentials = credentials.clone();
-    let mut chatgpt_descriptor = descriptor("chatgpt", "ChatGPT", false);
+    let mut chatgpt_descriptor = descriptor(PROVIDER_IDS[1], "ChatGPT", false);
     chatgpt_descriptor
         .capabilities
         .push(Capability::WorkspaceSelection);
@@ -122,7 +122,7 @@ pub fn registry_with_credentials(
     );
     let grok_credentials = credentials.clone();
     registry
-        .register_factory(descriptor("grok", "Grok", false), move |account_id| {
+        .register_factory(descriptor(PROVIDER_IDS[2], "Grok", false), move |account_id| {
             Ok(Arc::new(GrokProvider::with_transport_and_store_for_account(
                 grok_transport.clone(),
                 grok_credentials.clone(),
@@ -136,7 +136,7 @@ pub fn registry_with_credentials(
             .map_err(|_| "Cursor provider initialization failed")?,
     );
     registry
-        .register_factory(descriptor("cursor", "Cursor", false), move |account_id| {
+        .register_factory(descriptor(PROVIDER_IDS[3], "Cursor", false), move |account_id| {
             Ok(Arc::new(
                 ullage_provider_cursor::CursorProvider::with_api_and_store_for_account(
                     cursor_api.clone(),
