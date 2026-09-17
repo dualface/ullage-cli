@@ -8,50 +8,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use tokio::sync::Notify;
 use ullage_auth::{AuthChallenge, AuthCompleteRequest, AuthStartRequest, AuthState, LogoutRequest};
 use ullage_core::{
     Capability, Provider, ProviderDescriptor, ProviderError, ProviderId, ProviderRegistry,
     ProviderResult, QueryOutcome, SubscriptionUsage, UsageQuery,
 };
 use ullage_daemon::{
-    AccountConfig, AccountId, Clock, ControlService, DaemonConfig, DaemonError, MemorySnapshotStore,
+    AccountConfig, AccountId, ControlService, DaemonConfig, DaemonError, MemorySnapshotStore,
 };
 use ullage_protocol::{AccountError, ControlCommand, ControlError, ControlRequest, ControlResult};
 
 mod support;
 
-use support::{account, engine_with, usage};
-
-/// A clock frozen at the test instant. Scheduled probes wait for a wake-up that
-/// never comes, so only the explicit control commands under test run.
-struct ManualClock {
-    now: DateTime<Utc>,
-    changed: Notify,
-}
-
-impl ManualClock {
-    fn new() -> Self {
-        Self {
-            now: DateTime::parse_from_rfc3339("2026-08-27T12:00:00Z")
-                .unwrap()
-                .to_utc(),
-            changed: Notify::new(),
-        }
-    }
-}
-
-#[async_trait]
-impl Clock for ManualClock {
-    fn now(&self) -> DateTime<Utc> {
-        self.now
-    }
-
-    async fn sleep(&self, _: Duration) {
-        self.changed.notified().await;
-    }
-}
+use support::{ManualClock, account, engine_with, usage};
 
 /// A provider that answers every usage query with one complete snapshot.
 struct FixedProvider {

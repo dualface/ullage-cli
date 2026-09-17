@@ -9,7 +9,6 @@ use chrono::{DateTime, Utc};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use ullage_auth::{AuthChallenge, AuthInputRequest, AuthMethod, AuthState, account_identity};
 use ullage_core::{ProviderError, ProviderResult};
 
@@ -483,7 +482,7 @@ impl GrokTransport for HttpGrokTransport {
         }
         let state = random_secret()?;
         let verifier = random_secret()?;
-        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let challenge = ullage_auth::pkce_s256_challenge(&verifier);
         let mut url = Url::parse(&self.config.authorization_url)
             .map_err(|_| GrokApiError::ProtocolIncompatible("invalid authorization URL".into()))?;
         url.query_pairs_mut()
@@ -936,10 +935,8 @@ fn jwt_claims(token: &str) -> Result<serde_json::Map<String, Value>, GrokApiErro
 }
 
 fn random_secret() -> Result<String, GrokApiError> {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|_| GrokApiError::Network("secure random generation failed".into()))?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    ullage_auth::random_url_token()
+        .map_err(|_| GrokApiError::Network("secure random generation failed".into()))
 }
 
 fn network_error(_: reqwest::Error) -> GrokApiError {

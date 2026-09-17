@@ -4,11 +4,8 @@ mod dto;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
@@ -289,7 +286,7 @@ impl Provider for ClaudeProvider {
 
         let verifier = random_url_token()?;
         let flow_id = random_url_token()?;
-        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let challenge = ullage_auth::pkce_s256_challenge(&verifier);
         let expires_at = Utc::now() + Duration::minutes(AUTH_FLOW_LIFETIME_MINUTES);
         let redirect_uri = match request.redirect_uri {
             None => REDIRECT_URI.to_owned(),
@@ -943,11 +940,9 @@ fn parse_authorization_input(
 }
 
 fn random_url_token() -> ProviderResult<String> {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(|_| ProviderError::Network {
+    ullage_auth::random_url_token().map_err(|_| ProviderError::Network {
         message: "operating system randomness is unavailable".into(),
-    })?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    })
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> ProviderResult<std::sync::MutexGuard<'_, T>> {

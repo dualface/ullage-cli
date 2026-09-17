@@ -10,7 +10,6 @@ publish = false
 
 [dependencies]
 async-trait.workspace = true
-base64 = "0.22"
 chrono.workspace = true
 getrandom = "0.3"
 libc = "0.2"

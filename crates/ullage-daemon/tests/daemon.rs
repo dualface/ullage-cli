@@ -1,12 +1,12 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::future::{Future, poll_fn};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Utc};
 use tokio::sync::{Notify, Semaphore};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthMethod, AuthStartRequest, AuthState, LogoutRequest,
@@ -29,83 +29,7 @@ use ullage_protocol::{
 
 mod support;
 
-use support::{account, engine_with, usage};
-
-#[derive(Clone)]
-struct ManualClock {
-    base: DateTime<Utc>,
-    elapsed_millis: Arc<AtomicU64>,
-    changed: Arc<Notify>,
-    sleep_durations: Arc<Mutex<Vec<Duration>>>,
-    sleep_started: Arc<Notify>,
-}
-
-impl ManualClock {
-    fn new() -> Self {
-        Self {
-            base: DateTime::parse_from_rfc3339("2026-08-27T12:00:00Z")
-                .unwrap()
-                .to_utc(),
-            elapsed_millis: Arc::new(AtomicU64::new(0)),
-            changed: Arc::new(Notify::new()),
-            sleep_durations: Arc::new(Mutex::new(Vec::new())),
-            sleep_started: Arc::new(Notify::new()),
-        }
-    }
-
-    fn advance(&self, duration: Duration) {
-        self.elapsed_millis
-            .fetch_add(duration.as_millis().try_into().unwrap(), Ordering::SeqCst);
-        self.changed.notify_waiters();
-    }
-
-    async fn wait_for_sleep(&self, expected: Duration) {
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let started = self.sleep_started.notified();
-                tokio::pin!(started);
-                started.as_mut().enable();
-                if self.sleep_durations.lock().unwrap().contains(&expected) {
-                    return;
-                }
-                started.await;
-            }
-        })
-        .await
-        .unwrap();
-    }
-}
-
-#[async_trait]
-impl Clock for ManualClock {
-    fn now(&self) -> DateTime<Utc> {
-        self.base
-            + TimeDelta::milliseconds(
-                self.elapsed_millis
-                    .load(Ordering::SeqCst)
-                    .try_into()
-                    .unwrap(),
-            )
-    }
-
-    async fn sleep(&self, duration: Duration) {
-        let target = self
-            .elapsed_millis
-            .load(Ordering::SeqCst)
-            .saturating_add(duration.as_millis().try_into().unwrap());
-        self.sleep_durations.lock().unwrap().push(duration);
-        self.sleep_started.notify_waiters();
-        loop {
-            let changed = self.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if self.elapsed_millis.load(Ordering::SeqCst) >= target {
-                return;
-            }
-            changed.await;
-        }
-    }
-}
+use support::{ManualClock, account, engine_with, usage};
 
 #[derive(Clone)]
 struct MockProvider {

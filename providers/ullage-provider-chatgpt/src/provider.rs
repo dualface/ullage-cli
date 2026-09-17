@@ -3,11 +3,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
     CredentialVersion, LogoutRequest, account_identity, validate_loopback_http_redirect_uri,
@@ -569,7 +566,7 @@ where
         }
         let flow_id = random_url_safe(32)?;
         let pkce_verifier = random_url_safe(64)?;
-        let pkce_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(pkce_verifier.as_bytes()));
+        let pkce_challenge = ullage_auth::pkce_s256_challenge(&pkce_verifier);
         let expires_at = Utc::now() + Duration::minutes(OAUTH_FLOW_LIFETIME_MINUTES);
         let redirect_uri = match request.redirect_uri.as_deref() {
             None => self.config.redirect_uri.clone(),
@@ -936,11 +933,9 @@ fn workspace_access_denied(message: impl Into<String>) -> ProviderError {
 }
 
 fn random_url_safe(byte_count: usize) -> ProviderResult<String> {
-    let mut bytes = vec![0_u8; byte_count];
-    getrandom::fill(&mut bytes).map_err(|error| ProviderError::ProtocolIncompatible {
+    ullage_auth::random_url_safe(byte_count).map_err(|error| ProviderError::ProtocolIncompatible {
         message: format!("secure random source unavailable: {error}"),
-    })?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    })
 }
 
 fn valid_authorization_endpoint(endpoint: &str) -> bool {

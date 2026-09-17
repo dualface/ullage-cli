@@ -8,9 +8,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+base64 = "0.22"
 cap-fs-ext.workspace = true
 cap-std.workspace = true
 chrono.workspace = true
+getrandom = "0.3"
 keyring.workspace = true
 libc.workspace = true
 serde.workspace = true

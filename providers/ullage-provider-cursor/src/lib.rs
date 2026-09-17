@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
-use sha2::{Digest, Sha256};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
     Credential, CredentialError, CredentialKey, CredentialStore, CredentialVersion, LogoutRequest,
@@ -1493,7 +1492,7 @@ fn new_flow_id(kind: &str) -> ProviderResult<String> {
 /// Both values are URL-safe by construction: the challenge is base64url of a
 /// digest and the UUID is hex with dashes, so neither needs escaping.
 fn login_deep_link(uuid: &str, verifier: &str) -> String {
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let challenge = ullage_auth::pkce_s256_challenge(verifier);
     format!("{LOGIN_DEEP_LINK}?challenge={challenge}&uuid={uuid}&mode=login&redirectTarget=cli")
 }
 
@@ -1525,11 +1524,9 @@ fn token_claim(access_token: &str, name: &str) -> Option<serde_json::Value> {
 }
 
 fn random_url_token() -> ProviderResult<String> {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(|_| ProviderError::Network {
+    ullage_auth::random_url_token().map_err(|_| ProviderError::Network {
         message: "operating system randomness is unavailable".into(),
-    })?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    })
 }
 
 fn random_uuid() -> ProviderResult<String> {

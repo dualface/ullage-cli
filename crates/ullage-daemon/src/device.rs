@@ -2,8 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -13,7 +11,6 @@ use crate::privatefs::{self, ErrorStyle, FileStrictness};
 const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
 const PAIR_CODE_LENGTH: usize = 6;
 const DEVICE_ID_LENGTH: usize = 12;
-const TOKEN_BYTES: usize = 32;
 const PAIR_CODE_TTL_SECONDS: i64 = 300;
 const PAIR_CODE_MAX_FAILURES: u8 = 5;
 const LAST_SEEN_WRITE_INTERVAL_SECONDS: i64 = 60;
@@ -457,9 +454,7 @@ fn random_alphabet_string_with(
 }
 
 pub fn generate_device_token() -> Result<String, String> {
-    let mut bytes = [0_u8; TOKEN_BYTES];
-    getrandom::fill(&mut bytes).map_err(|_| "device token could not be generated".to_owned())?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    ullage_auth::random_url_token().map_err(|_| "device token could not be generated".to_owned())
 }
 
 fn token_hash(token: &str) -> String {

@@ -3,6 +3,7 @@
 mod credential;
 mod file_store;
 mod native_store;
+mod pkce;
 mod redirect;
 mod store;
 #[cfg(any(windows, test))]
@@ -13,6 +14,7 @@ mod windows_security;
 pub use credential::{Credential, CredentialKey, CredentialVersion, SecretValue, StoredCredential};
 pub use file_store::{FileFallbackOptions, FileStore};
 pub use native_store::NativeStore;
+pub use pkce::{pkce_s256_challenge, random_url_safe, random_url_token};
 pub use redirect::validate_loopback_http_redirect_uri;
 #[cfg(windows)]
 pub use windows_security::{
