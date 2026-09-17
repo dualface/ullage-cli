@@ -49,6 +49,27 @@ struct ProviderState {
     /// Store version `auth` was observed at; required for CAS updates.
     stored_version: Option<CredentialVersion>,
     credentials_loaded: bool,
+    /// Bumped each time a provider exchange starts under `exchange_gate`;
+    /// lets a caller tell "queued while that exchange ran" from "arrived
+    /// after it completed".
+    exchange_epoch: u64,
+    /// The most recent failed exchange, shared with callers whose snapshot
+    /// predates it so a failed refresh stays a single provider call.
+    exchange_verdict: Option<ExchangeVerdict>,
+}
+
+/// The outcome of a provider exchange attempted on a state snapshot. Only
+/// failures are stored: success is observable through `generation`
+/// advancing, a failure leaves the snapshot current and would otherwise be
+/// retried by every queued caller.
+struct ExchangeVerdict {
+    /// (generation, session_id) the failed exchange was attempted on.
+    observed_generation: u64,
+    observed_session_id: u64,
+    /// `exchange_epoch` value after the attempt completed; a caller whose
+    /// snapshot predates it was already queued while the exchange ran.
+    epoch: u64,
+    failure: ProviderError,
 }
 
 /// An authentication in progress. The API key variant waits for the user to
@@ -86,6 +107,15 @@ struct AuthMaterial {
     /// browser sign-in can produce: its tokens carry no email.
     account_key: Option<String>,
     expires_at: Option<DateTime<Utc>>,
+}
+
+/// A consistent snapshot of the live session's exchange inputs, taken
+/// before waiting on `exchange_gate`.
+struct AuthSnapshot {
+    api_key: Option<Zeroizing<String>>,
+    access_token: Zeroizing<String>,
+    generation: u64,
+    epoch: u64,
 }
 
 enum ExchangeFailureResolution {
@@ -239,7 +269,7 @@ impl CursorProvider {
 
     pub async fn refresh_auth(&self) -> ProviderResult<AuthState> {
         self.ensure_credentials_loaded().await?;
-        let (api_key, generation, session_id) = {
+        let (api_key, generation, session_id, epoch) = {
             let state = self.lock_state()?;
             if state.pending_flow.is_some() {
                 return Err(ProviderError::ProtocolIncompatible {
@@ -258,20 +288,29 @@ impl CursorProvider {
             let Some(api_key) = auth.api_key.clone() else {
                 return Ok(session_auth_state(auth));
             };
-            (api_key, state.generation, state.session_id)
+            (
+                api_key,
+                state.generation,
+                state.session_id,
+                state.exchange_epoch,
+            )
         };
         // The gate makes the provider exchange single-flight per account: a
-        // refresh that landed while this call waited is shared instead of
+        // refresh that completed while this call waited is shared instead of
         // repeated, so concurrent callers never trigger two exchanges.
         let _gate = self.exchange_gate.lock().await;
         if let Some((_, status, _)) = self.refreshed_auth_since(generation, session_id)? {
             return Ok(status);
+        }
+        if let Some(failure) = self.failed_exchange_since(generation, session_id, epoch)? {
+            return Err(failure);
         }
         if !self.operation_is_current(generation, session_id)? {
             return Err(ProviderError::ProtocolIncompatible {
                 message: "Cursor authentication operation was superseded".into(),
             });
         }
+        self.begin_exchange()?;
         let exchange = match self.api.exchange_user_api_key(&api_key).await {
             Ok(exchange) => exchange,
             Err(error) => match self.resolve_exchange_failure(
@@ -282,7 +321,10 @@ impl CursorProvider {
                 true,
             )? {
                 ExchangeFailureResolution::Shared { status, .. } => return Ok(status),
-                ExchangeFailureResolution::Failed(error) => return Err(error),
+                ExchangeFailureResolution::Failed(error) => {
+                    self.record_exchange_failure(generation, session_id, &error)?;
+                    return Err(error);
+                }
             },
         };
         match self.install_exchange(Some(api_key), exchange, generation, None) {
@@ -299,10 +341,11 @@ impl CursorProvider {
         endpoint: Endpoint,
         expected_session_id: u64,
     ) -> Result<EndpointData, ApiFailure> {
-        let (api_key, access_token, generation) = self
+        let snapshot = self
             .auth_tokens(expected_session_id)
             .map_err(provider_as_api_failure)?;
-        let first = self.call_endpoint(endpoint, &access_token).await;
+        let generation = snapshot.generation;
+        let first = self.call_endpoint(endpoint, &snapshot.access_token).await;
         self.ensure_session_current(expected_session_id)
             .map_err(provider_as_api_failure)?;
         if !matches!(
@@ -317,7 +360,7 @@ impl CursorProvider {
 
         // Without an API key there is no second attempt to make, so record the
         // rejection as an invalid credential and let the user sign in again.
-        let Some(api_key) = api_key else {
+        let Some(api_key) = snapshot.api_key.clone() else {
             let error = match first {
                 Err(error) => error,
                 Ok(_) => unreachable!("authentication failure was matched above"),
@@ -349,6 +392,13 @@ impl CursorProvider {
                 retried,
             );
         }
+        if let Some(failure) = self
+            .failed_exchange_since(generation, expected_session_id, snapshot.epoch)
+            .map_err(provider_as_api_failure)?
+        {
+            drop(gate);
+            return Err(provider_as_api_failure(failure));
+        }
         if !self
             .operation_is_current(generation, expected_session_id)
             .map_err(provider_as_api_failure)?
@@ -358,6 +408,7 @@ impl CursorProvider {
                 "Cursor authentication retry was superseded",
             ));
         }
+        self.begin_exchange().map_err(provider_as_api_failure)?;
         let exchange = match self.api.exchange_user_api_key(&api_key).await {
             Ok(exchange) => exchange,
             Err(error) => match self
@@ -374,6 +425,8 @@ impl CursorProvider {
                     return self.coordinate_retry_result(expected_session_id, generation, retried);
                 }
                 ExchangeFailureResolution::Failed(error) => {
+                    self.record_exchange_failure(generation, expected_session_id, &error)
+                        .map_err(provider_as_api_failure)?;
                     return Err(provider_as_api_failure(error));
                 }
             },
@@ -602,10 +655,7 @@ impl CursorProvider {
         ))
     }
 
-    fn auth_tokens(
-        &self,
-        expected_session_id: u64,
-    ) -> ProviderResult<(Option<Zeroizing<String>>, Zeroizing<String>, u64)> {
+    fn auth_tokens(&self, expected_session_id: u64) -> ProviderResult<AuthSnapshot> {
         let state = self.lock_state()?;
         if state.session_id != expected_session_id {
             return Err(ProviderError::ProtocolIncompatible {
@@ -618,11 +668,12 @@ impl CursorProvider {
             .ok_or_else(|| ProviderError::AuthenticationInvalid {
                 message: "Cursor is not authenticated".into(),
             })?;
-        Ok((
-            auth.api_key.clone(),
-            auth.access_token.clone(),
-            state.generation,
-        ))
+        Ok(AuthSnapshot {
+            api_key: auth.api_key.clone(),
+            access_token: auth.access_token.clone(),
+            generation: state.generation,
+            epoch: state.exchange_epoch,
+        })
     }
 
     fn refreshed_auth_since(
@@ -739,7 +790,60 @@ impl CursorProvider {
         Err(error)
     }
 
-    /// True while the snapshot taken before waiting on `credential_gate`
+    /// Marks the start of a provider exchange attempt under `exchange_gate`.
+    fn begin_exchange(&self) -> ProviderResult<u64> {
+        let mut state = self.lock_state()?;
+        state.exchange_epoch = state.exchange_epoch.wrapping_add(1);
+        Ok(state.exchange_epoch)
+    }
+
+    /// Shares the failed exchange a concurrent caller completed for the same
+    /// observed state. `observed_epoch` bounds sharing to callers that were
+    /// already queued while that attempt ran; a caller arriving later sees
+    /// the same epoch and becomes the next leader instead of inheriting a
+    /// stale failure forever.
+    fn failed_exchange_since(
+        &self,
+        expected_generation: u64,
+        expected_session_id: u64,
+        observed_epoch: u64,
+    ) -> ProviderResult<Option<ProviderError>> {
+        let state = self.lock_state()?;
+        Ok(match &state.exchange_verdict {
+            Some(verdict)
+                if verdict.observed_generation == expected_generation
+                    && verdict.observed_session_id == expected_session_id
+                    && verdict.epoch > observed_epoch =>
+            {
+                Some(verdict.failure.clone())
+            }
+            _ => None,
+        })
+    }
+
+    /// Publishes the failure an exchange attempt produced so queued callers
+    /// on the same snapshot receive it instead of calling the provider. The
+    /// epoch is bumped again on completion: a snapshot taken while the
+    /// attempt was in flight then compares older than the verdict, while a
+    /// snapshot taken after it compares equal and leads a new attempt.
+    fn record_exchange_failure(
+        &self,
+        expected_generation: u64,
+        expected_session_id: u64,
+        failure: &ProviderError,
+    ) -> ProviderResult<()> {
+        let mut state = self.lock_state()?;
+        state.exchange_epoch = state.exchange_epoch.wrapping_add(1);
+        state.exchange_verdict = Some(ExchangeVerdict {
+            observed_generation: expected_generation,
+            observed_session_id: expected_session_id,
+            epoch: state.exchange_epoch,
+            failure: failure.clone(),
+        });
+        Ok(())
+    }
+
+    /// True while the snapshot taken before waiting on `exchange_gate`
     /// still names the live session; anything else means the operation was
     /// superseded by a refresh, sign-in, or invalidation.
     fn operation_is_current(

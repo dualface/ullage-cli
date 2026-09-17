@@ -80,6 +80,11 @@ struct DelayedRefreshFailureApi {
     release_failure: Arc<AtomicBool>,
 }
 
+struct ConcurrentRefreshFailureApi {
+    exchange_calls: AtomicUsize,
+    release_refresh: Arc<AtomicBool>,
+}
+
 struct DelayedReexchangeFailureApi {
     exchange_calls: AtomicUsize,
     release_failure: Arc<AtomicBool>,
@@ -233,6 +238,45 @@ impl CursorApi for DelayedRefreshFailureApi {
 
     async fn hard_limit(&self, _: &str) -> Result<HardLimit, ApiFailure> {
         unreachable!("the refresh concurrency test does not query usage")
+    }
+}
+
+#[async_trait]
+impl CursorApi for ConcurrentRefreshFailureApi {
+    async fn exchange_user_api_key(&self, _: &str) -> Result<ExchangeTokens, ApiFailure> {
+        let call = self.exchange_calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            return Ok(exchange("initial-access"));
+        }
+        std::future::poll_fn(|_| {
+            if self.release_refresh.load(Ordering::SeqCst) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        Err(ApiFailure {
+            kind: ullage_provider_cursor::ApiFailureKind::Network,
+            message: "refresh exchange failed".into(),
+            retry_after_seconds: None,
+        })
+    }
+
+    async fn current_period(&self, _: &str) -> Result<CurrentPeriodUsage, ApiFailure> {
+        unreachable!("the refresh failure sharing test does not query usage")
+    }
+
+    async fn plan_info(&self, _: &str) -> Result<PlanInfoResponse, ApiFailure> {
+        unreachable!("the refresh failure sharing test does not query usage")
+    }
+
+    async fn credit_grants(&self, _: &str) -> Result<CreditGrantsBalance, ApiFailure> {
+        unreachable!("the refresh failure sharing test does not query usage")
+    }
+
+    async fn hard_limit(&self, _: &str) -> Result<HardLimit, ApiFailure> {
+        unreachable!("the refresh failure sharing test does not query usage")
     }
 }
 
@@ -997,6 +1041,36 @@ fn concurrent_refreshes_share_the_first_installed_session() {
         run_ready(provider.auth_status()).unwrap(),
         AuthState::Authenticated { .. }
     ));
+}
+
+#[test]
+fn concurrent_refreshes_share_the_first_exchange_failure() {
+    let release_refresh = Arc::new(AtomicBool::new(false));
+    let api = Arc::new(ConcurrentRefreshFailureApi {
+        exchange_calls: AtomicUsize::new(0),
+        release_refresh: release_refresh.clone(),
+    });
+    let provider = CursorProvider::with_api(api.clone());
+    authenticate(&provider);
+
+    let mut first = Box::pin(provider.refresh_auth());
+    let mut second = Box::pin(provider.refresh_auth());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(matches!(first.as_mut().poll(&mut context), Poll::Pending));
+    assert!(matches!(second.as_mut().poll(&mut context), Poll::Pending));
+
+    release_refresh.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        first.as_mut().poll(&mut context),
+        Poll::Ready(Err(ProviderError::Network { .. }))
+    ));
+    assert!(matches!(
+        second.as_mut().poll(&mut context),
+        Poll::Ready(Err(ProviderError::Network { .. }))
+    ));
+    // One exchange signed in, one refresh failed; the second caller shared
+    // that failure instead of calling the provider again.
+    assert_eq!(api.exchange_calls.load(Ordering::SeqCst), 2);
 }
 
 #[test]
