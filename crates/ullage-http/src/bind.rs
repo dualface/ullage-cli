@@ -31,9 +31,10 @@ impl fmt::Display for BindAddressClass {
 
 pub fn parse_http_bind(value: &str) -> Result<HttpBindTarget, String> {
     if let Some(port) = value.strip_prefix("auto:") {
-        let port = port
-            .parse::<u16>()
-            .ok()
+        // `u16::parse` accepts a leading `+`; only plain digits are a port.
+        let port = (port.bytes().all(|byte| byte.is_ascii_digit()) && !port.is_empty())
+            .then(|| port.parse::<u16>().ok())
+            .flatten()
             .filter(|port| *port != 0)
             .ok_or_else(|| INVALID_BIND_MESSAGE.to_owned())?;
         return Ok(HttpBindTarget::Auto(port));
@@ -41,7 +42,10 @@ pub fn parse_http_bind(value: &str) -> Result<HttpBindTarget, String> {
     let address = value
         .parse::<SocketAddr>()
         .map_err(|_| INVALID_BIND_MESSAGE.to_owned())?;
-    if classify_bind_address(address.ip()).is_none() {
+    // An ephemeral port is meaningless in a stored configuration: nothing
+    // could learn which port the daemon picked. Internal callers can still
+    // pass port 0 to `HttpServer::bind` directly for tests.
+    if address.port() == 0 || classify_bind_address(address.ip()).is_none() {
         return Err(INVALID_BIND_MESSAGE.to_owned());
     }
     Ok(HttpBindTarget::Explicit(address))
@@ -78,10 +82,6 @@ pub fn classify_bind_address(address: IpAddr) -> Option<BindAddressClass> {
     }
 }
 
-pub fn bind_address_is_allowed(address: IpAddr) -> bool {
-    classify_bind_address(address).is_some()
-}
-
 pub fn select_bind_addresses(
     addresses: impl IntoIterator<Item = IpAddr>,
     port: u16,
@@ -114,7 +114,10 @@ fn enumerate_local_addresses() -> io::Result<Vec<IpAddr>> {
     unsafe {
         while let Some(interface) = current.as_ref() {
             let address = interface.ifa_addr;
-            if !address.is_null() {
+            // An interface that is down keeps reporting its addresses, but
+            // binding them fails with EADDRNOTAVAIL; skip them up front.
+            let interface_up = u64::from(interface.ifa_flags) & libc::IFF_UP as u64 != 0;
+            if !address.is_null() && interface_up {
                 match i32::from((*address).sa_family) {
                     libc::AF_INET => {
                         let address = &*(address.cast::<libc::sockaddr_in>());
@@ -177,6 +180,14 @@ fn enumerate_local_addresses() -> io::Result<Vec<IpAddr>> {
         // `buffer`, which remains alive for the duration of this traversal.
         unsafe {
             while let Some(current_adapter) = adapter.as_ref() {
+                // An adapter whose OperStatus is not Up reports addresses that
+                // cannot be bound; skip the whole adapter.
+                if current_adapter.OperStatus
+                    != windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp
+                {
+                    adapter = current_adapter.Next;
+                    continue;
+                }
                 let mut unicast = current_adapter.FirstUnicastAddress;
                 while let Some(current_unicast) = unicast.as_ref() {
                     let socket = current_unicast.Address;
