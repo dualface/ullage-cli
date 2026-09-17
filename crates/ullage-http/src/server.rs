@@ -330,9 +330,11 @@ enum AcceptFailure {
 }
 
 /// Errors a peer can trigger are `Peer`: `ECONNABORTED`, the pending-network
-/// errno accept(2) tells Linux callers to retry like `EAGAIN`, and Winsock
-/// network errors. `Resource` is limited to process-level exhaustion.
-/// Everything else (a closed or invalid socket) is `Fatal`.
+/// errno accept(2) tells Linux callers to retry like `EAGAIN`, and
+/// `WSAECONNRESET`. `Resource` covers process-level exhaustion plus local
+/// network-subsystem failure (`WSAENETDOWN`), which needs the bounded
+/// backoff and failure threshold rather than a spin. Everything else (a
+/// closed or invalid socket) is `Fatal`.
 fn classify_accept_error(error: &std::io::Error) -> AcceptFailure {
     if error.kind() == std::io::ErrorKind::ConnectionAborted {
         return AcceptFailure::Peer;
@@ -372,8 +374,10 @@ fn classify_accept_error(error: &std::io::Error) -> AcceptFailure {
     {
         use windows_sys::Win32::Networking::WinSock;
         match error.raw_os_error() {
-            Some(WinSock::WSAEMFILE | WinSock::WSAENOBUFS) => AcceptFailure::Resource,
-            Some(WinSock::WSAENETDOWN | WinSock::WSAECONNRESET) => AcceptFailure::Peer,
+            Some(WinSock::WSAEMFILE | WinSock::WSAENOBUFS | WinSock::WSAENETDOWN) => {
+                AcceptFailure::Resource
+            }
+            Some(WinSock::WSAECONNRESET) => AcceptFailure::Peer,
             _ => AcceptFailure::Fatal,
         }
     }
@@ -1269,6 +1273,33 @@ mod tests {
             }
             assert_eq!(
                 classify_accept_error(&std::io::Error::from_raw_os_error(libc::EINVAL)),
+                AcceptFailure::Fatal
+            );
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Networking::WinSock;
+            for code in [
+                WinSock::WSAEMFILE,
+                WinSock::WSAENOBUFS,
+                WinSock::WSAENETDOWN,
+            ] {
+                assert_eq!(
+                    classify_accept_error(&std::io::Error::from_raw_os_error(code)),
+                    AcceptFailure::Resource,
+                    "errno {code}"
+                );
+            }
+            assert_eq!(
+                classify_accept_error(&std::io::Error::from_raw_os_error(
+                    WinSock::WSAECONNRESET
+                )),
+                AcceptFailure::Peer
+            );
+            assert_eq!(
+                classify_accept_error(&std::io::Error::from_raw_os_error(
+                    WinSock::WSAEINVAL
+                )),
                 AcceptFailure::Fatal
             );
         }
