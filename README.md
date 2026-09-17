@@ -199,8 +199,11 @@ Wildcard, link-local, multicast, and public addresses refuse to start and name
 
 In `auto` mode, startup logs one `http.bind listening <addr> (<class>)` line
 per listener. If no Tailscale or LAN address is initially available, discovery
-retries for up to 60 seconds and then starts with loopback. A failed loopback
-bind stops startup; a failed non-loopback bind emits a warning and is skipped.
+retries for up to 60 seconds and then starts with loopback. A failed
+non-loopback bind emits a warning and is skipped. If HTTP setup fails
+outright — including a failed loopback bind — the daemon keeps running and
+serves the control socket only; the error is reported on the daemon's stderr,
+which a CLI-launched daemon captures in its per-user `daemon-error-*.log`.
 
 ## HTTP API
 

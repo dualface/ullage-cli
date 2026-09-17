@@ -161,7 +161,7 @@ Balance        credits 0
 
 通配、链路本地、组播和公网地址会拒绝启动，并指出 `http.bind`。
 
-在 `auto` 模式下，启动时每个监听地址打一行 `http.bind listening <addr> (<class>)`。若一开始没有 Tailscale 或局域网地址，发现会重试最多 60 秒，然后以回环启动。回环绑定失败会停止启动；非回环绑定失败会打警告并跳过。
+在 `auto` 模式下，启动时每个监听地址打一行 `http.bind listening <addr> (<class>)`。若一开始没有 Tailscale 或局域网地址，发现会重试最多 60 秒，然后以回环启动。非回环绑定失败会打警告并跳过。若 HTTP 初始化整体失败（包括回环绑定失败），daemon 仍会继续运行，只提供控制套接字；错误会写入 daemon 的 stderr（由 CLI 启动的 daemon 会将其捕获到每用户的 `daemon-error-*.log`）。
 
 ## HTTP API
 

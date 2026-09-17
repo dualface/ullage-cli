@@ -930,11 +930,45 @@ const DAEMON_STDERR_TAIL_BYTES: usize = 8192;
 /// file — concurrent launchers must never truncate or interleave each
 /// other's diagnostics.
 fn daemon_error_log_name() -> String {
+    // PIDs are recycled and the sequence restarts per process, so a
+    // nanosecond stamp keeps names unique across process lifetimes.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
     format!(
-        "daemon-error-{}-{}.log",
+        "daemon-error-{}-{}-{}.log",
         std::process::id(),
+        nanos,
         REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+/// A fresh log can still collide when an OS recycles a PID inside the
+/// retention window and the timestamp lands identically; retrying with a new
+/// name is cheap compared to failing the launch with an opaque error.
+const DAEMON_ERROR_LOG_ATTEMPTS: u32 = 8;
+
+fn create_daemon_error_log(
+    directory: &Path,
+    mut name: impl FnMut() -> String,
+) -> Result<(PathBuf, std::fs::File), ClientError> {
+    for _ in 0..DAEMON_ERROR_LOG_ATTEMPTS {
+        let path = directory.join(name());
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(ClientError::DaemonProcess),
+        }
+    }
+    Err(ClientError::DaemonProcess)
 }
 
 /// A launcher's log file is seconds old when it sweeps, so an age cutoff can
@@ -971,7 +1005,7 @@ fn sweep_daemon_error_logs_before(directory: &Path, cutoff: std::time::SystemTim
 
 #[cfg(unix)]
 fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    use std::os::unix::fs::DirBuilderExt;
 
     // SAFETY: `geteuid` has no arguments and no memory-safety preconditions.
     let user_id = unsafe { libc::geteuid() };
@@ -982,14 +1016,7 @@ fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
         .create(&directory)
         .map_err(|_| ClientError::DaemonProcess)?;
     sweep_daemon_error_logs(&directory);
-    let path = directory.join(daemon_error_log_name());
-    let file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|_| ClientError::DaemonProcess)?;
-    Ok((path, file))
+    create_daemon_error_log(&directory, daemon_error_log_name)
 }
 
 #[cfg(windows)]
@@ -1000,13 +1027,7 @@ fn daemon_error_log() -> Result<(PathBuf, std::fs::File), ClientError> {
     let directory = std::env::temp_dir().join(scope);
     std::fs::create_dir_all(&directory).map_err(|_| ClientError::DaemonProcess)?;
     sweep_daemon_error_logs(&directory);
-    let path = directory.join(daemon_error_log_name());
-    let file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&path)
-        .map_err(|_| ClientError::DaemonProcess)?;
-    Ok((path, file))
+    create_daemon_error_log(&directory, daemon_error_log_name)
 }
 
 fn run_daemon_process(
@@ -3774,6 +3795,35 @@ mod tests {
         assert!(!active.exists());
         assert!(!also_active.exists());
         assert!(unrelated.exists());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn daemon_error_log_retries_a_fresh_name_on_collision() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-log-collision-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        // A recycled PID inside the retention window can collide with a
+        // fresh log left by an earlier process; the create must retry with
+        // the next name instead of failing the launch.
+        let taken = directory.join("daemon-error-taken.log");
+        std::fs::File::create(&taken).unwrap();
+
+        let mut names = ["daemon-error-taken.log", "daemon-error-free.log"]
+            .into_iter()
+            .map(str::to_owned);
+        let (path, _file) = create_daemon_error_log(&directory, || names.next().unwrap()).unwrap();
+        assert_eq!(path, directory.join("daemon-error-free.log"));
+
+        // Exhausting every generated name surfaces DaemonProcess rather than
+        // truncating or blocking on someone else's file.
+        let mut stuck = || "daemon-error-taken.log".to_owned();
+        let result = create_daemon_error_log(&directory, &mut stuck);
+        assert!(matches!(result, Err(ClientError::DaemonProcess)));
 
         std::fs::remove_dir_all(directory).unwrap();
     }

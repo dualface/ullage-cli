@@ -228,8 +228,10 @@ Security model:
   setting. `auto` enumerates local interfaces and listens on every eligible unique address, always
   including `127.0.0.1`. It retries discovery for up to 60 seconds when only loopback exists, then
   starts with the available set. Explicit non-loopback `EADDRNOTAVAIL` retries keep the same budget.
-  A loopback bind failure stops startup; other bind failures are logged and skipped. Startup logs
-  each listener as `http.bind listening <addr> (<class>)`.
+  Non-loopback bind failures are logged and skipped; if HTTP setup fails outright — including the
+  loopback bind — the daemon stays up and serves the control socket only, reporting the error on
+  the daemon's stderr (captured in the per-user `daemon-error-*.log` for CLI-launched daemons).
+  Startup logs each listener as `http.bind listening <addr> (<class>)`.
 - Tailscale traffic is encrypted by WireGuard. Private LAN traffic has no transport encryption, so
   its device token is sent in plaintext; Ullage does not add TLS.
 - Pairing: the local control channel creates one in-memory code at a time. The code uses
