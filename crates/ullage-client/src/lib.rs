@@ -904,10 +904,10 @@ const _: () =
     assert!(PROBE_WAIT_TIMEOUT.as_secs() > ullage_protocol::MAX_ACCOUNT_TIMEOUT.as_secs());
 
 /// Longest a spawned or service-started daemon may take to answer Ready. The
-/// daemon reports not-ready while fatal startup steps — notably an HTTP bind
-/// that retries for about a minute — can still terminate it, so this budget
-/// must outlast that window plus process startup slack.
-const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
+/// daemon reports ready once its control plane is up — HTTP setup is
+/// non-fatal background work — so this only has to cover process spawn plus
+/// control-endpoint binding.
+const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn send_timeout(request: &ControlRequest) -> Duration {
     if request_completes_a_sign_in(request) {
@@ -928,8 +928,7 @@ const DAEMON_STDERR_TAIL_BYTES: usize = 8192;
 /// The private daemon stderr sink: a per-user log under the same runtime
 /// directory scheme as the default control socket. Each launch gets its own
 /// file — concurrent launchers must never truncate or interleave each
-/// other's diagnostics — and stale logs from earlier launches are swept
-/// best-effort.
+/// other's diagnostics.
 fn daemon_error_log_name() -> String {
     format!(
         "daemon-error-{}-{}.log",
@@ -938,12 +937,32 @@ fn daemon_error_log_name() -> String {
     )
 }
 
+/// A launcher's log file is seconds old when it sweeps, so an age cutoff can
+/// never delete a concurrent launcher's active diagnostics the way a full
+/// directory sweep could.
+const DAEMON_ERROR_LOG_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
 fn sweep_daemon_error_logs(directory: &Path) {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(DAEMON_ERROR_LOG_MAX_AGE)
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    sweep_daemon_error_logs_before(directory, cutoff);
+}
+
+fn sweep_daemon_error_logs_before(directory: &Path, cutoff: std::time::SystemTime) {
     if let Ok(entries) = std::fs::read_dir(directory) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("daemon-error-") && name.ends_with(".log") {
+            if !(name.starts_with("daemon-error-") && name.ends_with(".log")) {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .map(|modified| modified < cutoff)
+                .unwrap_or(false);
+            if stale {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -3722,5 +3741,40 @@ mod tests {
         if let Err(payload) = result {
             std::panic::resume_unwind(payload);
         }
+    }
+
+    #[test]
+    fn daemon_error_log_sweep_removes_only_stale_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-log-sweep-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let active = directory.join("daemon-error-1-0.log");
+        let also_active = directory.join("daemon-error-2-0.log");
+        let unrelated = directory.join("control.sock");
+        for path in [&active, &also_active, &unrelated] {
+            std::fs::File::create(path).unwrap();
+        }
+
+        // A sweep at launch time must leave fresh logs alone: they may belong
+        // to another launcher still starting its daemon.
+        sweep_daemon_error_logs(&directory);
+        assert!(active.exists());
+        assert!(also_active.exists());
+        assert!(unrelated.exists());
+
+        // Everything older than the cutoff is stale and removed; unrelated
+        // files are never touched.
+        sweep_daemon_error_logs_before(
+            &directory,
+            std::time::SystemTime::now() + Duration::from_secs(60),
+        );
+        assert!(!active.exists());
+        assert!(!also_active.exists());
+        assert!(unrelated.exists());
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

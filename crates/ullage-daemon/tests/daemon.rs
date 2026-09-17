@@ -20,7 +20,7 @@ use ullage_daemon::UnixControlServer;
 use ullage_daemon::{
     AccountId, Clock, ControlService, ControlTransport, DaemonConfig, DaemonEngine, DaemonError,
     JsonSnapshotStore, MemorySnapshotStore, PersistedState, ProbeError, ProbeTrigger,
-    ProviderLimit, SanitizedError, SnapshotRecord,
+    ProviderLimit, SanitizedError, SnapshotRecord, SnapshotStore,
 };
 use ullage_protocol::{
     AccountError, CONTROL_PROTOCOL_VERSION, ControlCommand, ControlError, ControlRequest,
@@ -1129,6 +1129,54 @@ async fn account_timeouts_above_the_shared_maximum_are_rejected() {
     let mut at_limit = account("at-limit", "provider", Duration::from_secs(60));
     at_limit.timeout = ullage_protocol::MAX_ACCOUNT_TIMEOUT;
     engine.add_account(at_limit).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn persisted_account_timeouts_are_migrated_into_the_shared_maximum() {
+    let store = Arc::new(MemorySnapshotStore::default());
+    let mut legacy = account("legacy", "provider", Duration::from_secs(60));
+    legacy.timeout = ullage_protocol::MAX_ACCOUNT_TIMEOUT + Duration::from_secs(300);
+    let mut zeroed = account("zeroed", "provider", Duration::from_secs(60));
+    zeroed.timeout = Duration::ZERO;
+    let mut valid = account("valid", "provider", Duration::from_secs(60));
+    valid.timeout = Duration::from_secs(30);
+    let mut accounts = std::collections::BTreeMap::new();
+    for config in [legacy, zeroed, valid] {
+        accounts.insert(config.id.clone(), config);
+    }
+    let state = PersistedState {
+        accounts,
+        ..PersistedState::default()
+    };
+    store.stage(&state).await.unwrap().commit().await.unwrap();
+
+    let engine = engine_with(
+        Arc::new(ProviderRegistry::default()),
+        Arc::new(ManualClock::new()),
+        store,
+        DaemonConfig::default(),
+    )
+    .await;
+    for id in ["legacy", "zeroed"] {
+        assert_eq!(
+            engine
+                .account_config(&AccountId::new(id))
+                .await
+                .unwrap()
+                .timeout,
+            ullage_protocol::MAX_ACCOUNT_TIMEOUT,
+            "persisted timeout for {id} must be migrated"
+        );
+    }
+    assert_eq!(
+        engine
+            .account_config(&AccountId::new("valid"))
+            .await
+            .unwrap()
+            .timeout,
+        Duration::from_secs(30),
+        "in-contract persisted timeout must be preserved"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

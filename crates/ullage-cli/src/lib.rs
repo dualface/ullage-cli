@@ -183,21 +183,31 @@ pub async fn run_daemon_with(
     registry: ProviderRegistry,
     credential_backend: CredentialBackendId,
 ) -> Result<(), String> {
-    run_daemon_with_discovery(config, registry, credential_backend, |port| {
-        discover_bind_addresses(port)
-            .map_err(|error| format!("http.bind could not enumerate local addresses: {error}"))
-    })
+    run_daemon_with_discovery(
+        config,
+        registry,
+        credential_backend,
+        |port| {
+            discover_bind_addresses(port)
+                .map_err(|error| format!("http.bind could not enumerate local addresses: {error}"))
+        },
+        async {
+            let _ = tokio::signal::ctrl_c().await;
+        },
+    )
     .await
 }
 
-async fn run_daemon_with_discovery<F>(
+async fn run_daemon_with_discovery<F, S>(
     config: AppConfig,
     registry: ProviderRegistry,
     credential_backend: CredentialBackendId,
     discover: F,
+    shutdown: S,
 ) -> Result<(), String>
 where
-    F: FnMut(u16) -> Result<Vec<SocketAddr>, String>,
+    F: FnMut(u16) -> Result<Vec<SocketAddr>, String> + Send + 'static,
+    S: Future<Output = ()> + Send + 'static,
 {
     let engine = DaemonEngine::new(
         config.daemon.build(),
@@ -210,9 +220,9 @@ where
     merge_configured_accounts(&engine, &config.accounts).await?;
     let service = ControlService::new(engine.clone()).with_credential_backend(credential_backend);
     service.configure_device_store(devices_path()?)?;
-    // Status answers stay not-ready until HTTP setup — a step that can still
-    // terminate the process — completes, so launchers cannot see Ready and
-    // return success for a daemon that then exits.
+    // Status answers stay not-ready until the control plane is up: every step
+    // before it can still terminate the process. HTTP setup runs afterwards
+    // as non-fatal background work, so it is not part of the gate.
     service.defer_readiness();
 
     #[cfg(unix)]
@@ -221,36 +231,47 @@ where
     #[cfg(windows)]
     let server = ullage_daemon::WindowsControlServer::bind(control_endpoint()?, service.clone())?;
 
-    // The engine and the control accept loop start before HTTP setup:
-    // `http.bind = auto` may spend up to a minute waiting for a non-loopback
-    // address, and control clients must reach the daemon during that window.
     let running_engine = engine.clone();
     let engine_task = tokio::spawn(async move { running_engine.run().await });
     let signal_engine = engine.clone();
     let signal_task = tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            signal_engine.shutdown();
-        }
+        shutdown.await;
+        signal_engine.shutdown();
     });
-    let control_task = tokio::spawn(server.run());
-
-    let http = match http_server(&config, service.clone(), discover).await {
-        Ok(http) => http,
-        Err(error) => {
-            engine.shutdown();
-            let _ = control_task.await;
-            let _ = engine_task.await;
-            signal_task.abort();
-            return Err(error);
-        }
-    };
+    let mut control_task = tokio::spawn(server.run());
     service.mark_initialized();
 
-    let result = match http {
-        Some(http) => run_control_and_http(control_task, http, engine.clone()).await,
-        None => control_task
-            .await
-            .map_err(|_| "control server task failed".to_owned())?,
+    // HTTP setup can wait up to a minute for a non-loopback address under
+    // `http.bind = auto`. It must neither delay readiness nor hold shutdown
+    // hostage, and once the control plane answers it can no longer be fatal:
+    // a launcher may already have reported success. A failed bind therefore
+    // leaves the daemon running control-only with the error on stderr.
+    let mut http_setup = tokio::spawn(http_server(config.http.clone(), service.clone(), discover));
+    let result = tokio::select! {
+        control_result = &mut control_task => {
+            http_setup.abort();
+            control_result.map_err(|_| "control server task failed".to_owned())?
+        }
+        setup_result = &mut http_setup => match setup_result {
+            Ok(Ok(Some(http))) => {
+                run_control_and_http(control_task, http, engine.clone()).await
+            }
+            Ok(Ok(None)) => control_task
+                .await
+                .map_err(|_| "control server task failed".to_owned())?,
+            Ok(Err(error)) => {
+                eprintln!("http setup failed; daemon continues without http: {error}");
+                control_task
+                    .await
+                    .map_err(|_| "control server task failed".to_owned())?
+            }
+            Err(_) => {
+                eprintln!("http setup task failed; daemon continues without http");
+                control_task
+                    .await
+                    .map_err(|_| "control server task failed".to_owned())?
+            }
+        }
     };
     engine.shutdown();
     let _ = engine_task.await;
@@ -259,20 +280,20 @@ where
 }
 
 async fn http_server<F>(
-    config: &AppConfig,
+    http: HttpSettings,
     service: ControlService,
     discover: F,
 ) -> Result<Option<HttpServer>, String>
 where
     F: FnMut(u16) -> Result<Vec<SocketAddr>, String>,
 {
-    if !config.http.enabled {
+    if !http.enabled {
         return Ok(None);
     }
-    let target = parse_http_bind(&config.http.bind)?;
+    let target = parse_http_bind(&http.bind)?;
     Ok(Some(match target {
         HttpBindTarget::Explicit(bind) => {
-            let bind_config = http_bind_config(config, vec![bind])?;
+            let bind_config = http_bind_config(&http, vec![bind])?;
             retry_http_bind(
                 bind,
                 HTTP_BIND_RETRY_INTERVAL,
@@ -291,7 +312,7 @@ where
                 discover,
             )
             .await?;
-            HttpServer::bind(http_bind_config(config, binds)?, service.clone())
+            HttpServer::bind(http_bind_config(&http, binds)?, service.clone())
                 .await
                 .map_err(String::from)?
         }
@@ -395,22 +416,17 @@ fn merge_server_results(
     }
 }
 
-fn http_bind_config(config: &AppConfig, binds: Vec<SocketAddr>) -> Result<HttpBindConfig, String> {
+fn http_bind_config(http: &HttpSettings, binds: Vec<SocketAddr>) -> Result<HttpBindConfig, String> {
     // `config::validate` enforces this for file-loaded configuration; the
     // check is repeated here because `run_daemon_with` also accepts
     // programmatically built `AppConfig` values.
-    if config
-        .http
-        .allowed_origins
-        .iter()
-        .any(|origin| origin == "*")
-    {
+    if http.allowed_origins.iter().any(|origin| origin == "*") {
         return Err("http.allowed_origins must not contain *".into());
     }
     Ok(HttpBindConfig {
         binds,
-        allowed_origins: config.http.allowed_origins.clone(),
-        probe_min_interval: Duration::from_secs(config.http.probe_min_interval_seconds),
+        allowed_origins: http.allowed_origins.clone(),
+        probe_min_interval: Duration::from_secs(http.probe_min_interval_seconds),
         device_store_path: devices_path()?,
     })
 }
@@ -756,6 +772,7 @@ mod tests {
             ProviderRegistry::default(),
             CredentialBackendId::native(),
             |_| Ok(vec!["127.0.0.1:7878".parse().unwrap()]),
+            std::future::pending(),
         ));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -786,8 +803,9 @@ mod tests {
         let ullage_protocol::ControlResult::DaemonStatus(status) = response.result else {
             panic!("expected DaemonStatus, got {:?}", response.result);
         };
-        // The daemon must not look Ready while HTTP setup can still kill it.
-        assert!(status.shutting_down, "endpoint reported ready during init");
+        // HTTP setup is non-fatal background work, so the control plane may
+        // report ready while auto discovery is still pending.
+        assert!(!status.shutting_down, "endpoint stayed not-ready");
 
         daemon.abort();
         // SAFETY: the daemon task is aborted and no other test reads these.
@@ -827,13 +845,15 @@ mod tests {
             std::env::set_var("ULLAGE_STATE_FILE", directory.join("state.json"));
         }
 
-        // HTTP disabled: setup completes immediately, then status must go
-        // ready — otherwise launchers could never declare success.
+        // HTTP disabled: control-plane setup completes immediately, then
+        // status must go ready — otherwise launchers could never declare
+        // success.
         let daemon = tokio::spawn(run_daemon_with_discovery(
             AppConfig::default(),
             ProviderRegistry::default(),
             CredentialBackendId::native(),
             |_| Ok(Vec::new()),
+            std::future::pending(),
         ));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -880,6 +900,74 @@ mod tests {
 
         daemon.abort();
         // SAFETY: the daemon task is aborted and no other test reads these.
+        unsafe {
+            std::env::remove_var("ULLAGE_CONTROL_SOCKET");
+            std::env::remove_var("ULLAGE_STATE_FILE");
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn shutdown_during_auto_bind_discovery_exits_promptly() {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let _guard = CONTROL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-shutdown-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let socket = directory.join("control.sock");
+        // SAFETY: no other test in this process reads these variables.
+        unsafe {
+            std::env::set_var("ULLAGE_CONTROL_SOCKET", &socket);
+            std::env::set_var("ULLAGE_STATE_FILE", directory.join("state.json"));
+        }
+
+        let mut config = AppConfig::default();
+        config.http.enabled = true;
+        config.http.bind = "auto:7878".into();
+        let (released, shutdown) = tokio::sync::oneshot::channel::<()>();
+        let daemon = tokio::spawn(run_daemon_with_discovery(
+            config,
+            ProviderRegistry::default(),
+            CredentialBackendId::native(),
+            // Discovery only ever sees loopback, so HTTP setup would wait the
+            // full retry window without the shutdown race.
+            |_| Ok(vec!["127.0.0.1:7878".parse().unwrap()]),
+            async move {
+                let _ = shutdown.await;
+            },
+        ));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !socket.exists() {
+            assert!(!daemon.is_finished(), "daemon task exited before binding");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "control socket was not bound"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let _ = released.send(());
+        tokio::time::timeout(Duration::from_secs(10), daemon)
+            .await
+            .expect("daemon ignored shutdown during http discovery")
+            .expect("daemon task panicked")
+            .unwrap();
+
+        // SAFETY: the daemon task has ended and no other test reads these.
         unsafe {
             std::env::remove_var("ULLAGE_CONTROL_SOCKET");
             std::env::remove_var("ULLAGE_STATE_FILE");

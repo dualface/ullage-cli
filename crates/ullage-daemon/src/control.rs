@@ -70,9 +70,9 @@ pub struct ControlService {
     /// One gate per provider, held across a duplicate cleanup. Scoped per
     /// provider so a slow cleanup only delays cleanups for that same provider.
     auth_gates: Arc<Mutex<HashMap<ullage_core::ProviderId, Arc<tokio::sync::Mutex<()>>>>>,
-    /// False while fatal startup steps (for example a still-retrying HTTP
-    /// bind) can still terminate the process. Until then `daemon_status`
-    /// reports not-ready so a launcher cannot declare success early.
+    /// False while fatal startup steps can still terminate the process.
+    /// Until then `daemon_status` reports not-ready so a launcher cannot
+    /// declare success early.
     initialized: Arc<AtomicBool>,
 }
 

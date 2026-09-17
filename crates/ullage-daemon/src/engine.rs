@@ -252,7 +252,15 @@ impl DaemonEngine {
         let accounts = persisted
             .accounts
             .into_iter()
-            .map(|(id, config)| {
+            .map(|(id, mut config)| {
+                // States saved before `MAX_ACCOUNT_TIMEOUT` existed — or
+                // edited by hand — may hold a timeout the client transport
+                // cannot wait out; migrate them into the contract instead of
+                // failing startup over legacy state.
+                if config.timeout.is_zero() || config.timeout > ullage_protocol::MAX_ACCOUNT_TIMEOUT
+                {
+                    config.timeout = ullage_protocol::MAX_ACCOUNT_TIMEOUT;
+                }
                 (
                     id,
                     Arc::new(AccountRuntime {
