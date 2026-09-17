@@ -61,11 +61,12 @@ pub struct OAuthTokenSet {
 }
 
 impl<'de> Deserialize<'de> for OAuthTokenSet {
-    /// Persisted tokens go back through the constructor's semantic validation
-    /// (non-empty tokens, header safety, expiry sanity): a stored record is
-    /// untrusted input once it leaves this process. Wire-only checks — size
-    /// caps, `token_type`, a required positive `expires_in` — apply to fresh
-    /// OAuth responses, so a legacy record keeps its optional expiry.
+    /// Persisted tokens go back through the constructors, which check
+    /// non-empty tokens and header safety only: a stored record is untrusted
+    /// input once it leaves this process, but the wire-only checks — size
+    /// caps, `token_type`, a required positive `expires_in`, a first
+    /// `refresh_token` — apply to fresh OAuth responses, so a legacy record
+    /// keeps its optional expiry.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,

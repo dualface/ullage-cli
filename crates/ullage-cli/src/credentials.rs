@@ -71,8 +71,10 @@ impl ChatGptVault {
 }
 
 // ChatGptSession itself is the persisted shape: its Deserialize runs every
-// token back through OAuthTokenSet validation, so a tampered store record is
-// rejected by the same rules as a fresh OAuth response.
+// token back through the OAuthTokenSet constructors, so a tampered store
+// record is rejected by the same semantic checks (non-empty tokens, header
+// safety). Wire-only checks — size caps, token_type, a required expires_in —
+// apply to fresh OAuth responses and not to these legacy records.
 impl ChatGptSessionStore for ChatGptVault {
     fn load(&self) -> Result<Option<(ChatGptSession, CredentialVersion)>, ChatGptApiError> {
         load_json(&self.store, &self.key).map_err(chatgpt_store_error)

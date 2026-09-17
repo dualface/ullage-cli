@@ -200,21 +200,21 @@ impl ClaudeProvider {
                 message: "stored Claude credential has no refresh token".into(),
             }
         })?;
-        let response = self
-            .api
-            .refresh_token(refresh_token)
-            .await
-            .inspect_err(|error| {
-                if let ProviderError::AuthenticationInvalid { message } = error {
-                    // The grant itself is dead: record the reason so auth_status
-                    // reports Invalid instead of a silent Authenticated. A
-                    // conflicting write means the record was replaced meanwhile,
-                    // so the marking is dropped and the error stands alone.
+        let response = match self.api.refresh_token(refresh_token).await {
+            Ok(response) => response,
+            Err(error) => {
+                // The grant itself is dead: record the reason so auth_status
+                // reports Invalid instead of a silent Authenticated. A store
+                // failure propagates; a version conflict drops the marking
+                // because the record no longer describes this session.
+                if let ProviderError::AuthenticationInvalid { message } = &error {
                     let mut marked = current.clone();
                     marked.invalid_reason = Some(message.clone());
-                    let _ = self.credentials.replace(version, &marked);
+                    self.persist_invalid_reason(version, &marked)?;
                 }
-            })?;
+                return Err(error);
+            }
+        };
         let mut credential = credential_from_response(response, current.refresh_token)?;
         // A refresh does not re-read the profile: the account cannot change
         // under a refresh token, so the identity recorded at sign-in stands.
@@ -501,11 +501,11 @@ impl Provider for ClaudeProvider {
             if let Some(message) = rejection {
                 // The refreshed token is still refused, so the credential is
                 // dead: record the reason for auth_status the same way a
-                // failed refresh does. A conflicting write wins over this
-                // marking because the record no longer describes this
-                // session.
+                // failed refresh does. A store failure propagates; a version
+                // conflict drops the marking because the record no longer
+                // describes this session.
                 credential.invalid_reason = Some(message);
-                let _ = self.credentials.replace(credential_version, &credential);
+                self.persist_invalid_reason(credential_version, &credential)?;
             }
         }
 
@@ -839,6 +839,21 @@ fn rejected_authentication<T>(result: &ProviderResult<T>) -> Option<String> {
     }
 }
 
+impl ClaudeProvider {
+    /// CAS-writes `credential` over the record observed at `version` to store
+    /// its `invalid_reason`. A version conflict means the record changed
+    /// meanwhile and the marking is simply dropped; a store failure is
+    /// propagated so a marking that never landed is not treated as recorded.
+    fn persist_invalid_reason(
+        &self,
+        version: CredentialVersion,
+        credential: &ClaudeCredential,
+    ) -> ProviderResult<()> {
+        self.credentials.replace(version, credential)?;
+        Ok(())
+    }
+}
+
 /// A credential the server already marked dead cannot be used or refreshed;
 /// only a re-login replaces it.
 fn reject_invalid_credential(credential: &ClaudeCredential) -> ProviderResult<()> {
@@ -1131,6 +1146,34 @@ mod tests {
         }
     }
 
+    /// A store whose compare-and-swap always fails, standing in for a vault
+    /// backend write error.
+    struct FailingReplaceStore(MemoryStore);
+
+    impl ClaudeCredentialStore for FailingReplaceStore {
+        fn load(&self) -> ProviderResult<Option<(ClaudeCredential, CredentialVersion)>> {
+            self.0.load()
+        }
+
+        fn save(&self, credential: &ClaudeCredential) -> ProviderResult<CredentialVersion> {
+            self.0.save(credential)
+        }
+
+        fn replace(
+            &self,
+            _: CredentialVersion,
+            _: &ClaudeCredential,
+        ) -> ProviderResult<Option<CredentialVersion>> {
+            Err(ProviderError::Network {
+                message: "credential store write failed".into(),
+            })
+        }
+
+        fn clear(&self) -> ProviderResult<()> {
+            self.0.clear()
+        }
+    }
+
     struct RejectingRefreshApi {
         profile: ProviderResult<ClaudeProfile>,
         usage: ProviderResult<ClaudeUsageResponse>,
@@ -1164,7 +1207,10 @@ mod tests {
         }
     }
 
-    fn provider(api: impl ClaudeApi + 'static, store: Arc<MemoryStore>) -> ClaudeProvider {
+    fn provider(
+        api: impl ClaudeApi + 'static,
+        store: Arc<dyn ClaudeCredentialStore>,
+    ) -> ClaudeProvider {
         ClaudeProvider::with_api(Arc::new(api), store)
     }
 
@@ -1288,6 +1334,34 @@ mod tests {
             run_ready(provider.auth_status()).unwrap(),
             AuthState::Invalid { .. }
         ));
+    }
+
+    #[test]
+    fn a_marking_the_store_cannot_persist_surfaces_as_an_error() {
+        let store = Arc::new(FailingReplaceStore(MemoryStore::with_credential(
+            ClaudeCredential {
+                access_token: "old-access".into(),
+                refresh_token: Some("old-refresh".into()),
+                expires_at: Some(Utc::now() - Duration::minutes(1)),
+                account_label: None,
+                account_key: None,
+                invalid_reason: None,
+            },
+        )));
+        let provider = provider(
+            RejectingRefreshApi {
+                profile: Ok(ClaudeProfile::default()),
+                usage: Ok(ClaudeUsageResponse::default()),
+            },
+            store.clone(),
+        );
+
+        // The grant is dead, but the invalidation could not be persisted:
+        // the store failure surfaces instead of leaving a silent mismatch
+        // between the record and what auth_status would report.
+        let error = run_ready(provider.auth_status()).unwrap_err();
+        assert!(matches!(error, ProviderError::Network { .. }));
+        assert_eq!(store.load().unwrap().unwrap().0.invalid_reason, None);
     }
 
     #[test]
