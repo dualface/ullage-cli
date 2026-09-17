@@ -237,9 +237,9 @@ fn is_stale_temporary_name(name: &str, prefix: &str) -> bool {
     numeric(parts.next()) && parts.next().is_none() && !writer_process_is_alive(writer_pid)
 }
 
-/// Whether the process that wrote a temp file is still running. On Windows
-/// the name check alone decides: the file stays locked while its writer holds
-/// it open, so deleting it simply fails.
+/// Whether the process that wrote a temp file is still running. Between a
+/// writer closing its handle and the rename, the file is unlocked, so the
+/// recorded pid is probed on both supported platforms.
 #[cfg(unix)]
 fn writer_process_is_alive(pid: u32) -> bool {
     // kill(pid, 0) probes existence without signalling; EPERM still means the
@@ -250,7 +250,30 @@ fn writer_process_is_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn writer_process_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // STILL_ACTIVE marks a live process; a queryable exit code or a failed
+    // open means the writer is gone.
+    const STILL_ACTIVE: u32 = 259;
+    // SAFETY: `pid` names a process; the returned handle is closed below.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let mut exit_code = 0u32;
+    // SAFETY: `handle` is a valid process handle owned by this scope.
+    let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    // SAFETY: `handle` is no longer needed.
+    unsafe { CloseHandle(handle) };
+    queried != 0 && exit_code == STILL_ACTIVE
+}
+
+#[cfg(not(any(unix, windows)))]
 fn writer_process_is_alive(_pid: u32) -> bool {
     false
 }
