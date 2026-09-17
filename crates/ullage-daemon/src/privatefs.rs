@@ -492,7 +492,9 @@ pub(crate) fn validate_private_file(
 }
 
 /// Creates a temp file nobody else can open or swap: `create_new` plus
-/// `0o600` and `O_NOFOLLOW` on unix, a private ACL on Windows.
+/// `0o600` and `O_NOFOLLOW` on unix, a private ACL on Windows. The snapshot
+/// flow trusts the create flags alone; `replace_private_file` re-checks the
+/// ACL after creation for the device store's stricter original behavior.
 pub(crate) fn create_private_temporary(
     path: &Path,
     style: ErrorStyle,
@@ -513,16 +515,7 @@ pub(crate) fn create_private_temporary(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle;
-
-        let file = ullage_auth::create_private_windows_file(path)
-            .map_err(|error| style.create(path, &error))?;
-        if !ullage_auth::windows_handle_acl_is_private(file.as_raw_handle())
-            .map_err(|error| style.acl(path, &error))?
-        {
-            return Err(style.must_be_private(path));
-        }
-        Ok(file)
+        ullage_auth::create_private_windows_file(path).map_err(|error| style.create(path, &error))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -556,8 +549,28 @@ pub(crate) fn replace_private_file(
     let temporary = temporary_path(path, style)?;
     let _guard = TemporaryFile(temporary.clone());
     let mut file = create_private_temporary(&temporary, style)?;
+    #[cfg(windows)]
+    validate_created_acl(&temporary, &file, style)?;
     write_and_sync(&mut file, bytes, &temporary, style)?;
     commit_temporary(&temporary, path, style)
+}
+
+/// Re-checks the ACL `create_private_windows_file` attached to a fresh temp
+/// file, matching the device store's original post-create verification.
+#[cfg(windows)]
+fn validate_created_acl(
+    path: &Path,
+    file: &std::fs::File,
+    style: ErrorStyle,
+) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+
+    if !ullage_auth::windows_handle_acl_is_private(file.as_raw_handle())
+        .map_err(|error| style.acl(path, &error))?
+    {
+        return Err(style.must_be_private(path));
+    }
+    Ok(())
 }
 
 /// Atomically replaces `destination` with `temporary` and fsyncs the parent

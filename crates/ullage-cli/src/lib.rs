@@ -40,9 +40,19 @@ const CHATGPT_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 const HTTP_BIND_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HTTP_BIND_RETRY_TIMEOUT: Duration = Duration::from_secs(60);
 
+const PROVIDER_CLAUDE: &str = "claude";
+const PROVIDER_CHATGPT: &str = "chatgpt";
+const PROVIDER_GROK: &str = "grok";
+const PROVIDER_CURSOR: &str = "cursor";
+
 /// The compiled-in provider ids, shared by the registry construction and
 /// `config` validation so a new provider cannot silently skip either.
-pub(crate) const PROVIDER_IDS: [&str; 4] = ["claude", "chatgpt", "grok", "cursor"];
+pub(crate) const PROVIDER_IDS: [&str; 4] = [
+    PROVIDER_CLAUDE,
+    PROVIDER_CHATGPT,
+    PROVIDER_GROK,
+    PROVIDER_CURSOR,
+];
 
 pub fn production_registry(config: &AppConfig) -> Result<ProviderRegistry, String> {
     Ok(production_components(config)?.0)
@@ -65,16 +75,19 @@ pub fn registry_with_credentials(
     );
     let claude_credentials = credentials.clone();
     registry
-        .register_factory(descriptor(PROVIDER_IDS[0], "Claude", true), move |account_id| {
-            let store = Arc::new(
-                ClaudeVault::new(claude_credentials.clone(), account_id)
-                    .map_err(|_| credential_init_error())?,
-            );
-            Ok(Arc::new(ullage_provider_claude::ClaudeProvider::with_api(
-                claude_api.clone(),
-                store,
-            )) as Arc<dyn RegisteredProvider>)
-        })
+        .register_factory(
+            descriptor(PROVIDER_CLAUDE, "Claude", true),
+            move |account_id| {
+                let store = Arc::new(
+                    ClaudeVault::new(claude_credentials.clone(), account_id)
+                        .map_err(|_| credential_init_error())?,
+                );
+                Ok(Arc::new(ullage_provider_claude::ClaudeProvider::with_api(
+                    claude_api.clone(),
+                    store,
+                )) as Arc<dyn RegisteredProvider>)
+            },
+        )
         .map_err(|_| "Claude provider registration failed")?;
 
     let chatgpt_config = ChatGptConfig::openai(CHATGPT_CLIENT_ID, CHATGPT_REDIRECT_URI);
@@ -83,7 +96,7 @@ pub fn registry_with_credentials(
             .map_err(|_| "ChatGPT provider initialization failed")?,
     );
     let chatgpt_credentials = credentials.clone();
-    let mut chatgpt_descriptor = descriptor(PROVIDER_IDS[1], "ChatGPT", false);
+    let mut chatgpt_descriptor = descriptor(PROVIDER_CHATGPT, "ChatGPT", false);
     chatgpt_descriptor
         .capabilities
         .push(Capability::WorkspaceSelection);
@@ -122,13 +135,16 @@ pub fn registry_with_credentials(
     );
     let grok_credentials = credentials.clone();
     registry
-        .register_factory(descriptor(PROVIDER_IDS[2], "Grok", false), move |account_id| {
-            Ok(Arc::new(GrokProvider::with_transport_and_store_for_account(
-                grok_transport.clone(),
-                grok_credentials.clone(),
-                account_id,
-            )?) as Arc<dyn RegisteredProvider>)
-        })
+        .register_factory(
+            descriptor(PROVIDER_GROK, "Grok", false),
+            move |account_id| {
+                Ok(Arc::new(GrokProvider::with_transport_and_store_for_account(
+                    grok_transport.clone(),
+                    grok_credentials.clone(),
+                    account_id,
+                )?) as Arc<dyn RegisteredProvider>)
+            },
+        )
         .map_err(|_| "Grok provider registration failed")?;
 
     let cursor_api: Arc<dyn ullage_provider_cursor::CursorApi> = Arc::new(
@@ -136,15 +152,18 @@ pub fn registry_with_credentials(
             .map_err(|_| "Cursor provider initialization failed")?,
     );
     registry
-        .register_factory(descriptor(PROVIDER_IDS[3], "Cursor", false), move |account_id| {
-            Ok(Arc::new(
-                ullage_provider_cursor::CursorProvider::with_api_and_store_for_account(
-                    cursor_api.clone(),
-                    credentials.clone(),
-                    account_id,
-                )?,
-            ) as Arc<dyn RegisteredProvider>)
-        })
+        .register_factory(
+            descriptor(PROVIDER_CURSOR, "Cursor", false),
+            move |account_id| {
+                Ok(Arc::new(
+                    ullage_provider_cursor::CursorProvider::with_api_and_store_for_account(
+                        cursor_api.clone(),
+                        credentials.clone(),
+                        account_id,
+                    )?,
+                ) as Arc<dyn RegisteredProvider>)
+            },
+        )
         .map_err(|_| "Cursor provider registration failed")?;
     Ok(registry)
 }

@@ -16,7 +16,8 @@ use ullage_protocol::{
 };
 
 use crate::cli::{
-    AccountCommand, AuthCommand, Command, DaemonCommand, DeviceCommand, ProbeArgs, ShowArgs,
+    AccountCommand, AuthCommand, Command, DaemonCommand, DeviceCommand, ProbeArgs, ProviderCommand,
+    ShowArgs,
 };
 use crate::render::MetricFilterChoice;
 
@@ -42,8 +43,17 @@ fn spec_for(command: &Command) -> &'static CommandSpec {
         Command::Daemon {
             command: DaemonCommand::Status,
         } => &DAEMON_STATUS,
-        Command::Daemon { .. } => &NOT_DISPATCHED,
-        Command::Provider { .. } => &PROVIDER_LIST,
+        Command::Daemon {
+            command:
+                DaemonCommand::Install
+                | DaemonCommand::Start
+                | DaemonCommand::Stop
+                | DaemonCommand::Run
+                | DaemonCommand::Uninstall,
+        } => &NOT_DISPATCHED,
+        Command::Provider {
+            command: ProviderCommand::List,
+        } => &PROVIDER_LIST,
         Command::Device { command } => match command {
             DeviceCommand::Pair => &DEVICE_PAIR,
             DeviceCommand::List => &DEVICE_LIST,
