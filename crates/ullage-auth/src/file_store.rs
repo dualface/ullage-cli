@@ -124,16 +124,21 @@ impl FileStore {
     #[cfg(windows)]
     fn sync_directory(&self) -> Result<(), CredentialError> {
         use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
         // FlushFileBuffers requires GENERIC_WRITE, which the capability
-        // handle does not have, so the vault path is reopened for the flush
-        // with FILE_FLAG_BACKUP_SEMANTICS (required to open a directory). If
-        // the vault was renamed meanwhile this degrades to flushing an
-        // unrelated directory: harmless, because the record itself was
-        // already synced before the rename.
+        // handle does not have, so the vault path is reopened for the flush.
+        // FILE_FLAG_BACKUP_SEMANTICS is required to open a directory, and
+        // FILE_FLAG_OPEN_REPARSE_POINT keeps a swapped-in junction from
+        // redirecting the open elsewhere (the flush is durability-only, so
+        // failing closed is the right outcome). If the vault was renamed
+        // meanwhile this degrades to flushing an unrelated directory:
+        // harmless, because the record itself was already synced before the
+        // rename.
         let file = std::fs::OpenOptions::new()
             .write(true)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(&self.vault_path)
             .map_err(|_| CredentialError::FileIo)?;
         file.sync_all().map_err(|_| CredentialError::FileIo)

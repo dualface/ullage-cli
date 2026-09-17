@@ -94,8 +94,9 @@ impl SecretValue {
 }
 
 impl PartialEq for SecretValue {
-    /// Constant-time comparison: secrets are compared without an early exit so
-    /// the timing does not reveal where two values differ.
+    /// Constant-time comparison: the length is checked first, then
+    /// equal-length bytes are folded without an early exit so the timing does
+    /// not reveal where two values differ.
     fn eq(&self, other: &Self) -> bool {
         let left = self.expose();
         let right = other.expose();
