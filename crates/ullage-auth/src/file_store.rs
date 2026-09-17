@@ -12,8 +12,8 @@ use zeroize::Zeroize;
 use crate::credential::{MAX_RECORD_BYTES, hex};
 #[cfg(windows)]
 use crate::windows_security::{
-    ensure_private_handle_acl, handle_acl_is_private, handle_owned_by_current_user,
-    windows_file_attributes_are_safe,
+    create_private_windows_directory, ensure_private_handle_acl, handle_acl_is_private,
+    handle_owned_by_current_user, windows_file_attributes_are_safe,
 };
 use crate::{
     Availability, BackendKind, BackendScope, CredentialBackend, CredentialError, CredentialKey,
