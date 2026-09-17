@@ -315,23 +315,34 @@ fn accept_error_is_transient(error: &std::io::Error) -> bool {
     }
     #[cfg(unix)]
     {
-        matches!(
+        if matches!(
             error.raw_os_error(),
-            Some(
-                libc::EMFILE
-                    | libc::ENFILE
-                    | libc::ENOBUFS
-                    | libc::ENOMEM
-                    | libc::ENETDOWN
-                    | libc::EPROTO
-                    | libc::ENOPROTOOPT
-                    | libc::EHOSTDOWN
-                    | libc::ENONET
-                    | libc::EHOSTUNREACH
-                    | libc::EOPNOTSUPP
-                    | libc::ENETUNREACH
+            Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+        ) {
+            return true;
+        }
+        // These errno do not exist on every Unix (Apple has no ENONET), so
+        // the Linux-only set stays under its own cfg.
+        #[cfg(target_os = "linux")]
+        {
+            matches!(
+                error.raw_os_error(),
+                Some(
+                    libc::ENETDOWN
+                        | libc::EPROTO
+                        | libc::ENOPROTOOPT
+                        | libc::EHOSTDOWN
+                        | libc::ENONET
+                        | libc::EHOSTUNREACH
+                        | libc::EOPNOTSUPP
+                        | libc::ENETUNREACH
+                )
             )
-        )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
     #[cfg(windows)]
     {
@@ -1209,11 +1220,14 @@ mod tests {
         )));
         #[cfg(unix)]
         {
+            for code in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+                assert!(
+                    accept_error_is_transient(&std::io::Error::from_raw_os_error(code)),
+                    "errno {code}"
+                );
+            }
+            #[cfg(target_os = "linux")]
             for code in [
-                libc::EMFILE,
-                libc::ENFILE,
-                libc::ENOBUFS,
-                libc::ENOMEM,
                 libc::ENETDOWN,
                 libc::EPROTO,
                 libc::ENOPROTOOPT,
