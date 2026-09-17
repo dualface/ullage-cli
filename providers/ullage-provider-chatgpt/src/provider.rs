@@ -61,8 +61,11 @@ pub struct OAuthTokenSet {
 }
 
 impl<'de> Deserialize<'de> for OAuthTokenSet {
-    /// Persisted tokens go back through the same validation as fresh ones:
-    /// a stored record is untrusted input once it leaves this process.
+    /// Persisted tokens go back through the constructor's semantic validation
+    /// (non-empty tokens, header safety, expiry sanity): a stored record is
+    /// untrusted input once it leaves this process. Wire-only checks — size
+    /// caps, `token_type`, a required positive `expires_in` — apply to fresh
+    /// OAuth responses, so a legacy record keeps its optional expiry.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -583,12 +586,9 @@ where
         let authorization_url =
             oauth_authorization_url(&self.config, &redirect_uri, &flow_id, &pkce_challenge);
         let _session_guard = self.session_gate.lock().await;
-        let mut pending = self
-            .pending
-            .lock()
-            .map_err(|_| ProviderError::Network {
-                message: "ChatGPT provider state lock is poisoned".into(),
-            })?;
+        let mut pending = self.pending.lock().map_err(|_| ProviderError::Network {
+            message: "ChatGPT provider state lock is poisoned".into(),
+        })?;
         pending.clear();
         pending.insert(
             flow_id.clone(),
@@ -616,12 +616,9 @@ where
         // until the exchange succeeds or the flow expires, so a mistyped
         // paste can be retried.
         let pending = {
-            let mut flows =
-                self.pending
-                    .lock()
-                    .map_err(|_| ProviderError::Network {
-                        message: "ChatGPT provider state lock is poisoned".into(),
-                    })?;
+            let mut flows = self.pending.lock().map_err(|_| ProviderError::Network {
+                message: "ChatGPT provider state lock is poisoned".into(),
+            })?;
             match flows.get(&request.flow_id) {
                 None => {
                     return Err(ProviderError::AuthenticationInvalid {
@@ -715,12 +712,9 @@ where
     async fn auth_status(&self) -> ProviderResult<AuthState> {
         let _session_guard = self.session_gate.lock().await;
         let pending_state = {
-            let mut pending =
-                self.pending
-                    .lock()
-                    .map_err(|_| ProviderError::Network {
-                        message: "ChatGPT provider state lock is poisoned".into(),
-                    })?;
+            let mut pending = self.pending.lock().map_err(|_| ProviderError::Network {
+                message: "ChatGPT provider state lock is poisoned".into(),
+            })?;
             pending.retain(|_, flow| flow.expires_at > Utc::now());
             pending
                 .iter()

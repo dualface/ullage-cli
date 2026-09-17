@@ -193,12 +193,20 @@ async fn token_endpoint_errors_classify_oauth_error_codes() {
         ),
         ("400 Bad Request", "not json at all", "ProtocolIncompatible"),
         ("400 Bad Request", "{}", "ProtocolIncompatible"),
+        // On the OAuth endpoints the RFC 6749 code outranks the status:
+        // invalid_grant is a dead credential, anything else is a protocol
+        // or client-configuration failure.
+        (
+            "401 Unauthorized",
+            r#"{"error":"invalid_grant"}"#,
+            "AuthenticationInvalid",
+        ),
         (
             "401 Unauthorized",
             r#"{"error":"anything"}"#,
-            "AuthenticationInvalid",
+            "ProtocolIncompatible",
         ),
-        ("403 Forbidden", "{}", "AuthenticationInvalid"),
+        ("403 Forbidden", "{}", "ProtocolIncompatible"),
         ("408 Request Timeout", "{}", "Network"),
         ("500 Internal Server Error", "{}", "Network"),
         ("503 Service Unavailable", "{}", "Network"),
@@ -224,6 +232,55 @@ async fn token_endpoint_errors_classify_oauth_error_codes() {
         assert!(!format!("{error:?}").contains("bad client"));
         server.join().unwrap();
     }
+}
+
+#[tokio::test]
+async fn oversized_error_bodies_do_not_mask_transport_statuses() {
+    let huge = "x".repeat(2 * 1024 * 1024);
+    for (status, expected_kind) in [
+        ("408 Request Timeout", "Network"),
+        ("503 Service Unavailable", "Network"),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let body = huge.clone();
+        let server =
+            thread::spawn(move || respond(listener.accept().unwrap().0, status, &[], &body));
+        let api = HttpClaudeApi::with_config(test_config(&base_url)).unwrap();
+        let error = api.usage("access-1").await.unwrap_err();
+        let kind = match &error {
+            ProviderError::Network { .. } => "Network",
+            _ => "other",
+        };
+        assert_eq!(kind, expected_kind, "{status}");
+        server.join().unwrap();
+    }
+
+    // A resource-endpoint 401 keeps its classification without reading the
+    // body, so it still triggers the refresh-retry path upstream.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let body = huge;
+    let server = thread::spawn(move || {
+        respond(listener.accept().unwrap().0, "401 Unauthorized", &[], &body)
+    });
+    let api = HttpClaudeApi::with_config(test_config(&base_url)).unwrap();
+    let error = api.profile("access-1").await.unwrap_err();
+    assert!(matches!(error, ProviderError::AuthenticationInvalid { .. }));
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn endpoint_config_rejects_token_leaking_urls() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let mut config = test_config(&base_url);
+    config.token_endpoint = "http://169.254.169.254/latest".into();
+    assert!(HttpClaudeApi::with_config(config).is_err());
+    let mut config = test_config(&base_url);
+    config.revoke_endpoint = "https://user:pw@platform.claude.com/revoke".into();
+    assert!(HttpClaudeApi::with_config(config).is_err());
+    assert!(HttpClaudeApi::with_config(test_config(&base_url)).is_ok());
 }
 
 #[tokio::test]

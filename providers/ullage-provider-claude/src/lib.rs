@@ -51,6 +51,12 @@ pub struct ClaudeCredential {
     /// this was recorded, and on a profile carrying neither UUID nor email.
     #[serde(default)]
     pub account_key: Option<String>,
+    /// Why the server last rejected this credential: a refresh answered
+    /// `invalid_grant`, or a retried call still refused a fresh token. A
+    /// re-login replaces the record and clears it. Absent on credentials
+    /// stored before this was recorded.
+    #[serde(default)]
+    pub invalid_reason: Option<String>,
 }
 
 impl ClaudeCredential {
@@ -85,6 +91,7 @@ impl std::fmt::Debug for ClaudeCredential {
             .field("expires_at", &self.expires_at)
             .field("account_label", &self.account_label)
             .field("account_key", &self.account_key)
+            .field("invalid_reason", &self.invalid_reason)
             .finish()
     }
 }
@@ -187,12 +194,27 @@ impl ClaudeProvider {
                 .ok_or_else(|| ProviderError::AuthenticationInvalid {
                     message: "Claude is not authenticated".into(),
                 })?;
+        reject_invalid_credential(&current)?;
         let refresh_token = current.refresh_token.as_deref().ok_or_else(|| {
             ProviderError::AuthenticationInvalid {
                 message: "stored Claude credential has no refresh token".into(),
             }
         })?;
-        let response = self.api.refresh_token(refresh_token).await?;
+        let response = self
+            .api
+            .refresh_token(refresh_token)
+            .await
+            .inspect_err(|error| {
+                if let ProviderError::AuthenticationInvalid { message } = error {
+                    // The grant itself is dead: record the reason so auth_status
+                    // reports Invalid instead of a silent Authenticated. A
+                    // conflicting write means the record was replaced meanwhile,
+                    // so the marking is dropped and the error stands alone.
+                    let mut marked = current.clone();
+                    marked.invalid_reason = Some(message.clone());
+                    let _ = self.credentials.replace(version, &marked);
+                }
+            })?;
         let mut credential = credential_from_response(response, current.refresh_token)?;
         // A refresh does not re-read the profile: the account cannot change
         // under a refresh token, so the identity recorded at sign-in stands.
@@ -217,6 +239,7 @@ impl ClaudeProvider {
                 .ok_or_else(|| ProviderError::AuthenticationInvalid {
                     message: "Claude is not authenticated".into(),
                 })?;
+        reject_invalid_credential(&credential)?;
         let refresh_at = Utc::now() + Duration::seconds(REFRESH_EARLY_SECONDS);
         if credential
             .expires_at
@@ -386,6 +409,14 @@ impl Provider for ClaudeProvider {
         let Some((credential, _)) = self.credentials.load()? else {
             return Ok(AuthState::NotAuthenticated);
         };
+        // A credential the server already called dead stays Invalid until a
+        // re-login replaces it; expiry refresh never gets to "unreject" it.
+        if let Some(reason) = credential.invalid_reason.clone() {
+            return Ok(AuthState::Invalid {
+                reason,
+                account_key: credential.account_key.as_deref().and_then(account_identity),
+            });
+        }
         if credential
             .expires_at
             .is_some_and(|expires_at| expires_at <= Utc::now())
@@ -465,6 +496,17 @@ impl Provider for ClaudeProvider {
             );
             profile = retried_profile;
             usage = retried_usage;
+            let rejection =
+                rejected_authentication(&profile).or_else(|| rejected_authentication(&usage));
+            if let Some(message) = rejection {
+                // The refreshed token is still refused, so the credential is
+                // dead: record the reason for auth_status the same way a
+                // failed refresh does. A conflicting write wins over this
+                // marking because the record no longer describes this
+                // session.
+                credential.invalid_reason = Some(message);
+                let _ = self.credentials.replace(credential_version, &credential);
+            }
         }
 
         if let (Err(profile_error), Err(usage_error)) = (&profile, &usage) {
@@ -783,9 +825,29 @@ fn credential_from_response(
         expires_at: Some(expires_at),
         account_label: None,
         account_key: None,
+        invalid_reason: None,
     };
     credential.validate()?;
     Ok(credential)
+}
+
+/// The message of an authentication rejection, if the call failed that way.
+fn rejected_authentication<T>(result: &ProviderResult<T>) -> Option<String> {
+    match result {
+        Err(ProviderError::AuthenticationInvalid { message }) => Some(message.clone()),
+        _ => None,
+    }
+}
+
+/// A credential the server already marked dead cannot be used or refreshed;
+/// only a re-login replaces it.
+fn reject_invalid_credential(credential: &ClaudeCredential) -> ProviderResult<()> {
+    if let Some(reason) = &credential.invalid_reason {
+        return Err(ProviderError::AuthenticationInvalid {
+            message: reason.clone(),
+        });
+    }
+    Ok(())
 }
 
 fn authenticated_state(credential: &ClaudeCredential) -> AuthState {
@@ -1069,7 +1131,40 @@ mod tests {
         }
     }
 
-    fn provider(api: FakeApi, store: Arc<MemoryStore>) -> ClaudeProvider {
+    struct RejectingRefreshApi {
+        profile: ProviderResult<ClaudeProfile>,
+        usage: ProviderResult<ClaudeUsageResponse>,
+    }
+
+    #[async_trait]
+    impl ClaudeApi for RejectingRefreshApi {
+        async fn exchange_code(
+            &self,
+            _: AuthorizationCodeExchange,
+        ) -> ProviderResult<ClaudeTokenResponse> {
+            unreachable!()
+        }
+
+        async fn refresh_token(&self, _: &str) -> ProviderResult<ClaudeTokenResponse> {
+            Err(ProviderError::AuthenticationInvalid {
+                message: "Claude rejected the stored OAuth credential (invalid_grant)".into(),
+            })
+        }
+
+        async fn revoke_token(&self, _: &str, _: &str) -> ProviderResult<()> {
+            Ok(())
+        }
+
+        async fn profile(&self, _: &str) -> ProviderResult<ClaudeProfile> {
+            self.profile.clone()
+        }
+
+        async fn usage(&self, _: &str) -> ProviderResult<ClaudeUsageResponse> {
+            self.usage.clone()
+        }
+    }
+
+    fn provider(api: impl ClaudeApi + 'static, store: Arc<MemoryStore>) -> ClaudeProvider {
         ClaudeProvider::with_api(Arc::new(api), store)
     }
 
@@ -1128,6 +1223,74 @@ mod tests {
     }
 
     #[test]
+    fn rejected_refresh_marks_the_credential_invalid() {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
+            access_token: "old-access".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: Some(Utc::now() - Duration::minutes(1)),
+            account_label: None,
+            account_key: Some("acct-1".into()),
+            invalid_reason: None,
+        }));
+        let provider = provider(
+            RejectingRefreshApi {
+                profile: Ok(ClaudeProfile::default()),
+                usage: Ok(ClaudeUsageResponse::default()),
+            },
+            store.clone(),
+        );
+
+        match run_ready(provider.auth_status()).unwrap() {
+            AuthState::Invalid { reason, .. } => assert!(reason.contains("invalid_grant")),
+            state => panic!("expected Invalid, got {state:?}"),
+        }
+        let stored = store.load().unwrap().unwrap().0;
+        assert!(stored.invalid_reason.is_some());
+        // The recorded reason fails later calls fast without retrying a
+        // grant the server already revoked.
+        let error = run_ready(provider.query(UsageQuery::default())).unwrap_err();
+        assert!(matches!(error, ProviderError::AuthenticationInvalid { .. }));
+        assert!(matches!(
+            run_ready(provider.auth_status()).unwrap(),
+            AuthState::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn a_still_rejected_refreshed_token_marks_the_credential_invalid() {
+        let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
+            access_token: "old-access".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: Some(Utc::now() + Duration::hours(1)),
+            account_label: None,
+            account_key: None,
+            invalid_reason: None,
+        }));
+        let provider = provider(
+            FakeApi {
+                profile: Err(ProviderError::AuthenticationInvalid {
+                    message: "token rejected".into(),
+                }),
+                usage: Ok(ClaudeUsageResponse::default()),
+            },
+            store.clone(),
+        );
+
+        // Profile is rejected, the forced refresh succeeds, and the retried
+        // profile is rejected again: the credential is dead and the query
+        // still reports usage as a partial success.
+        assert!(matches!(
+            run_ready(provider.query(UsageQuery::default())).unwrap(),
+            QueryOutcome::Partial { .. }
+        ));
+        assert!(store.load().unwrap().unwrap().0.invalid_reason.is_some());
+        assert!(matches!(
+            run_ready(provider.auth_status()).unwrap(),
+            AuthState::Invalid { .. }
+        ));
+    }
+
+    #[test]
     fn pending_reauthentication_takes_precedence_over_stored_credentials() {
         let store = Arc::new(MemoryStore::with_credential(ClaudeCredential {
             access_token: "old-access".into(),
@@ -1135,6 +1298,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let provider = provider(
             FakeApi {
@@ -1307,6 +1471,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let provider = provider(
             FakeApi {
@@ -1338,6 +1503,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let provider = provider(
             FakeApi {
@@ -1374,6 +1540,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let provider = provider(
             FakeApi {
@@ -1403,6 +1570,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let provider = provider(
             FakeApi {
@@ -1435,6 +1603,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let provider = provider(
             FakeApi {
@@ -1476,6 +1645,7 @@ mod tests {
             expires_at: None,
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         };
         let output = format!("{credential:?}");
         assert!(!output.contains("access-secret"));
@@ -1714,6 +1884,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let entered = Arc::new(tokio::sync::Notify::new());
         let provider = Arc::new(ClaudeProvider::with_api(
@@ -1742,6 +1913,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let revoke_calls = Arc::new(AtomicUsize::new(0));
         let provider = ClaudeProvider::with_api(
@@ -1773,6 +1945,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::hours(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let profile_entered = Arc::new(tokio::sync::Notify::new());
         let release_profile = Arc::new(tokio::sync::Notify::new());
@@ -1809,6 +1982,7 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::seconds(1)),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }));
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let profile_entered = Arc::new(tokio::sync::Notify::new());

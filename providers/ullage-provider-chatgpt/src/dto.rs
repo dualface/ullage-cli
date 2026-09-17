@@ -7,8 +7,9 @@ use ullage_core::{
 
 const FIVE_HOURS_SECONDS: u64 = 5 * 60 * 60;
 const WEEK_SECONDS: u64 = 7 * 24 * 60 * 60;
-/// Largest integer an `f64` still represents exactly (2^53); a count past it
-/// cannot be reported as a measurement without silently rounding.
+/// Largest consecutive integer an `f64` still represents exactly (2^53).
+/// Above it only some integers stay exact, so a count past the bound is
+/// rejected rather than risk reporting a silently rounded measurement.
 const MAX_EXACT_F64_INTEGER: u64 = 1 << 53;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

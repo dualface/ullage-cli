@@ -225,6 +225,7 @@ mod tests {
             expires_at: Some(Utc::now()),
             account_label: None,
             account_key: None,
+            invalid_reason: None,
         }
     }
 
@@ -311,6 +312,7 @@ mod tests {
                 expires_at: None,
                 account_label: None,
                 account_key: None,
+                invalid_reason: None,
             },
             ClaudeCredential {
                 access_token: "access".into(),
@@ -318,6 +320,7 @@ mod tests {
                 expires_at: None,
                 account_label: None,
                 account_key: None,
+                invalid_reason: None,
             },
             ClaudeCredential {
                 access_token: "access".into(),
@@ -325,6 +328,7 @@ mod tests {
                 expires_at: None,
                 account_label: None,
                 account_key: None,
+                invalid_reason: None,
             },
         ] {
             save_json(&store, &vault.key, &credential).unwrap();

@@ -4,6 +4,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use ullage_core::{ProviderError, ProviderResult};
+use url::Url;
 
 use crate::{ClaudeProfile, ClaudeUsageResponse};
 
@@ -103,6 +104,9 @@ impl HttpClaudeApi {
     }
 
     pub fn with_config(config: ClaudeHttpConfig) -> ProviderResult<Self> {
+        validate_endpoint("API base", &config.api_base)?;
+        validate_endpoint("token", &config.token_endpoint)?;
+        validate_endpoint("revoke", &config.revoke_endpoint)?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
@@ -128,7 +132,7 @@ impl HttpClaudeApi {
             .send()
             .await
             .map_err(network_error)?;
-        decode_json(response).await
+        decode_json(response, false).await
     }
 }
 
@@ -165,7 +169,7 @@ impl ClaudeApi for HttpClaudeApi {
             .send()
             .await
             .map_err(network_error)?;
-        decode_json(response).await
+        decode_json(response, true).await
     }
 
     async fn refresh_token(&self, refresh_token: &str) -> ProviderResult<ClaudeTokenResponse> {
@@ -192,7 +196,7 @@ impl ClaudeApi for HttpClaudeApi {
             .send()
             .await
             .map_err(network_error)?;
-        decode_json(response).await
+        decode_json(response, true).await
     }
 
     async fn revoke_token(&self, token: &str, token_type_hint: &str) -> ProviderResult<()> {
@@ -217,7 +221,7 @@ impl ClaudeApi for HttpClaudeApi {
             .send()
             .await
             .map_err(network_error)?;
-        decode_empty(response).await
+        decode_empty(response, true).await
     }
 
     async fn profile(&self, access_token: &str) -> ProviderResult<ClaudeProfile> {
@@ -244,9 +248,41 @@ fn network_error(_: reqwest::Error) -> ProviderError {
     }
 }
 
-async fn decode_json<T: DeserializeOwned>(response: reqwest::Response) -> ProviderResult<T> {
+/// Every configured endpoint must be HTTPS, or loopback HTTP for tests: these
+/// addresses receive bearer, refresh, and revoke tokens, so a plain-HTTP or
+/// credential-bearing one would leak them.
+fn validate_endpoint(name: &str, value: &str) -> ProviderResult<()> {
+    let url = Url::parse(value).map_err(|_| ProviderError::ProtocolIncompatible {
+        message: format!("Claude {name} endpoint is not a valid URL"),
+    })?;
+    let loopback_http = url.scheme() == "http"
+        && match url.host() {
+            Some(url::Host::Domain(host)) => host == "localhost",
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        };
+    if url.scheme() != "https" && !loopback_http {
+        return Err(ProviderError::ProtocolIncompatible {
+            message: format!(
+                "Claude {name} endpoint must use HTTPS (loopback HTTP is allowed for tests)"
+            ),
+        });
+    }
+    if url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
+        return Err(ProviderError::ProtocolIncompatible {
+            message: format!("Claude {name} endpoint cannot contain credentials or a fragment"),
+        });
+    }
+    Ok(())
+}
+
+async fn decode_json<T: DeserializeOwned>(
+    response: reqwest::Response,
+    oauth_endpoint: bool,
+) -> ProviderResult<T> {
     if !response.status().is_success() {
-        return Err(error_response(response).await);
+        return Err(error_response(response, oauth_endpoint).await);
     }
     let body = bounded_body(response).await?;
     serde_json::from_slice(&body).map_err(|_| ProviderError::ProtocolIncompatible {
@@ -254,25 +290,30 @@ async fn decode_json<T: DeserializeOwned>(response: reqwest::Response) -> Provid
     })
 }
 
-async fn decode_empty(response: reqwest::Response) -> ProviderResult<()> {
+async fn decode_empty(response: reqwest::Response, oauth_endpoint: bool) -> ProviderResult<()> {
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(error_response(response).await)
+        Err(error_response(response, oauth_endpoint).await)
     }
 }
 
-/// Classifies a failed response. The body still goes through the bounded
-/// reader so an OAuth error code (not its free-text description, which is
-/// never echoed) can refine the classification.
-async fn error_response(response: reqwest::Response) -> ProviderError {
+/// Classifies a failed response. Statuses the transport settles on its own
+/// are decided before the body is read, so an oversized error payload cannot
+/// mask a timeout, a rate limit, a server error, or a rejected credential on
+/// the resource endpoints. Everything else needs the OAuth error code from a
+/// bounded read.
+async fn error_response(response: reqwest::Response, oauth_endpoint: bool) -> ProviderError {
     let status = response.status();
     let retry_after_seconds = retry_after_seconds(&response);
+    if let Some(error) = status_only_error(status.as_u16(), retry_after_seconds, oauth_endpoint) {
+        return error;
+    }
     let body = match bounded_body(response).await {
         Ok(body) => body,
         Err(error) => return error,
     };
-    status_error(status.as_u16(), retry_after_seconds, &body)
+    status_error(status.as_u16(), retry_after_seconds, &body, oauth_endpoint)
 }
 
 fn retry_after_seconds(response: &reqwest::Response) -> Option<u64> {
@@ -321,16 +362,19 @@ fn oauth_error_code(body: &[u8]) -> Option<String> {
         .map(|parsed| parsed.error)
 }
 
-pub(crate) fn status_error(
+/// Statuses whose classification needs no response body. On the OAuth
+/// endpoints 401 and 403 are excluded: their RFC 6749 `error` code decides
+/// between a dead credential and a protocol failure.
+fn status_only_error(
     status: u16,
     retry_after_seconds: Option<u64>,
-    body: &[u8],
-) -> ProviderError {
-    match status {
-        401 => ProviderError::AuthenticationInvalid {
+    oauth_endpoint: bool,
+) -> Option<ProviderError> {
+    Some(match status {
+        401 if !oauth_endpoint => ProviderError::AuthenticationInvalid {
             message: "Claude returned HTTP 401 (unauthorized)".into(),
         },
-        403 => ProviderError::AuthenticationInvalid {
+        403 if !oauth_endpoint => ProviderError::AuthenticationInvalid {
             message: "Claude returned HTTP 403 (forbidden)".into(),
         },
         408 => ProviderError::Network {
@@ -343,15 +387,42 @@ pub(crate) fn status_error(
         _ if status >= 500 => ProviderError::Network {
             message: format!("Claude returned server error HTTP {status}"),
         },
+        _ => return None,
+    })
+}
+
+pub(crate) fn status_error(
+    status: u16,
+    retry_after_seconds: Option<u64>,
+    body: &[u8],
+    oauth_endpoint: bool,
+) -> ProviderError {
+    if let Some(error) = status_only_error(status, retry_after_seconds, oauth_endpoint) {
+        return error;
+    }
+    if oauth_endpoint {
+        // The RFC 6749 error code classifies OAuth endpoint failures:
+        // invalid_grant is a dead credential that needs re-authentication.
+        // Every other outcome — invalid_client, an unknown code, a malformed
+        // body — is a protocol or client-configuration failure, never a
+        // silent re-login prompt.
+        return match oauth_error_code(body).as_deref() {
+            Some("invalid_grant") => ProviderError::AuthenticationInvalid {
+                message: "Claude rejected the stored OAuth credential (invalid_grant)".into(),
+            },
+            _ => ProviderError::ProtocolIncompatible {
+                message: format!("Claude OAuth endpoint returned unexpected HTTP {status}"),
+            },
+        };
+    }
+    match oauth_error_code(body).as_deref() {
         // The grant itself was rejected: the credential is dead and needs
         // re-authentication, not a retry. Every other client-side failure —
         // invalid_client, a malformed error body, an unknown code — stays a
         // protocol failure.
-        _ if oauth_error_code(body).as_deref() == Some("invalid_grant") => {
-            ProviderError::AuthenticationInvalid {
-                message: "Claude rejected the stored OAuth credential (invalid_grant)".into(),
-            }
-        }
+        Some("invalid_grant") => ProviderError::AuthenticationInvalid {
+            message: "Claude rejected the stored OAuth credential (invalid_grant)".into(),
+        },
         _ => ProviderError::ProtocolIncompatible {
             message: format!("Claude returned unexpected HTTP status {status}"),
         },
@@ -366,34 +437,47 @@ mod tests {
 
     #[test]
     fn distinguishes_security_and_rate_limit_statuses() {
+        for oauth_endpoint in [false, true] {
+            assert!(matches!(
+                status_error(408, None, b"", oauth_endpoint),
+                ProviderError::Network { message } if message.contains("408")
+            ));
+            assert_eq!(
+                status_error(429, Some(17), b"", oauth_endpoint),
+                ProviderError::RateLimited {
+                    message: "Claude returned HTTP 429 (rate limited)".into(),
+                    retry_after_seconds: Some(17),
+                }
+            );
+        }
         assert!(matches!(
-            status_error(401, None, b""),
+            status_error(401, None, b"", false),
             ProviderError::AuthenticationInvalid { message } if message.contains("401")
         ));
         assert!(matches!(
-            status_error(403, None, b""),
+            status_error(403, None, b"", false),
             ProviderError::AuthenticationInvalid { message } if message.contains("403")
         ));
-        assert_eq!(
-            status_error(429, Some(17), b""),
-            ProviderError::RateLimited {
-                message: "Claude returned HTTP 429 (rate limited)".into(),
-                retry_after_seconds: Some(17),
-            }
-        );
     }
 
     #[test]
     fn maps_oauth_invalid_grant_to_invalid_authentication() {
         assert!(matches!(
-            status_error(400, None, br#"{"error":"invalid_grant"}"#),
+            status_error(400, None, br#"{"error":"invalid_grant"}"#, false),
             ProviderError::AuthenticationInvalid { .. }
         ));
         // A credential error still wins on an unexpected status.
         assert!(matches!(
-            status_error(422, None, br#"{"error":"invalid_grant"}"#),
+            status_error(422, None, br#"{"error":"invalid_grant"}"#, false),
             ProviderError::AuthenticationInvalid { .. }
         ));
+        // On the OAuth endpoints the error code outranks the status.
+        for status in [400, 401, 403] {
+            assert!(matches!(
+                status_error(status, None, br#"{"error":"invalid_grant"}"#, true),
+                ProviderError::AuthenticationInvalid { .. }
+            ));
+        }
     }
 
     #[test]
@@ -406,19 +490,65 @@ mod tests {
             b"",
         ] {
             assert!(matches!(
-                status_error(400, None, body),
+                status_error(400, None, body, false),
                 ProviderError::ProtocolIncompatible { .. }
             ));
         }
     }
 
     #[test]
+    fn oauth_endpoints_require_a_credential_error_code_for_authentication() {
+        for status in [400, 401, 403] {
+            for body in [
+                &br#"{"error":"invalid_client"}"#[..],
+                &br#"{"error":"unknown_error"}"#[..],
+                b"not json",
+                b"",
+            ] {
+                assert!(matches!(
+                    status_error(status, None, body, true),
+                    ProviderError::ProtocolIncompatible { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn maps_timeouts_and_server_errors_to_network() {
         for status in [408, 500, 502, 503, 599] {
-            assert!(matches!(
-                status_error(status, None, br#"{"error":"invalid_grant"}"#),
-                ProviderError::Network { .. }
-            ));
+            for oauth_endpoint in [false, true] {
+                assert!(matches!(
+                    status_error(
+                        status,
+                        None,
+                        br#"{"error":"invalid_grant"}"#,
+                        oauth_endpoint
+                    ),
+                    ProviderError::Network { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_endpoints_that_would_leak_tokens() {
+        for value in [
+            "http://169.254.169.254/latest",
+            "http://example.com",
+            "ftp://localhost",
+            "https://user:pass@api.example.com",
+            "https://api.example.com/path#frag",
+            "not a url",
+        ] {
+            assert!(validate_endpoint("test", value).is_err(), "{value}");
+        }
+        for value in [
+            "https://api.anthropic.com",
+            "http://localhost:8080",
+            "http://127.0.0.1:9",
+            "http://[::1]:8080",
+        ] {
+            assert!(validate_endpoint("test", value).is_ok(), "{value}");
         }
     }
 
