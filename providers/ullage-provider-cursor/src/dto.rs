@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use ullage_core::{
     MeasurementUnit, ProviderId, ProviderResult, SubscriptionUsage, UsageMeasurement, UsageWindow,
@@ -19,12 +19,10 @@ pub struct CursorUsage {
     pub observed_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CurrentPeriodUsage {
-    #[serde(default, deserialize_with = "optional_millis")]
     pub billing_cycle_start: Option<i64>,
-    #[serde(default, deserialize_with = "optional_millis")]
     pub billing_cycle_end: Option<i64>,
     pub plan_usage: Option<PlanUsage>,
     pub spend_limit_usage: Option<SpendLimitUsage>,
@@ -32,6 +30,106 @@ pub struct CurrentPeriodUsage {
     pub auto_bucket_models: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+    /// Wire names of fields that were present but malformed; each one was
+    /// dropped to `None` instead of failing the whole response. The query
+    /// path reports them as partial failures.
+    #[serde(skip)]
+    pub malformed_fields: Vec<String>,
+}
+
+/// Each field is decoded on its own so one malformed value drops to `None`
+/// rather than rejecting the entire `currentPeriod` response.
+impl<'de> Deserialize<'de> for CurrentPeriodUsage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Raw {
+            #[serde(default)]
+            billing_cycle_start: Option<Value>,
+            #[serde(default)]
+            billing_cycle_end: Option<Value>,
+            #[serde(default)]
+            plan_usage: Option<Value>,
+            #[serde(default)]
+            spend_limit_usage: Option<Value>,
+            #[serde(default)]
+            auto_bucket_models: Option<Value>,
+            #[serde(flatten)]
+            extra: BTreeMap<String, Value>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let mut malformed_fields = Vec::new();
+        Ok(Self {
+            billing_cycle_start: tolerant_millis(
+                raw.billing_cycle_start,
+                "billingCycleStart",
+                &mut malformed_fields,
+            ),
+            billing_cycle_end: tolerant_millis(
+                raw.billing_cycle_end,
+                "billingCycleEnd",
+                &mut malformed_fields,
+            ),
+            plan_usage: tolerant_field(raw.plan_usage, "planUsage", &mut malformed_fields),
+            spend_limit_usage: tolerant_field(
+                raw.spend_limit_usage,
+                "spendLimitUsage",
+                &mut malformed_fields,
+            ),
+            auto_bucket_models: tolerant_field(
+                raw.auto_bucket_models,
+                "autoBucketModels",
+                &mut malformed_fields,
+            )
+            .unwrap_or_default(),
+            extra: raw.extra,
+            malformed_fields,
+        })
+    }
+}
+
+fn tolerant_millis(
+    value: Option<Value>,
+    field: &str,
+    malformed_fields: &mut Vec<String>,
+) -> Option<i64> {
+    match value {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let parsed = match &value {
+                Value::String(text) => text.parse().ok(),
+                Value::Number(number) => number.as_i64(),
+                _ => None,
+            };
+            match parsed {
+                Some(millis) => Some(millis),
+                None => {
+                    malformed_fields.push(field.into());
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn tolerant_field<T: DeserializeOwned>(
+    value: Option<Value>,
+    field: &str,
+    malformed_fields: &mut Vec<String>,
+) -> Option<T> {
+    match value {
+        None | Some(Value::Null) => None,
+        Some(value) => match serde_json::from_value(value) {
+            Ok(parsed) => Some(parsed),
+            Err(_) => {
+                malformed_fields.push(field.into());
+                None
+            }
+        },
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -24,16 +24,21 @@ use chrono::Utc;
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthMethod, AuthStartRequest, AuthState, Credential,
     CredentialError, CredentialKey, CredentialStore, CredentialVersion, LogoutRequest,
-    ReplaceOutcome, SecretValue,
+    ReplaceOutcome, SecretValue, account_identity,
 };
 use ullage_core::{
     Capability, PartialFailure, Provider, ProviderDescriptor, ProviderError, ProviderId,
     ProviderResult, QueryOutcome, SubscriptionUsage, UsageQuery,
 };
 
-/// Cap for the overlapping settings fetch. Started with billing so a hang cannot
-/// add a second wait after a slow billing response and exhaust the daemon budget.
+/// Cap for the settings fetch. Settings run after billing answers, so the
+/// deadline bounds the second call without stacking on top of billing's own.
 const SETTINGS_FETCH_DEADLINE: Duration = Duration::from_secs(8);
+
+/// Tokens this close to expiry are refreshed before use, so a token cannot
+/// die while a query is in flight. Matches the early-refresh margin the other
+/// OAuth providers use.
+const REFRESH_SKEW_SECONDS: i64 = 300;
 
 #[derive(Default)]
 struct Session {
@@ -42,6 +47,10 @@ struct Session {
     token: Option<OAuthToken>,
     /// Store version `token` was observed at; required for CAS updates.
     stored_version: Option<CredentialVersion>,
+    /// The stored record loaded but was not a usable token. Kept distinct
+    /// from "no credential" so `auth_status` can report `Invalid` while
+    /// `start_auth` and `logout` still repair or delete the record.
+    stored_credential_corrupt: bool,
     credentials_loaded: bool,
 }
 
@@ -165,25 +174,59 @@ impl<T> GrokProvider<T> {
         }
         let loaded = match credentials.get(key) {
             Ok(stored) => {
-                let payload = stored
+                let version = stored.version();
+                let parsed = stored
                     .credential()
                     .get("session")
-                    .ok_or_else(|| credential_error(CredentialError::CorruptCredential))?;
-                let token: OAuthToken = serde_json::from_slice(payload.expose())
-                    .map_err(|_| credential_error(CredentialError::CorruptCredential))?;
-                token.validate_stored()?;
-                Some((token, stored.version()))
+                    .ok_or(CredentialError::CorruptCredential)
+                    .and_then(|payload| {
+                        serde_json::from_slice::<OAuthToken>(payload.expose())
+                            .map_err(|_| CredentialError::CorruptCredential)
+                    })
+                    .and_then(|token| {
+                        token
+                            .validate_stored()
+                            .map_err(|_| CredentialError::CorruptCredential)
+                            .map(|_| token)
+                    });
+                Some((parsed, version))
             }
             Err(CredentialError::NotFound) => None,
             Err(error) => return Err(credential_error(error)),
         };
         let mut session = self.lock_session()?;
         if !session.credentials_loaded {
-            session.stored_version = loaded.as_ref().map(|(_, version)| *version);
-            session.token = loaded.map(|(token, _)| token);
+            match loaded {
+                Some((Ok(token), version)) => {
+                    session.stored_version = Some(version);
+                    session.token = Some(token);
+                }
+                // A record that will not parse is corrupt, not absent: the
+                // flag keeps every entry point able to repair or delete it.
+                // Its store version is still kept so logout can CAS-delete it.
+                Some((Err(_), version)) => {
+                    session.stored_credential_corrupt = true;
+                    session.stored_version = Some(version);
+                }
+                None => {}
+            }
             session.credentials_loaded = true;
         }
         Ok(())
+    }
+
+    /// The "no usable credential" error for entry points that cannot proceed.
+    /// A corrupt record is reported as corrupt, not as a missing sign-in.
+    fn unauthenticated_error(session: &Session) -> ProviderError {
+        if session.stored_credential_corrupt {
+            ProviderError::AuthenticationInvalid {
+                message: "the stored Grok credential is unreadable; sign in again".into(),
+            }
+        } else {
+            ProviderError::AuthenticationInvalid {
+                message: "Grok is not authenticated".into(),
+            }
+        }
     }
 
     fn encode_token(token: &OAuthToken) -> ProviderResult<Credential> {
@@ -262,13 +305,10 @@ impl<T: GrokTransport> GrokProvider<T> {
         self.ensure_credentials_loaded()?;
         let (generation, previous, refresh_token) = {
             let mut session = self.lock_session()?;
-            let previous =
-                session
-                    .token
-                    .clone()
-                    .ok_or_else(|| ProviderError::AuthenticationInvalid {
-                        message: "Grok is not authenticated".into(),
-                    })?;
+            let previous = session
+                .token
+                .clone()
+                .ok_or_else(|| Self::unauthenticated_error(&session))?;
             let refresh_token = previous.refresh_token.clone().ok_or_else(|| {
                 ProviderError::AuthenticationInvalid {
                     message: "Grok refresh token is unavailable".into(),
@@ -296,13 +336,25 @@ impl<T: GrokTransport> GrokProvider<T> {
         }
         token.validate()?;
         let state = token.auth_state();
+        let expected_version = {
+            let session = self.lock_session()?;
+            if session.generation != generation || session.token.as_ref() != Some(&previous) {
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "Grok authentication state changed during refresh".into(),
+                });
+            }
+            session.stored_version
+        };
+        // Store I/O runs outside the session lock; the lifecycle lock held by
+        // the caller serializes this against a sign-in or logout persist.
+        let stored_version = self.persist_rotated_token(expected_version, &token)?;
         let mut session = self.lock_session()?;
         if session.generation != generation || session.token.as_ref() != Some(&previous) {
             return Err(ProviderError::AuthenticationInvalid {
                 message: "Grok authentication state changed during refresh".into(),
             });
         }
-        session.stored_version = self.persist_rotated_token(session.stored_version, &token)?;
+        session.stored_version = stored_version;
         session.token = Some(token);
         Ok(state)
     }
@@ -315,16 +367,23 @@ impl<T: GrokTransport> GrokProvider<T> {
     ) -> ProviderResult<AuthState> {
         token.validate()?;
         let state = token.auth_state();
-        let mut session = self.lock_session()?;
-        if session.generation != generation
-            || session.pending.as_ref().map(PendingAuthorization::flow_id) != Some(flow_id)
         {
-            return Err(ProviderError::AuthenticationInvalid {
-                message: "Grok OAuth flow is no longer current".into(),
-            });
+            let session = self.lock_session()?;
+            if session.generation != generation
+                || session.pending.as_ref().map(PendingAuthorization::flow_id) != Some(flow_id)
+            {
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "Grok OAuth flow is no longer current".into(),
+                });
+            }
         }
-        // Installing a completed sign-in supersedes any stored record.
-        session.stored_version = self.persist_created_token(&token)?;
+        // Installing a completed sign-in supersedes any stored record. The
+        // write runs outside the session lock; the caller's lifecycle lock
+        // keeps it serialized against refresh and logout.
+        let stored_version = self.persist_created_token(&token)?;
+        let mut session = self.lock_session()?;
+        session.stored_version = stored_version;
+        session.stored_credential_corrupt = false;
         session.pending = None;
         session.token = Some(token);
         Ok(state)
@@ -424,6 +483,9 @@ where
     }
 
     async fn complete_auth(&self, request: AuthCompleteRequest) -> ProviderResult<AuthState> {
+        // Held across the provider call on purpose: `install_token` persists
+        // outside the session lock, and this is what serializes that write
+        // against a concurrent refresh or logout.
         let _lifecycle = self.lifecycle.lock().await;
         self.ensure_credentials_loaded()?;
         enum Completion {
@@ -552,25 +614,28 @@ where
 
     async fn auth_status(&self) -> ProviderResult<AuthState> {
         self.ensure_credentials_loaded()?;
-        let expired = self
-            .lock_session()?
-            .token
-            .as_ref()
-            .is_some_and(|token| token.expires_at.is_some_and(|expiry| expiry <= Utc::now()));
+        let expires_soon = Utc::now() + chrono::Duration::seconds(REFRESH_SKEW_SECONDS);
+        let expired = self.lock_session()?.token.as_ref().is_some_and(|token| {
+            token
+                .expires_at
+                .is_some_and(|expiry| expiry <= expires_soon)
+        });
         if expired {
             // A refresh the server refuses leaves the account unusable, but it
             // is still that account: reporting the identity is what lets a fresh
-            // sign-in as the same user replace this row.
-            let account_label = self
+            // sign-in as the same user replace this row. The key is hashed the
+            // same way `Authenticated` hashes it, or the two states could never
+            // name the same account.
+            let account_key = self
                 .lock_session()?
                 .token
                 .as_ref()
-                .and_then(|token| token.account_label.clone());
+                .and_then(|token| token.account_label.as_deref().and_then(account_identity));
             return match self.refresh_auth().await {
                 Ok(state) => Ok(state),
                 Err(ProviderError::AuthenticationInvalid { message }) => Ok(AuthState::Invalid {
                     reason: message,
-                    account_key: account_label,
+                    account_key,
                 }),
                 Err(error) => Err(error),
             };
@@ -595,6 +660,13 @@ where
                 expires_at: pending.expires_at(),
             });
         }
+        if session.stored_credential_corrupt {
+            return Ok(AuthState::Invalid {
+                reason: "the stored Grok credential is unreadable; sign in again".into(),
+                // The corrupt record cannot be decoded, so it names no account.
+                account_key: None,
+            });
+        }
         Ok(AuthState::NotAuthenticated)
     }
 
@@ -605,16 +677,22 @@ where
             let mut session = self.lock_session()?;
             let token = session.token.clone();
             if let Some(expected) = &request.account_label {
-                match token
-                    .as_ref()
-                    .and_then(|token| token.account_label.as_ref())
-                {
-                    Some(actual) if actual == expected => {}
-                    _ => {
-                        return Err(ProviderError::AuthenticationInvalid {
-                            message: "Grok logout account does not match the authenticated account"
-                                .into(),
-                        });
+                // A corrupt record names no account, so the label guard cannot
+                // apply; deleting it is the recovery path.
+                let unverifiable = session.stored_credential_corrupt && token.is_none();
+                if !unverifiable {
+                    match token
+                        .as_ref()
+                        .and_then(|token| token.account_label.as_ref())
+                    {
+                        Some(actual) if actual == expected => {}
+                        _ => {
+                            return Err(ProviderError::AuthenticationInvalid {
+                                message:
+                                    "Grok logout account does not match the authenticated account"
+                                        .into(),
+                            });
+                        }
                     }
                 }
             }
@@ -633,48 +711,95 @@ where
                 .revoke(&token)
                 .await
                 .map_err(ProviderError::from)?;
-            let mut session = self.lock_session()?;
-            if session.token.as_ref() == Some(&token) {
+            let still_current = {
+                let session = self.lock_session()?;
+                session.token.as_ref() == Some(&token)
+            };
+            if still_current {
+                // Store I/O outside the session lock; the lifecycle lock
+                // serializes it against refresh and sign-in.
                 self.persist_cleared()?;
+                let mut session = self.lock_session()?;
                 session.stored_version = None;
                 session.token = None;
+                session.stored_credential_corrupt = false;
             }
         } else {
             self.persist_cleared()?;
-            self.lock_session()?.stored_version = None;
+            let mut session = self.lock_session()?;
+            session.stored_version = None;
+            session.stored_credential_corrupt = false;
         }
         Ok(())
     }
 
     async fn query(&self, _request: UsageQuery) -> ProviderResult<QueryOutcome<Self::VendorUsage>> {
         self.ensure_credentials_loaded()?;
-        let expired = self
-            .lock_session()?
-            .token
-            .as_ref()
-            .is_some_and(|token| token.expires_at.is_some_and(|expiry| expiry <= Utc::now()));
+        let expires_soon = Utc::now() + chrono::Duration::seconds(REFRESH_SKEW_SECONDS);
+        let expired = self.lock_session()?.token.as_ref().is_some_and(|token| {
+            token
+                .expires_at
+                .is_some_and(|expiry| expiry <= expires_soon)
+        });
         if expired {
             self.refresh_auth().await?;
         }
-        let (generation, token) = {
+        let (mut generation, mut token) = {
             let session = self.lock_session()?;
-            let token =
-                session
-                    .token
-                    .clone()
-                    .ok_or_else(|| ProviderError::AuthenticationInvalid {
-                        message: "Grok is not authenticated".into(),
-                    })?;
+            let token = session
+                .token
+                .clone()
+                .ok_or_else(|| Self::unauthenticated_error(&session))?;
             (session.generation, token)
         };
 
-        let billing = self.transport.fetch_billing(&token.access_token);
-        let settings = tokio::time::timeout(
-            SETTINGS_FETCH_DEADLINE,
-            self.transport.fetch_settings(&token.access_token),
-        );
-        let (billing_result, settings_result) = tokio::join!(billing, settings);
-        let response = billing_result.map_err(ProviderError::from)?;
+        // Settings overlaps billing so a hang cannot add a second wait after a
+        // slow billing response. It is only driven while billing is still in
+        // flight; a billing failure drops the in-flight request instead of
+        // waiting out its deadline.
+        let mut retried = false;
+        let (response, settings_result) = loop {
+            let access_token = token.access_token.clone();
+            let settings = tokio::time::timeout(
+                SETTINGS_FETCH_DEADLINE,
+                self.transport.fetch_settings(&access_token),
+            );
+            tokio::pin!(settings);
+            let mut billing = std::pin::pin!(self.transport.fetch_billing(&access_token));
+            let mut settings_result = None;
+            let billing_result = loop {
+                tokio::select! {
+                    result = &mut billing => break result,
+                    result = &mut settings, if settings_result.is_none() => {
+                        settings_result = Some(result);
+                    }
+                }
+            };
+            match billing_result {
+                // An access token rejected mid-flight gets one refresh and
+                // retry. A missing refresh token, a refused refresh, or a
+                // second rejection is a real sign-out and surfaces as
+                // AuthenticationInvalid.
+                Err(GrokApiError::AuthenticationInvalid(_)) if !retried => {
+                    self.refresh_auth().await?;
+                    let session = self.lock_session()?;
+                    token = session
+                        .token
+                        .clone()
+                        .ok_or_else(|| Self::unauthenticated_error(&session))?;
+                    generation = session.generation;
+                    retried = true;
+                }
+                Err(error) => return Err(error.into()),
+                Ok(response) => {
+                    let settings_result = match settings_result {
+                        Some(result) => result,
+                        None => settings.await,
+                    };
+                    break (response, settings_result);
+                }
+            }
+        };
         self.ensure_query_session(generation, &token)?;
         let mut outcome = parse_billing(response, token.account_label.clone(), Utc::now())?;
 

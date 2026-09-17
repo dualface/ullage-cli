@@ -110,6 +110,70 @@ pub(crate) struct GrokSettings {
     pub access_restricted: bool,
 }
 
+// Field alias tables shared between envelope selection and field parsing so
+// the two passes can never drift apart.
+const TIER_FIELDS: &[&str] = &["tier", "plan", "subscription_tier", "subscriptionTier"];
+const CURRENT_PERIOD_FIELDS: &[&str] = &["currentPeriod", "current_period"];
+const LEGACY_PERIOD_FIELDS: &[&str] = &["billing_period", "billingPeriod", "period"];
+const USAGE_PERCENT_FIELDS: &[&str] = &[
+    "usage_percent",
+    "usagePercent",
+    "used_percent",
+    "usedPercent",
+    "percent_used",
+    "creditUsagePercent",
+];
+const MONTHLY_USED_FIELDS: &[&str] = &["used", "usedAmount", "used_amount"];
+const MONTHLY_LIMIT_FIELDS: &[&str] = &["monthlyLimit", "monthly_limit"];
+const ON_DEMAND_CAP_FIELDS: &[&str] = &["onDemandCap", "on_demand_cap"];
+const ON_DEMAND_USED_FIELDS: &[&str] = &["onDemandUsed", "on_demand_used"];
+const PRODUCTS_FIELDS: &[&str] = &[
+    "products",
+    "product_usage",
+    "productUsage",
+    "usage_by_product",
+    "usageByProduct",
+    "breakdown",
+];
+const PREPAID_FIELDS: &[&str] = &[
+    "prepaid",
+    "prepaid_credits",
+    "prepaidCredits",
+    "credits",
+    "extra_usage_credits",
+    "prepaidBalance",
+];
+/// Envelope-selector subset of [`PREPAID_FIELDS`]. `prepaidBalance` is parsed
+/// only after an object is chosen; letting it claim an earlier envelope would
+/// hide a later object that carries the percentage window.
+const PREPAID_SELECTOR_FIELDS: &[&str] = &[
+    "prepaid",
+    "prepaid_credits",
+    "prepaidCredits",
+    "credits",
+    "extra_usage_credits",
+];
+const ON_DEMAND_FIELDS: &[&str] = &[
+    "on_demand",
+    "onDemand",
+    "pay_as_you_go",
+    "payAsYouGo",
+    "extra_usage",
+];
+const TOP_UP_METHOD_FIELDS: &[&str] = &["topUpMethod", "top_up_method"];
+const FLAT_PERIOD_START_FIELDS: &[&str] = &[
+    "billingPeriodStart",
+    "billing_period_start",
+    "period_start",
+    "periodStart",
+];
+const FLAT_PERIOD_END_FIELDS: &[&str] = &[
+    "billingPeriodEnd",
+    "billing_period_end",
+    "period_end",
+    "periodEnd",
+];
+
 pub fn parse_billing(
     response: Value,
     account_label: Option<String>,
@@ -121,10 +185,7 @@ pub fn parse_billing(
     let mut failures = Vec::new();
     let mut recognized = false;
 
-    let tier_values = fields(
-        object,
-        &["tier", "plan", "subscription_tier", "subscriptionTier"],
-    );
+    let tier_values = fields(object, TIER_FIELDS);
     let tier_present = !tier_values.is_empty();
     recognized |= tier_present;
     let tier = tier_values.into_iter().find_map(parse_tier_value);
@@ -134,8 +195,8 @@ pub fn parse_billing(
 
     // Prefer camelCase `currentPeriod` (format=credits canonical) so a typed
     // period is not shadowed by an earlier snake_case alias that only has dates.
-    let current_period_values = fields(object, &["currentPeriod", "current_period"]);
-    let legacy_period_values = fields(object, &["billing_period", "billingPeriod", "period"]);
+    let current_period_values = fields(object, CURRENT_PERIOD_FIELDS);
+    let legacy_period_values = fields(object, LEGACY_PERIOD_FIELDS);
     let current_period_key_present = !current_period_values.is_empty();
     recognized |= current_period_key_present || !legacy_period_values.is_empty();
     let nested_from_current =
@@ -163,7 +224,7 @@ pub fn parse_billing(
             }
         }
         if period.starts_at.is_none() || period.ends_at.is_none() {
-            for value in fields(object, &["currentPeriod", "current_period"]) {
+            for value in fields(object, CURRENT_PERIOD_FIELDS) {
                 let mut local_failures = Vec::new();
                 let sibling = parse_period(value, &mut local_failures);
                 if let Some(sibling) = sibling {
@@ -200,29 +261,19 @@ pub fn parse_billing(
         current_period = Some(period);
     }
 
-    let usage_values = fields(
-        object,
-        &[
-            "usage_percent",
-            "usagePercent",
-            "used_percent",
-            "usedPercent",
-            "percent_used",
-            "creditUsagePercent",
-        ],
-    );
+    let usage_values = fields(object, USAGE_PERCENT_FIELDS);
     let usage_present = !usage_values.is_empty();
     let credit_usage_field_present = object.contains_key("creditUsagePercent");
     let product_usage_field_present = object.contains_key("productUsage");
     recognized |= usage_present;
     let mut usage_percent = usage_values.into_iter().find_map(non_negative_number);
     if usage_present && usage_percent.is_none() {
-        failures.push(failure("weekly"));
+        failures.push(failure("usage_percent"));
     }
 
-    let monthly_used_values = fields(object, &["used", "usedAmount", "used_amount"]);
-    let monthly_limit_values = fields(object, &["monthlyLimit", "monthly_limit"]);
-    let on_demand_cap_values = fields(object, &["onDemandCap", "on_demand_cap"]);
+    let monthly_used_values = fields(object, MONTHLY_USED_FIELDS);
+    let monthly_limit_values = fields(object, MONTHLY_LIMIT_FIELDS);
+    let on_demand_cap_values = fields(object, ON_DEMAND_CAP_FIELDS);
     recognized |= !monthly_used_values.is_empty()
         || !monthly_limit_values.is_empty()
         || !on_demand_cap_values.is_empty();
@@ -249,17 +300,7 @@ pub fn parse_billing(
         }
     }
 
-    let products_values = fields(
-        object,
-        &[
-            "products",
-            "product_usage",
-            "productUsage",
-            "usage_by_product",
-            "usageByProduct",
-            "breakdown",
-        ],
-    );
+    let products_values = fields(object, PRODUCTS_FIELDS);
     recognized |= !products_values.is_empty();
     let (products, products_valid) = first_products(products_values, &mut failures);
     // Credits envelope without a percent pool is Partial, not Complete empty windows.
@@ -268,36 +309,17 @@ pub fn parse_billing(
     let kind_missing = current_period.as_ref().is_none_or(|p| p.kind.is_none());
     let will_emit_percent_window = usage_percent.is_some() || !products.is_empty();
     if credits_schema && !will_emit_percent_window {
-        push_unique_failure(&mut failures, "weekly");
+        push_unique_failure(&mut failures, "usage_percent");
     }
     if will_emit_percent_window && kind_missing && credits_schema {
         push_unique_failure(&mut failures, "current_period.type");
     }
 
-    let prepaid_values = fields(
-        object,
-        &[
-            "prepaid",
-            "prepaid_credits",
-            "prepaidCredits",
-            "credits",
-            "extra_usage_credits",
-            "prepaidBalance",
-        ],
-    );
+    let prepaid_values = fields(object, PREPAID_FIELDS);
     recognized |= !prepaid_values.is_empty();
     let prepaid = first_with_failures(prepaid_values, &mut failures, parse_prepaid);
 
-    let on_demand_values = fields(
-        object,
-        &[
-            "on_demand",
-            "onDemand",
-            "pay_as_you_go",
-            "payAsYouGo",
-            "extra_usage",
-        ],
-    );
+    let on_demand_values = fields(object, ON_DEMAND_FIELDS);
     recognized |= !on_demand_values.is_empty();
     let mut on_demand = first_with_failures(on_demand_values, &mut failures, parse_on_demand);
     let on_demand_cap_present = !on_demand_cap_values.is_empty();
@@ -307,7 +329,7 @@ pub fn parse_billing(
     if on_demand_cap_present && raw_on_demand_cap.is_none() {
         failures.push(failure("on_demand_cap"));
     }
-    let on_demand_used_values = fields(object, &["onDemandUsed", "on_demand_used"]);
+    let on_demand_used_values = fields(object, ON_DEMAND_USED_FIELDS);
     recognized |= !on_demand_used_values.is_empty();
     let on_demand_used_present = !on_demand_used_values.is_empty();
     let raw_on_demand_used = on_demand_used_values
@@ -327,7 +349,7 @@ pub fn parse_billing(
         }
     }
 
-    let top_up_method_values = fields(object, &["topUpMethod", "top_up_method"]);
+    let top_up_method_values = fields(object, TOP_UP_METHOD_FIELDS);
     recognized |= !top_up_method_values.is_empty();
     let top_up_method_present = !top_up_method_values.is_empty();
     let top_up_method = top_up_method_values.into_iter().find_map(raw_string_value);
@@ -377,22 +399,6 @@ pub fn parse_billing(
 }
 
 pub fn normalize(usage: GrokBillingUsage) -> ProviderResult<SubscriptionUsage> {
-    let mut percent_measurements = Vec::new();
-    if let Some(used) = usage.usage_percent {
-        percent_measurements.push(UsageMeasurement {
-            name: "weekly_pool".into(),
-            used,
-            limit: Some(100.0),
-            unit: MeasurementUnit::Percent,
-        });
-    }
-    percent_measurements.extend(usage.products.into_iter().map(|product| UsageMeasurement {
-        name: format!("product:{}", product.product),
-        used: product.usage_percent,
-        limit: Some(100.0),
-        unit: MeasurementUnit::Percent,
-    }));
-
     let resets_at = usage
         .current_period
         .as_ref()
@@ -412,6 +418,27 @@ pub fn normalize(usage: GrokBillingUsage) -> ProviderResult<SubscriptionUsage> {
                 UsageWindowKind::Weekly
             }
         });
+    let mut percent_measurements = Vec::new();
+    if let Some(used) = usage.usage_percent {
+        percent_measurements.push(UsageMeasurement {
+            // The pool name tracks the resolved window kind so a derived
+            // monthly percent is not labeled weekly.
+            name: match percent_window_kind {
+                UsageWindowKind::Monthly => "monthly_pool",
+                _ => "weekly_pool",
+            }
+            .into(),
+            used,
+            limit: Some(100.0),
+            unit: MeasurementUnit::Percent,
+        });
+    }
+    percent_measurements.extend(usage.products.into_iter().map(|product| UsageMeasurement {
+        name: format!("product:{}", product.product),
+        used: product.usage_percent,
+        limit: Some(100.0),
+        unit: MeasurementUnit::Percent,
+    }));
     let mut windows = Vec::new();
     // Prefer the percent window whenever it exists. The previous monthly-first
     // if/else silently dropped usage_percent measurements whenever monthly_used
@@ -613,86 +640,37 @@ fn billing_object(response: &Value) -> Option<&Map<String, Value>> {
 }
 
 fn has_usable_billing_field(object: &Map<String, Value>) -> bool {
-    let tier = fields(
-        object,
-        &["tier", "plan", "subscription_tier", "subscriptionTier"],
-    )
-    .into_iter()
-    .find_map(parse_tier_value)
-    .is_some();
+    let tier = fields(object, TIER_FIELDS)
+        .into_iter()
+        .find_map(parse_tier_value)
+        .is_some();
     let mut ignored_failures = Vec::new();
-    let period = fields(
-        object,
-        &[
-            "current_period",
-            "currentPeriod",
-            "billing_period",
-            "billingPeriod",
-            "period",
-        ],
-    )
-    .into_iter()
-    .find_map(|value| parse_period(value, &mut ignored_failures))
-    .is_some()
+    let period = fields(object, CURRENT_PERIOD_FIELDS)
+        .into_iter()
+        .chain(fields(object, LEGACY_PERIOD_FIELDS))
+        .find_map(|value| parse_period(value, &mut ignored_failures))
+        .is_some()
         || parse_flat_period(object, &mut ignored_failures).is_some();
-    let usage = fields(
-        object,
-        &[
-            "usage_percent",
-            "usagePercent",
-            "used_percent",
-            "usedPercent",
-            "percent_used",
-            "creditUsagePercent",
-        ],
-    )
-    .into_iter()
-    .find_map(non_negative_number)
-    .is_some();
-    let products = fields(
-        object,
-        &[
-            "products",
-            "product_usage",
-            "productUsage",
-            "usage_by_product",
-            "usageByProduct",
-            "breakdown",
-        ],
-    )
-    .into_iter()
-    .any(|value| parse_products(value, &mut ignored_failures).1);
-    let prepaid = fields(
-        object,
-        &[
-            "prepaid",
-            "prepaid_credits",
-            "prepaidCredits",
-            "credits",
-            "extra_usage_credits",
-        ],
-    )
-    .into_iter()
-    .find_map(|value| parse_prepaid(value, &mut ignored_failures))
-    .is_some();
-    let on_demand = fields(
-        object,
-        &[
-            "on_demand",
-            "onDemand",
-            "pay_as_you_go",
-            "payAsYouGo",
-            "extra_usage",
-        ],
-    )
-    .into_iter()
-    .find_map(|value| parse_on_demand(value, &mut ignored_failures))
-    .is_some();
-    let monthly = fields(object, &["used", "usedAmount", "used_amount"])
+    let usage = fields(object, USAGE_PERCENT_FIELDS)
+        .into_iter()
+        .find_map(non_negative_number)
+        .is_some();
+    let products = fields(object, PRODUCTS_FIELDS)
+        .into_iter()
+        .any(|value| parse_products(value, &mut ignored_failures).1);
+    let prepaid = fields(object, PREPAID_SELECTOR_FIELDS)
+        .into_iter()
+        .find_map(|value| parse_prepaid(value, &mut ignored_failures))
+        .is_some();
+    let on_demand = fields(object, ON_DEMAND_FIELDS)
+        .into_iter()
+        .find_map(|value| parse_on_demand(value, &mut ignored_failures))
+        .is_some();
+    let monthly = fields(object, MONTHLY_USED_FIELDS)
         .into_iter()
         .find_map(non_negative_number)
         .is_some()
-        || fields(object, &["monthlyLimit", "monthly_limit"])
+        || fields(object, MONTHLY_LIMIT_FIELDS)
             .into_iter()
             .find_map(non_negative_number)
             .is_some();
@@ -805,6 +783,10 @@ fn timestamp(value: &Value) -> Option<DateTime<Utc>> {
     } else {
         value.as_i64()?
     };
+    // Epoch seconds stay below 1e10 until the year 2286, while epoch
+    // milliseconds have been above it since 1970-04. Splitting on that
+    // magnitude therefore assigns each plausible vendor timestamp the unit
+    // that yields a sane date.
     if raw.unsigned_abs() >= 10_000_000_000 {
         Utc.timestamp_millis_opt(raw).single()
     } else {
@@ -816,24 +798,8 @@ fn parse_flat_period(
     object: &Map<String, Value>,
     failures: &mut Vec<PartialFailure>,
 ) -> Option<GrokPeriod> {
-    let start_values = fields(
-        object,
-        &[
-            "billingPeriodStart",
-            "billing_period_start",
-            "period_start",
-            "periodStart",
-        ],
-    );
-    let end_values = fields(
-        object,
-        &[
-            "billingPeriodEnd",
-            "billing_period_end",
-            "period_end",
-            "periodEnd",
-        ],
-    );
+    let start_values = fields(object, FLAT_PERIOD_START_FIELDS);
+    let end_values = fields(object, FLAT_PERIOD_END_FIELDS);
     if start_values.is_empty() && end_values.is_empty() {
         return None;
     }

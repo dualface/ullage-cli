@@ -18,7 +18,7 @@ use ullage_core::{
 };
 use ullage_provider_cursor::{
     ApiFailure, CreditGrantsBalance, CurrentPeriodUsage, CursorApi, CursorProvider, CursorUsage,
-    ExchangeTokens, HardLimit, PlanInfo, PlanInfoResponse, SecretString,
+    ExchangeTokens, HardLimit, HttpCursorApi, PlanInfo, PlanInfoResponse, SecretString,
 };
 
 struct FakeApi {
@@ -1294,4 +1294,194 @@ fn vendor_dto_round_trips_unknown_fields() {
         encoded["currentPeriod"]["planUsage"]["experimentalPercentUsed"],
         4
     );
+}
+
+#[test]
+fn a_browser_flow_failure_does_not_invalidate_the_session_behind_it() {
+    // The rejection belongs to the pending flow: the healthy session that
+    // already authenticated must survive it.
+    let api = fake_api(Vec::new());
+    api.polls
+        .lock()
+        .unwrap()
+        .push_back(Err(ApiFailure::authentication("browser flow rejected")));
+    let provider = CursorProvider::with_api(api);
+    authenticate(&provider);
+
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
+    assert!(matches!(
+        run_ready(provider.complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: None,
+            redirect_uri: None,
+        })),
+        Err(ProviderError::AuthenticationInvalid { .. })
+    ));
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::Authenticated { .. }
+    ));
+    // The failed flow released the pending slot.
+    assert!(matches!(
+        run_ready(provider.complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })),
+        Err(ProviderError::ProtocolIncompatible { .. })
+    ));
+}
+
+#[test]
+fn a_browser_flow_failure_without_a_session_reports_invalid() {
+    let api = fake_api(Vec::new());
+    api.polls
+        .lock()
+        .unwrap()
+        .push_back(Err(ApiFailure::authentication("browser flow rejected")));
+    let provider = CursorProvider::with_api(api);
+
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: None,
+        redirect_uri: None,
+    }))
+    .unwrap();
+    assert!(matches!(
+        run_ready(provider.complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })),
+        Err(ProviderError::AuthenticationInvalid { .. })
+    ));
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::Invalid { .. }
+    ));
+}
+
+#[test]
+fn insecure_or_unparseable_base_urls_are_rejected() {
+    for url in [
+        "http://cursor.example.com",
+        "ftp://127.0.0.1",
+        "not a url",
+        "http://[::1%25eth0]",
+    ] {
+        assert!(
+            HttpCursorApi::with_base_url(url).is_err(),
+            "expected {url} to be rejected"
+        );
+    }
+    for url in [
+        "https://api2.cursor.sh",
+        "http://127.0.0.1:8080",
+        "http://localhost",
+    ] {
+        assert!(
+            HttpCursorApi::with_base_url(url).is_ok(),
+            "expected {url} to be accepted"
+        );
+    }
+}
+
+#[test]
+fn corrupt_stored_credential_reports_invalid_and_can_be_repaired() {
+    let store = Arc::new(CredentialStore::new(MemoryCredentialBackend::default()));
+    let key = CredentialKey::new("cursor", "active").unwrap();
+    let mut stored = Credential::new();
+    stored
+        .insert("access_token", SecretValue::new(vec![0xff, 0xfe]))
+        .unwrap();
+    store.set(&key, stored).unwrap();
+
+    let provider = CursorProvider::with_api_and_store(fake_api(Vec::new()), store.clone()).unwrap();
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::Invalid { .. }
+    ));
+
+    // A fresh sign-in supersedes the unreadable record.
+    authenticate(&provider);
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::Authenticated { .. }
+    ));
+}
+
+#[test]
+fn corrupt_stored_credential_can_be_deleted_by_logout() {
+    let store = Arc::new(CredentialStore::new(MemoryCredentialBackend::default()));
+    let key = CredentialKey::new("cursor", "active").unwrap();
+    let mut stored = Credential::new();
+    stored
+        .insert("access_token", SecretValue::new(vec![0xff, 0xfe]))
+        .unwrap();
+    store.set(&key, stored).unwrap();
+
+    let provider = CursorProvider::with_api_and_store(fake_api(Vec::new()), store.clone()).unwrap();
+    // The corrupt record names no account, so even a labelled logout may
+    // delete it.
+    run_ready(provider.logout(LogoutRequest {
+        account_label: Some("anyone@example.com".into()),
+    }))
+    .unwrap();
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::NotAuthenticated
+    ));
+    assert!(matches!(
+        store.get(&key).unwrap_err(),
+        CredentialError::NotFound
+    ));
+}
+
+#[test]
+fn malformed_current_period_fields_degrade_to_partial() {
+    let usage: CurrentPeriodUsage = serde_json::from_value(serde_json::json!({
+        "billingCycleStart": 1700000000000i64,
+        "billingCycleEnd": {"unexpected": "object"},
+        "planUsage": "not-an-object",
+        "newVendorField": [1, 2]
+    }))
+    .unwrap();
+    assert_eq!(usage.billing_cycle_start, Some(1_700_000_000_000));
+    assert_eq!(usage.billing_cycle_end, None);
+    assert!(usage.plan_usage.is_none());
+    assert!(usage.extra.contains_key("newVendorField"));
+    assert!(
+        usage
+            .malformed_fields
+            .iter()
+            .any(|field| field == "billingCycleEnd")
+    );
+    assert!(
+        usage
+            .malformed_fields
+            .iter()
+            .any(|field| field == "planUsage")
+    );
+
+    let api = fake_api(vec![Ok(usage)]);
+    let provider = CursorProvider::with_api(api);
+    authenticate(&provider);
+    match run_ready(provider.query(UsageQuery::default())).unwrap() {
+        QueryOutcome::Partial { failures, .. } => {
+            assert!(
+                failures
+                    .iter()
+                    .any(|failure| failure.scope == "current_period.billing_cycle_end")
+            );
+            assert!(
+                failures
+                    .iter()
+                    .any(|failure| failure.scope == "current_period.plan_usage")
+            );
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
 }

@@ -20,7 +20,7 @@ use ullage_core::{
     Capability, PartialFailure, Provider, ProviderDescriptor, ProviderError, ProviderId,
     ProviderResult, QueryOutcome, SubscriptionUsage, UsageQuery,
 };
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 pub use api::{ApiFailure, ApiFailureKind, CursorApi, ExchangeTokens, HttpCursorApi, SecretString};
 pub use dto::{
@@ -48,6 +48,10 @@ struct ProviderState {
     invalid_account_key: Option<String>,
     /// Store version `auth` was observed at; required for CAS updates.
     stored_version: Option<CredentialVersion>,
+    /// A stored record that will not decode is corrupt, not absent: the flag
+    /// keeps `auth_status` able to report Invalid and logout able to delete
+    /// the record even though no account can be read out of it.
+    stored_credential_corrupt: bool,
     credentials_loaded: bool,
     /// Ticked when a provider exchange starts under `exchange_gate` and
     /// again when its outcome is published; comparing it against a snapshot
@@ -76,12 +80,15 @@ struct ExchangeVerdict {
 
 /// An authentication in progress. The API key variant waits for the user to
 /// paste a key; the browser variant is polled until Cursor hands over a session.
+/// Both expire: an abandoned flow must not wedge re-authentication forever.
 enum PendingFlow {
     ApiKey {
         flow_id: String,
+        expires_at: DateTime<Utc>,
     },
-    /// `verifier` is the secret half of the deep link's challenge and never
-    /// leaves the daemon: only the challenge derived from it reaches the browser.
+    /// `verifier` is the secret half of the deep link's challenge. It stays out
+    /// of the browser URL — only the derived challenge is linked — but it is
+    /// sent back to `api2.cursor.sh` by `poll_login` when completing the flow.
     Browser {
         flow_id: String,
         uuid: String,
@@ -93,8 +100,32 @@ enum PendingFlow {
 impl PendingFlow {
     fn flow_id(&self) -> &str {
         match self {
-            Self::ApiKey { flow_id } | Self::Browser { flow_id, .. } => flow_id,
+            Self::ApiKey { flow_id, .. } | Self::Browser { flow_id, .. } => flow_id,
         }
+    }
+
+    fn expires_at(&self) -> DateTime<Utc> {
+        match self {
+            Self::ApiKey { expires_at, .. } | Self::Browser { expires_at, .. } => *expires_at,
+        }
+    }
+}
+
+impl ProviderState {
+    /// Releases a pending flow whose lifetime ran out, returning whether one
+    /// expired. Called at every entry point that `pending_flow` would
+    /// otherwise block, so an abandoned flow cannot wedge refresh,
+    /// re-exchange, or re-authentication forever.
+    fn expire_pending_flow(&mut self) -> bool {
+        if self
+            .pending_flow
+            .as_ref()
+            .is_some_and(|pending| pending.expires_at() <= Utc::now())
+        {
+            self.pending_flow = None;
+            return true;
+        }
+        false
     }
 }
 
@@ -214,50 +245,115 @@ impl CursorProvider {
             Err(error) => return Err(credential_error(error)),
         };
         let stored_version = stored.version();
-        let saved_label = stored
-            .credential()
-            .get("account_label")
-            .map(|value| String::from_utf8(value.expose().to_vec()))
-            .transpose()
-            .map_err(|_| credential_error(CredentialError::CorruptCredential))?;
-        let material = match stored.credential().get("api_key") {
-            Some(_) => {
-                let api_key = credential_string(stored.credential(), "api_key")?;
-                let mut exchange = self
-                    .api
-                    .exchange_user_api_key(&Zeroizing::new(api_key.clone()))
-                    .await
-                    .map_err(ApiFailure::into_provider_error)?;
-                let exchanged_label = exchange
-                    .email
-                    .as_ref()
-                    .map(|email| email.trim().to_lowercase());
-                if saved_label != exchanged_label {
-                    return Err(ProviderError::ProtocolIncompatible {
-                        message: "stored Cursor identity does not match the token exchange".into(),
-                    });
+        enum Parsed {
+            Material(AuthMaterial),
+            /// The record exists but no field combination decodes into usable
+            /// auth material. Surfaced as Invalid so sign-in can repair it
+            /// and logout can delete it.
+            Corrupt,
+            /// The stored API key was rejected; the record is still that
+            /// account's, so Invalid names the identity for the repair path.
+            Rejected {
+                message: String,
+                label: Option<String>,
+            },
+        }
+        let parsed: Parsed = async {
+            let saved_label = match stored
+                .credential()
+                .get("account_label")
+                .map(|value| String::from_utf8(value.expose().to_vec()))
+                .transpose()
+            {
+                Ok(saved_label) => saved_label,
+                Err(_) => return Ok(Parsed::Corrupt),
+            };
+            let material = match stored.credential().get("api_key") {
+                Some(_) => {
+                    let api_key = match credential_string(stored.credential(), "api_key") {
+                        Ok(api_key) => api_key,
+                        Err(_) => return Ok(Parsed::Corrupt),
+                    };
+                    let mut exchange = match self
+                        .api
+                        .exchange_user_api_key(&Zeroizing::new(api_key.clone()))
+                        .await
+                    {
+                        Ok(exchange) => exchange,
+                        Err(error) if error.kind == ApiFailureKind::Authentication => {
+                            return Ok(Parsed::Rejected {
+                                message: error.message,
+                                label: saved_label,
+                            });
+                        }
+                        Err(error) => return Err(ApiFailure::into_provider_error(error)),
+                    };
+                    let exchanged_label = exchange
+                        .email
+                        .as_ref()
+                        .map(|email| email.trim().to_lowercase());
+                    // An absent side cannot contradict the other: only two
+                    // known labels that disagree prove an identity swap.
+                    if let (Some(saved), Some(exchanged)) =
+                        (saved_label.as_deref(), exchanged_label.as_deref())
+                    {
+                        if saved != exchanged {
+                            return Err(ProviderError::ProtocolIncompatible {
+                                message: "stored Cursor identity does not match the token exchange"
+                                    .into(),
+                            });
+                        }
+                    }
+                    let access_token = exchange.access_token.take();
+                    AuthMaterial {
+                        expires_at: token_expiry(&access_token),
+                        account_key: token_subject(&access_token, saved_label.as_deref()),
+                        api_key: Some(Zeroizing::new(api_key)),
+                        access_token,
+                        account_label: saved_label,
+                    }
                 }
-                let access_token = exchange.access_token.take();
-                AuthMaterial {
-                    expires_at: token_expiry(&access_token),
-                    account_key: token_subject(&access_token, saved_label.as_deref()),
-                    api_key: Some(Zeroizing::new(api_key)),
-                    access_token,
-                    account_label: saved_label,
-                }
+                // A browser sign-in stores the session itself: there is
+                // nothing to exchange, so the stored token is used until
+                // Cursor rejects it.
+                None => match credential_string(stored.credential(), "access_token") {
+                    Ok(access_token) => {
+                        let access_token = Zeroizing::new(access_token);
+                        AuthMaterial {
+                            expires_at: token_expiry(&access_token),
+                            account_key: token_subject(&access_token, saved_label.as_deref()),
+                            api_key: None,
+                            access_token,
+                            account_label: saved_label,
+                        }
+                    }
+                    Err(_) => return Ok(Parsed::Corrupt),
+                },
+            };
+            Ok(Parsed::Material(material))
+        }
+        .await?;
+        let material = match parsed {
+            Parsed::Material(material) => material,
+            Parsed::Rejected { message, label } => {
+                // A stored key the server refuses is dead, but it is still
+                // that account's record: report Invalid so a fresh sign-in
+                // can replace it instead of surfacing a bare error.
+                let mut state = self.lock_state()?;
+                state.generation = state.generation.wrapping_add(1);
+                state.session_id = state.session_id.wrapping_add(1);
+                state.stored_version = Some(stored_version);
+                state.invalid_account_key = label;
+                state.invalid_reason = Some(message);
+                state.credentials_loaded = true;
+                return Ok(());
             }
-            // A browser sign-in stores the session itself: there is nothing to
-            // exchange, so the stored token is used until Cursor rejects it.
-            None => {
-                let access_token =
-                    Zeroizing::new(credential_string(stored.credential(), "access_token")?);
-                AuthMaterial {
-                    expires_at: token_expiry(&access_token),
-                    account_key: token_subject(&access_token, saved_label.as_deref()),
-                    api_key: None,
-                    access_token,
-                    account_label: saved_label,
-                }
+            Parsed::Corrupt => {
+                let mut state = self.lock_state()?;
+                state.stored_version = Some(stored_version);
+                state.stored_credential_corrupt = true;
+                state.credentials_loaded = true;
+                return Ok(());
             }
         };
         let mut state = self.lock_state()?;
@@ -272,7 +368,8 @@ impl CursorProvider {
     pub async fn refresh_auth(&self) -> ProviderResult<AuthState> {
         self.ensure_credentials_loaded().await?;
         let (api_key, generation, session_id, epoch) = {
-            let state = self.lock_state()?;
+            let mut state = self.lock_state()?;
+            state.expire_pending_flow();
             if state.pending_flow.is_some() {
                 return Err(ProviderError::ProtocolIncompatible {
                     message: "Cursor authentication replacement is pending".into(),
@@ -329,7 +426,10 @@ impl CursorProvider {
                 }
             },
         };
-        match self.install_exchange(Some(api_key), exchange, generation, None) {
+        match self
+            .install_exchange(Some(api_key), exchange, generation, None)
+            .await
+        {
             Ok((status, _)) => Ok(status),
             Err(error) => self
                 .refreshed_auth_since(generation, session_id)?
@@ -435,19 +535,21 @@ impl CursorProvider {
         };
         let refreshed_access_token =
             Zeroizing::new(exchange.access_token.expose_secret().to_owned());
-        let (refreshed_access_token, refreshed_generation) =
-            match self.install_exchange(Some(api_key), exchange, generation, None) {
-                Ok((_, refreshed_generation)) => (refreshed_access_token, refreshed_generation),
-                Err(error) => match self
-                    .refreshed_auth_since(generation, expected_session_id)
-                    .map_err(provider_as_api_failure)?
-                {
-                    Some((access_token, _, refreshed_generation)) => {
-                        (access_token, refreshed_generation)
-                    }
-                    None => return Err(provider_as_api_failure(error)),
-                },
-            };
+        let (refreshed_access_token, refreshed_generation) = match self
+            .install_exchange(Some(api_key), exchange, generation, None)
+            .await
+        {
+            Ok((_, refreshed_generation)) => (refreshed_access_token, refreshed_generation),
+            Err(error) => match self
+                .refreshed_auth_since(generation, expected_session_id)
+                .map_err(provider_as_api_failure)?
+            {
+                Some((access_token, _, refreshed_generation)) => {
+                    (access_token, refreshed_generation)
+                }
+                None => return Err(provider_as_api_failure(error)),
+            },
+        };
         drop(gate);
         let retried = self.call_endpoint(endpoint, &refreshed_access_token).await;
         self.coordinate_retry_result(expected_session_id, refreshed_generation, retried)
@@ -537,10 +639,11 @@ impl CursorProvider {
             });
         };
         self.install_exchange(None, exchange, generation, Some(flow_id))
+            .await
             .map(|(status, _)| status)
     }
 
-    fn install_exchange(
+    async fn install_exchange(
         &self,
         api_key: Option<Zeroizing<String>>,
         exchange: ExchangeTokens,
@@ -553,42 +656,52 @@ impl CursorProvider {
             email,
         } = exchange;
         let access_token = access_token.take();
+        // The refresh token goes unused on purpose: Cursor issues session and
+        // refresh with the same expiry and offers no renewal endpoint, so the
+        // only credential that can re-exchange is the API key.
         drop(refresh_token);
         let exchanged_account_label = email.map(|email| email.trim().to_lowercase());
-        let mut state = self.lock_state()?;
-        let expected_state_is_current = state.generation == expected_generation
-            && match expected_flow {
-                Some(flow_id) => {
-                    state.pending_flow.as_ref().map(PendingFlow::flow_id) == Some(flow_id)
-                }
-                None => state.auth.is_some() && state.pending_flow.is_none(),
-            };
-        if !expected_state_is_current {
-            return Err(ProviderError::ProtocolIncompatible {
-                message: "Cursor authentication operation was superseded".into(),
-            });
-        }
-        let account_label = if expected_flow.is_some() {
-            exchanged_account_label
-        } else {
-            let existing_label = state
-                .auth
-                .as_ref()
-                .and_then(|auth| auth.account_label.clone());
-            if let (Some(existing), Some(exchanged)) = (
-                existing_label.as_deref(),
-                exchanged_account_label.as_deref(),
-            ) {
-                if existing != exchanged {
-                    return Err(ProviderError::ProtocolIncompatible {
-                        message: "Cursor token exchange returned a different account identity"
-                            .into(),
-                    });
-                }
+        let account_label = {
+            let state = self.lock_state()?;
+            if !Self::expected_state_is_current(&state, expected_generation, expected_flow) {
+                return Err(ProviderError::ProtocolIncompatible {
+                    message: "Cursor authentication operation was superseded".into(),
+                });
             }
-            existing_label
+            if expected_flow.is_some() {
+                exchanged_account_label
+            } else {
+                let existing_label = state
+                    .auth
+                    .as_ref()
+                    .and_then(|auth| auth.account_label.clone());
+                if let (Some(existing), Some(exchanged)) = (
+                    existing_label.as_deref(),
+                    exchanged_account_label.as_deref(),
+                ) {
+                    if existing != exchanged {
+                        return Err(ProviderError::ProtocolIncompatible {
+                            message: "Cursor token exchange returned a different account identity"
+                                .into(),
+                        });
+                    }
+                }
+                existing_label
+            }
         };
-        if let Some((store, key)) = &self.credentials {
+        // The persist gate serializes the store write and the state commit so
+        // a racing sign-in or logout cannot interleave between them. Store I/O
+        // itself stays outside the state lock.
+        let _persist_gate = self.credential_gate.lock().await;
+        {
+            let state = self.lock_state()?;
+            if !Self::expected_state_is_current(&state, expected_generation, expected_flow) {
+                return Err(ProviderError::ProtocolIncompatible {
+                    message: "Cursor authentication operation was superseded".into(),
+                });
+            }
+        }
+        let stored_version = if let Some((store, key)) = &self.credentials {
             let mut credential = Credential::new();
             match &api_key {
                 Some(api_key) => credential
@@ -603,7 +716,7 @@ impl CursorProvider {
                     .insert("account_label", SecretValue::new(label.as_bytes()))
                     .map_err(credential_error)?;
             }
-            state.stored_version = if expected_flow.is_some() {
+            if expected_flow.is_some() {
                 // A completed sign-in supersedes whatever the store holds.
                 Some(
                     store
@@ -614,12 +727,11 @@ impl CursorProvider {
             } else {
                 // A refresh updates the record it observed; a concurrent write
                 // (logout, another sign-in) makes the rotation stale.
-                let expected =
-                    state
-                        .stored_version
-                        .ok_or_else(|| ProviderError::ProtocolIncompatible {
-                            message: "Cursor credential has no observed store version".into(),
-                        })?;
+                let expected = self.lock_state()?.stored_version.ok_or_else(|| {
+                    ProviderError::ProtocolIncompatible {
+                        message: "Cursor credential has no observed store version".into(),
+                    }
+                })?;
                 match store.replace(key, expected, credential) {
                     Ok(ReplaceOutcome::Replaced(stored)) => Some(stored.version()),
                     Ok(ReplaceOutcome::VersionConflict) | Err(CredentialError::NotFound) => {
@@ -629,8 +741,17 @@ impl CursorProvider {
                     }
                     Err(error) => return Err(credential_error(error)),
                 }
-            };
+            }
+        } else {
+            None
+        };
+        let mut state = self.lock_state()?;
+        if !Self::expected_state_is_current(&state, expected_generation, expected_flow) {
+            return Err(ProviderError::ProtocolIncompatible {
+                message: "Cursor authentication operation was superseded".into(),
+            });
         }
+        state.stored_version = stored_version;
         state.generation = state.generation.wrapping_add(1);
         if expected_flow.is_some() {
             state.session_id = state.session_id.wrapping_add(1);
@@ -638,6 +759,7 @@ impl CursorProvider {
         state.pending_flow = None;
         state.invalid_reason = None;
         state.invalid_account_key = None;
+        state.stored_credential_corrupt = false;
         let expires_at = token_expiry(&access_token);
         let account_key = token_subject(&access_token, account_label.as_deref());
         state.auth = Some(AuthMaterial {
@@ -657,8 +779,23 @@ impl CursorProvider {
         ))
     }
 
+    fn expected_state_is_current(
+        state: &ProviderState,
+        expected_generation: u64,
+        expected_flow: Option<&str>,
+    ) -> bool {
+        state.generation == expected_generation
+            && match expected_flow {
+                Some(flow_id) => {
+                    state.pending_flow.as_ref().map(PendingFlow::flow_id) == Some(flow_id)
+                }
+                None => state.auth.is_some() && state.pending_flow.is_none(),
+            }
+    }
+
     fn auth_tokens(&self, expected_session_id: u64) -> ProviderResult<AuthSnapshot> {
-        let state = self.lock_state()?;
+        let mut state = self.lock_state()?;
+        state.expire_pending_flow();
         if state.session_id != expected_session_id {
             return Err(ProviderError::ProtocolIncompatible {
                 message: "Cursor authentication session changed during the operation".into(),
@@ -723,11 +860,21 @@ impl CursorProvider {
 
         if operation_is_current {
             if error.kind == ApiFailureKind::Authentication {
-                state.generation = state.generation.wrapping_add(1);
-                state.session_id = state.session_id.wrapping_add(1);
-                state.pending_flow = None;
-                state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_key);
-                state.invalid_reason = Some(error.message.clone());
+                if expected_flow.is_some() {
+                    // The failure belongs to the pending flow alone: clearing
+                    // `state.auth` or setting `invalid_reason` here would
+                    // downgrade a healthy session behind it.
+                    state.pending_flow = None;
+                    if state.auth.is_none() {
+                        state.invalid_reason = Some(error.message.clone());
+                    }
+                } else {
+                    state.generation = state.generation.wrapping_add(1);
+                    state.session_id = state.session_id.wrapping_add(1);
+                    state.pending_flow = None;
+                    state.invalid_account_key = state.auth.take().and_then(|auth| auth.account_key);
+                    state.invalid_reason = Some(error.message.clone());
+                }
             }
             return Ok(ExchangeFailureResolution::Failed(
                 error.into_provider_error(),
@@ -895,12 +1042,6 @@ impl CursorProvider {
     }
 }
 
-impl Default for CursorProvider {
-    fn default() -> Self {
-        Self::new().expect("the default Cursor HTTP client should be constructible")
-    }
-}
-
 #[derive(Clone, Copy)]
 enum Endpoint {
     CurrentPeriod,
@@ -948,18 +1089,28 @@ impl Provider for CursorProvider {
         let _credential_gate = self.credential_gate.lock().await;
 
         let (pending, challenge) = if api_key_flow {
-            let flow_id = new_flow_id("api-key");
+            let flow_id = new_flow_id("api-key")?;
+            // An API-key flow waits for user input, so it gets the same
+            // lifetime as the browser flow: abandoning it must not wedge the
+            // pending slot forever.
+            let expires_at = Utc::now() + Duration::minutes(BROWSER_FLOW_LIFETIME_MINUTES);
             let challenge = AuthChallenge {
                 flow_id: flow_id.clone(),
                 method: AuthMethod::ApiToken,
                 verification_uri: Some(API_KEY_DASHBOARD.into()),
                 user_code: None,
-                expires_at: None,
+                expires_at: Some(expires_at),
                 input: Some(AuthInputRequest::secret("the Cursor API key")),
             };
-            (PendingFlow::ApiKey { flow_id }, challenge)
+            (
+                PendingFlow::ApiKey {
+                    flow_id,
+                    expires_at,
+                },
+                challenge,
+            )
         } else {
-            let flow_id = new_flow_id("browser");
+            let flow_id = new_flow_id("browser")?;
             let verifier = random_url_token()?;
             let uuid = random_uuid()?;
             let expires_at = Utc::now() + Duration::minutes(BROWSER_FLOW_LIFETIME_MINUTES);
@@ -1006,7 +1157,7 @@ impl Provider for CursorProvider {
             redirect_uri: _,
         } = request;
         let (generation, browser_flow) = {
-            let state = self.lock_state()?;
+            let mut state = self.lock_state()?;
             let pending = state
                 .pending_flow
                 .as_ref()
@@ -1014,15 +1165,22 @@ impl Provider for CursorProvider {
                 .ok_or_else(|| ProviderError::ProtocolIncompatible {
                     message: "Cursor authentication flow ID is not active".into(),
                 })?;
-            let browser_flow = match pending {
-                PendingFlow::ApiKey { .. } => None,
+            let (api_key_expires_at, browser_flow) = match pending {
+                PendingFlow::ApiKey { expires_at, .. } => (Some(*expires_at), None),
                 PendingFlow::Browser {
                     uuid,
                     verifier,
                     expires_at,
                     ..
-                } => Some((uuid.clone(), verifier.clone(), *expires_at)),
+                } => (None, Some((uuid.clone(), verifier.clone(), *expires_at))),
             };
+            if api_key_expires_at.is_some_and(|expires_at| expires_at <= Utc::now()) {
+                // The abandoned flow must release the pending slot.
+                state.pending_flow = None;
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "Cursor API key sign-in expired".into(),
+                });
+            }
             (state.generation, browser_flow)
         };
         if let Some((uuid, verifier, expires_at)) = browser_flow {
@@ -1030,14 +1188,15 @@ impl Provider for CursorProvider {
                 .complete_browser_auth(&flow_id, &uuid, &verifier, expires_at, generation)
                 .await;
         }
-        let mut api_key = Zeroizing::new(authorization_code.unwrap_or_default());
+        // `authorization_code` arrives as protocol plaintext; from here on the
+        // only held copies are Zeroizing.
+        let api_key = Zeroizing::new(authorization_code.unwrap_or_default());
         if api_key.trim().is_empty() {
             return Err(ProviderError::AuthenticationInvalid {
                 message: "Cursor User API Key is required".into(),
             });
         }
         let trimmed_api_key = Zeroizing::new(api_key.trim().to_owned());
-        api_key.zeroize();
         let exchange = match self.api.exchange_user_api_key(&trimmed_api_key).await {
             Ok(exchange) => exchange,
             Err(error) => match self.resolve_exchange_failure(
@@ -1054,22 +1213,21 @@ impl Provider for CursorProvider {
             },
         };
         self.install_exchange(Some(trimmed_api_key), exchange, generation, Some(&flow_id))
+            .await
             .map(|(status, _)| status)
     }
 
     async fn auth_status(&self) -> ProviderResult<AuthState> {
         self.ensure_credentials_loaded().await?;
         let mut state = self.lock_state()?;
-        // A browser flow nobody finished would stay pending forever otherwise,
-        // and a pending flow names no account, so the identity behind it would
-        // stay invisible to anything comparing accounts.
-        if let Some(PendingFlow::Browser { expires_at, .. }) = &state.pending_flow {
-            if *expires_at <= Utc::now() {
-                state.pending_flow = None;
-                if state.auth.is_none() && state.invalid_account_key.is_some() {
-                    state.invalid_reason = Some("the Cursor sign-in was not completed".into());
-                }
-            }
+        // A flow nobody finished would stay pending forever otherwise, and a
+        // pending flow names no account, so the identity behind it would stay
+        // invisible to anything comparing accounts.
+        if state.expire_pending_flow()
+            && state.auth.is_none()
+            && state.invalid_account_key.is_some()
+        {
+            state.invalid_reason = Some("the Cursor sign-in was not completed".into());
         }
         let state = state;
         if let Some(reason) = &state.invalid_reason {
@@ -1085,31 +1243,42 @@ impl Provider for CursorProvider {
             return Ok(session_auth_state(auth));
         }
         if let Some(pending) = &state.pending_flow {
-            let expires_at = match pending {
-                PendingFlow::ApiKey { .. } => None,
-                PendingFlow::Browser { expires_at, .. } => Some(*expires_at),
-            };
             return Ok(AuthState::Pending {
                 flow_id: pending.flow_id().to_owned(),
-                expires_at,
+                expires_at: Some(pending.expires_at()),
+            });
+        }
+        if state.stored_credential_corrupt {
+            return Ok(AuthState::Invalid {
+                reason: "the stored Cursor credential is unreadable; sign in again".into(),
+                // The corrupt record cannot be decoded, so it names no account.
+                account_key: None,
             });
         }
         Ok(AuthState::NotAuthenticated)
     }
 
     async fn logout(&self, request: LogoutRequest) -> ProviderResult<()> {
+        // Cursor exposes no documented token-revocation endpoint, so logout is
+        // local-only: the stored credential is deleted and the session's own
+        // expiry bounds any residual server-side validity.
         if request.account_label.is_some() {
             self.ensure_credentials_loaded().await?;
         }
         let _credential_gate = self.credential_gate.lock().await;
         let mut state = self.lock_state()?;
-        if request.account_label.as_ref().is_some_and(|requested| {
-            state
-                .auth
-                .as_ref()
-                .and_then(|auth| auth.account_label.as_ref())
-                != Some(requested)
-        }) {
+        // A corrupt record names no account, so the label guard cannot verify
+        // it; deleting it is the recovery path.
+        let unverifiable = state.stored_credential_corrupt && state.auth.is_none();
+        if !unverifiable
+            && request.account_label.as_ref().is_some_and(|requested| {
+                state
+                    .auth
+                    .as_ref()
+                    .and_then(|auth| auth.account_label.as_ref())
+                    != Some(requested)
+            })
+        {
             return Err(ProviderError::AuthenticationInvalid {
                 message: "requested Cursor account is not authenticated".into(),
             });
@@ -1127,6 +1296,7 @@ impl Provider for CursorProvider {
         state.stored_version = None;
         state.invalid_reason = None;
         state.invalid_account_key = None;
+        state.stored_credential_corrupt = false;
         Ok(())
     }
 
@@ -1140,7 +1310,28 @@ impl Provider for CursorProvider {
         };
 
         let mut failures = Vec::new();
-        if current_period.plan_usage.is_none() {
+        for field in &current_period.malformed_fields {
+            let scope = match field.as_str() {
+                "billingCycleStart" => "billing_cycle_start",
+                "billingCycleEnd" => "billing_cycle_end",
+                "planUsage" => "plan_usage",
+                "spendLimitUsage" => "spend_limit_usage",
+                "autoBucketModels" => "auto_bucket_models",
+                other => other,
+            };
+            failures.push(PartialFailure::from_error(
+                format!("current_period.{scope}"),
+                &ProviderError::ProtocolIncompatible {
+                    message: String::new(),
+                },
+            ));
+        }
+        if current_period.plan_usage.is_none()
+            && !current_period
+                .malformed_fields
+                .iter()
+                .any(|field| field == "planUsage")
+        {
             failures.push(PartialFailure::from_error(
                 "current_period.plan_usage",
                 &ProviderError::ProtocolIncompatible {
@@ -1221,12 +1412,14 @@ fn session_auth_state(auth: &AuthMaterial) -> AuthState {
     }
 }
 
-fn new_flow_id(kind: &str) -> String {
-    format!(
+fn new_flow_id(kind: &str) -> ProviderResult<String> {
+    // A timestamp plus sequence is guessable, so the id carries 256 bits of
+    // randomness: it is the bearer for completing a pending flow.
+    Ok(format!(
         "cursor-{kind}-{}-{}",
-        Utc::now().timestamp_millis(),
-        FLOW_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    )
+        FLOW_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        random_url_token()?
+    ))
 }
 
 /// Both values are URL-safe by construction: the challenge is base64url of a
@@ -1348,5 +1541,149 @@ fn provider_as_api_failure(error: ProviderError) -> ApiFailure {
         ProviderError::UnsupportedCapability { capability } => {
             ApiFailure::protocol(format!("unsupported capability: {capability}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    use super::*;
+
+    struct StubApi {
+        exchanges: Mutex<VecDeque<Result<ExchangeTokens, ApiFailure>>>,
+    }
+
+    fn stub_exchange() -> ExchangeTokens {
+        ExchangeTokens {
+            access_token: SecretString::new(format!(
+                "header.{}.signature",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
+                    r#"{{"exp":{},"sub":"user|abc123"}}"#,
+                    Utc::now().timestamp() + 3600
+                ))
+            )),
+            refresh_token: None,
+            email: Some("user@example.com".into()),
+        }
+    }
+
+    #[async_trait]
+    impl CursorApi for StubApi {
+        async fn exchange_user_api_key(&self, _: &str) -> Result<ExchangeTokens, ApiFailure> {
+            self.exchanges.lock().unwrap().pop_front().unwrap()
+        }
+
+        async fn current_period(&self, _: &str) -> Result<CurrentPeriodUsage, ApiFailure> {
+            Ok(CurrentPeriodUsage::default())
+        }
+
+        async fn plan_info(&self, _: &str) -> Result<PlanInfoResponse, ApiFailure> {
+            Err(ApiFailure::protocol("unimplemented"))
+        }
+
+        async fn credit_grants(&self, _: &str) -> Result<CreditGrantsBalance, ApiFailure> {
+            Err(ApiFailure::protocol("unimplemented"))
+        }
+
+        async fn hard_limit(&self, _: &str) -> Result<HardLimit, ApiFailure> {
+            Err(ApiFailure::protocol("unimplemented"))
+        }
+    }
+
+    fn ready<F: Future>(future: F) -> F::Output {
+        let mut context = Context::from_waker(Waker::noop());
+        let mut future = Box::pin(future);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("stub future unexpectedly yielded"),
+        }
+    }
+
+    fn provider_with_exchanges(count: usize) -> CursorProvider {
+        CursorProvider::with_api(Arc::new(StubApi {
+            exchanges: Mutex::new(VecDeque::from_iter((0..count).map(|_| Ok(stub_exchange())))),
+        }))
+    }
+
+    fn authenticate(provider: &CursorProvider) {
+        let challenge = ready(provider.start_auth(AuthStartRequest {
+            method: Some(AuthMethod::ApiToken),
+            redirect_uri: None,
+        }))
+        .unwrap();
+        ready(provider.complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: Some("redacted-user-api-key".into()),
+            redirect_uri: None,
+        }))
+        .unwrap();
+    }
+
+    fn expire_pending_flow(provider: &CursorProvider) {
+        let mut state = provider.lock_state().unwrap();
+        let pending = state.pending_flow.take().expect("a pending flow");
+        let flow_id = pending.flow_id().to_owned();
+        state.pending_flow = Some(PendingFlow::ApiKey {
+            flow_id,
+            expires_at: Utc::now() - Duration::minutes(1),
+        });
+    }
+
+    #[test]
+    fn expired_api_key_flow_cannot_complete_but_releases_the_slot() {
+        let provider = provider_with_exchanges(2);
+        let challenge = ready(provider.start_auth(AuthStartRequest {
+            method: Some(AuthMethod::ApiToken),
+            redirect_uri: None,
+        }))
+        .unwrap();
+        expire_pending_flow(&provider);
+        assert!(matches!(
+            ready(provider.complete_auth(AuthCompleteRequest {
+                flow_id: challenge.flow_id,
+                authorization_code: Some("redacted-user-api-key".into()),
+                redirect_uri: None,
+            })),
+            Err(ProviderError::AuthenticationInvalid { .. })
+        ));
+        // The slot is free, so a fresh flow starts and completes.
+        authenticate(&provider);
+        assert!(matches!(
+            ready(provider.auth_status()).unwrap(),
+            AuthState::Authenticated { .. }
+        ));
+    }
+
+    #[test]
+    fn an_abandoned_api_key_flow_does_not_block_refresh() {
+        let provider = provider_with_exchanges(2);
+        authenticate(&provider);
+        ready(provider.start_auth(AuthStartRequest {
+            method: Some(AuthMethod::ApiToken),
+            redirect_uri: None,
+        }))
+        .unwrap();
+        expire_pending_flow(&provider);
+        assert!(matches!(
+            ready(provider.refresh_auth()).unwrap(),
+            AuthState::Authenticated { .. }
+        ));
+    }
+
+    #[test]
+    fn an_abandoned_api_key_flow_does_not_block_queries() {
+        let provider = provider_with_exchanges(1);
+        authenticate(&provider);
+        provider.lock_state().unwrap().pending_flow = Some(PendingFlow::ApiKey {
+            flow_id: "stale-flow".into(),
+            expires_at: Utc::now() - Duration::minutes(1),
+        });
+        assert!(matches!(
+            ready(provider.query(UsageQuery::default())).unwrap(),
+            QueryOutcome::Partial { .. } | QueryOutcome::Complete { .. }
+        ));
     }
 }

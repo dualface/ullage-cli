@@ -87,6 +87,11 @@ pub struct DeviceAuthorization {
     pub verification_uri: String,
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    /// RFC 8628 `interval` in seconds. Carried for completeness; the client
+    /// cannot receive it because `AuthChallenge` has no poll-hint field —
+    /// that is a v11 protocol candidate, so the client keeps its own interval.
+    #[serde(default)]
+    pub poll_interval_seconds: Option<u64>,
 }
 
 impl fmt::Debug for DeviceAuthorization {
@@ -98,6 +103,7 @@ impl fmt::Debug for DeviceAuthorization {
             .field("user_code", &"[REDACTED]")
             .field("verification_uri", &"[REDACTED]")
             .field("expires_at", &self.expires_at)
+            .field("poll_interval_seconds", &self.poll_interval_seconds)
             .finish()
     }
 }
@@ -235,6 +241,19 @@ impl fmt::Debug for GrokApiError {
     }
 }
 
+impl fmt::Display for GrokApiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AuthenticationInvalid(message)
+            | Self::Network(message)
+            | Self::ProtocolIncompatible(message) => formatter.write_str(message),
+            Self::RateLimited { message, .. } => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for GrokApiError {}
+
 impl From<GrokApiError> for ProviderError {
     fn from(error: GrokApiError) -> Self {
         match error {
@@ -329,12 +348,12 @@ impl HttpGrokTransport {
         })
     }
 
-    fn lock_flows(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, HashMap<String, BrowserFlow>>, GrokApiError> {
-        self.browser_flows.lock().map_err(|_| {
-            GrokApiError::ProtocolIncompatible("OAuth flow state is unavailable".into())
-        })
+    fn lock_flows(&self) -> std::sync::MutexGuard<'_, HashMap<String, BrowserFlow>> {
+        // The map only holds opaque flow records, so a poisoned lock is
+        // recovered rather than reported, matching `cancel_authorization`.
+        self.browser_flows
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     async fn post_token(&self, form: &[(&str, &str)]) -> Result<OAuthToken, GrokApiError> {
@@ -425,6 +444,9 @@ impl GrokTransport for HttpGrokTransport {
             let value = json_response(response, "device poll error").await?;
             return match value.get("error").and_then(Value::as_str) {
                 Some("authorization_pending") => Ok(OAuthPoll::Pending),
+                // RFC 8628 slow_down means "add 5s to the poll interval"; the
+                // server's own interval never reaches the client, so the hint
+                // is approximated by the client's default poll interval.
                 Some("slow_down") => Err(GrokApiError::RateLimited {
                     message: "Grok device polling must slow down".into(),
                     retry_after_seconds: Some(5),
@@ -473,7 +495,7 @@ impl GrokTransport for HttpGrokTransport {
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256");
         let expires_at = Utc::now() + chrono::Duration::minutes(10);
-        let mut flows = self.lock_flows()?;
+        let mut flows = self.lock_flows();
         flows.retain(|_, flow| flow.expires_at > Utc::now());
         flows.insert(
             state.clone(),
@@ -497,7 +519,7 @@ impl GrokTransport for HttpGrokTransport {
         authorization_code: &str,
         redirect_uri: &str,
     ) -> Result<OAuthToken, GrokApiError> {
-        let flow = self.lock_flows()?.get(flow_id).cloned().ok_or_else(|| {
+        let flow = self.lock_flows().get(flow_id).cloned().ok_or_else(|| {
             GrokApiError::AuthenticationInvalid("unknown Grok OAuth state".into())
         })?;
         if redirect_uri != flow.redirect_uri {
@@ -520,7 +542,7 @@ impl GrokTransport for HttpGrokTransport {
                 ("code_verifier", flow.verifier.as_str()),
             ])
             .await?;
-        self.lock_flows()?.remove(flow_id);
+        self.lock_flows().remove(flow_id);
         Ok(token)
     }
 
@@ -653,9 +675,14 @@ async fn parse_token_response(response: reqwest::Response) -> Result<OAuthToken,
         ensure_oauth_json_content_type(&response, "token error")?;
         let value = json_response(response, "token error").await?;
         return match value.get("error").and_then(Value::as_str) {
-            Some("invalid_grant") | Some("invalid_token") | Some("invalid_client") => Err(
+            Some("invalid_grant") | Some("invalid_token") => Err(
                 GrokApiError::AuthenticationInvalid("Grok rejected the OAuth credential".into()),
             ),
+            // invalid_client faults the configured client, not the user's
+            // credential, so re-authenticating cannot fix it.
+            Some("invalid_client") => Err(GrokApiError::ProtocolIncompatible(
+                "Grok rejected the OAuth client".into(),
+            )),
             _ => Err(GrokApiError::ProtocolIncompatible(
                 "Grok returned an unknown token error".into(),
             )),
@@ -773,8 +800,14 @@ fn parse_device_authorization(value: Value) -> Result<DeviceAuthorization, GrokA
     let expires_at = Utc::now().checked_add_signed(duration).ok_or_else(|| {
         GrokApiError::ProtocolIncompatible("Grok device authorization expiry overflowed".into())
     })?;
+    // RFC 8628 `interval` is a poll hint in seconds; invalid values fall back
+    // to absent rather than failing the flow.
+    let poll_interval_seconds = value
+        .get("interval")
+        .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()));
     Ok(DeviceAuthorization {
         flow_id: random_secret()?,
+        poll_interval_seconds,
         device_code: text("device_code").ok_or_else(|| {
             GrokApiError::ProtocolIncompatible("Grok device code is missing".into())
         })?,

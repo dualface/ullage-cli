@@ -88,7 +88,9 @@ fn live_format_credits_without_percent_fields_is_partial_not_empty_complete() {
         panic!("credits envelope without percent fields must be partial, not complete");
     };
     assert!(
-        failures.iter().any(|failure| failure.scope == "weekly"),
+        failures
+            .iter()
+            .any(|failure| failure.scope == "usage_percent"),
         "{failures:?}"
     );
     assert_eq!(data.usage_percent, None);

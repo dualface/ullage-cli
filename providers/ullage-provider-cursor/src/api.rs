@@ -13,6 +13,9 @@ use crate::dto::{CreditGrantsBalance, CurrentPeriodUsage, HardLimit, PlanInfoRes
 
 const DEFAULT_API_BASE: &str = "https://api2.cursor.sh";
 
+/// Responses larger than this are rejected before deserialization.
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApiFailureKind {
     Authentication,
@@ -163,18 +166,26 @@ impl HttpCursorApi {
     }
 
     pub fn with_base_url(api_base: impl Into<String>) -> Result<Self, ApiFailure> {
+        let api_base = api_base.into().trim_end_matches('/').to_owned();
+        let url = reqwest::Url::parse(&api_base)
+            .map_err(|_| ApiFailure::protocol("Cursor API base URL is not a valid URL"))?;
+        if !is_secure_or_loopback(&url) {
+            return Err(ApiFailure::protocol(
+                "Cursor API base URL must use HTTPS or loopback HTTP",
+            ));
+        }
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
+            // Redirects are refused outright: a bearer token must never be
+            // forwarded to a host the server picked.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| ApiFailure {
                 kind: ApiFailureKind::Network,
                 message: "failed to construct Cursor HTTP client".into(),
                 retry_after_seconds: None,
             })?;
-        Ok(Self {
-            client,
-            api_base: api_base.into().trim_end_matches('/').to_owned(),
-        })
+        Ok(Self { client, api_base })
     }
 
     async fn dashboard<T: DeserializeOwned>(
@@ -280,10 +291,33 @@ async fn decode_response<T: DeserializeOwned>(
     ) {
         return Err(error);
     }
-    response
-        .json()
-        .await
+    let body = bounded_body(response, operation).await?;
+    serde_json::from_slice(&body)
         .map_err(|_| ApiFailure::protocol(format!("{operation} returned incompatible JSON")))
+}
+
+async fn bounded_body(
+    mut response: reqwest::Response,
+    operation: &str,
+) -> Result<Vec<u8>, ApiFailure> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(ApiFailure::protocol(format!(
+            "{operation} response exceeds the size limit"
+        )));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(network_failure)? {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(ApiFailure::protocol(format!(
+                "{operation} response exceeds the size limit"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn classify_status(
@@ -322,6 +356,19 @@ fn classify_status(
     Some(ApiFailure::protocol(format!(
         "{operation} returned unexpected HTTP {status}"
     )))
+}
+
+fn is_secure_or_loopback(url: &reqwest::Url) -> bool {
+    let secure = url.scheme() == "https" && url.host().is_some();
+    let loopback = url.scheme() == "http"
+        && url.host_str().is_some_and(|host| {
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+    secure || loopback
 }
 
 fn network_failure(_: reqwest::Error) -> ApiFailure {

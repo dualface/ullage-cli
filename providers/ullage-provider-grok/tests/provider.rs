@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::future::Future;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -37,9 +38,12 @@ fn run_ready<F: Future>(future: F) -> F::Output {
 #[derive(Default)]
 struct MockTransport {
     polls: Mutex<usize>,
+    poll_results: Mutex<VecDeque<Result<OAuthPoll, GrokApiError>>>,
     revoked: Mutex<bool>,
     revoke_failures: Mutex<usize>,
     refreshes: AtomicUsize,
+    refresh_failures: AtomicUsize,
+    billing_failures: AtomicUsize,
     browser_codes: Mutex<Vec<String>>,
     refresh_account: Option<String>,
     initial_token_expires_soon: bool,
@@ -116,10 +120,14 @@ impl GrokTransport for MockTransport {
             user_code: "SAFE-CODE".into(),
             verification_uri: "https://accounts.example.invalid/device".into(),
             expires_at: Some(Utc::now() + chrono::Duration::minutes(10)),
+            poll_interval_seconds: None,
         })
     }
 
     async fn poll_device_authorization(&self, _: &str) -> Result<OAuthPoll, GrokApiError> {
+        if let Some(result) = self.poll_results.lock().unwrap().pop_front() {
+            return result;
+        }
         let mut polls = self.polls.lock().unwrap();
         *polls += 1;
         if *polls == 1 {
@@ -159,6 +167,17 @@ impl GrokTransport for MockTransport {
 
     async fn refresh(&self, _: &str) -> Result<OAuthToken, GrokApiError> {
         self.refreshes.fetch_add(1, Ordering::SeqCst);
+        if self
+            .refresh_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(GrokApiError::AuthenticationInvalid(
+                "mock refresh rejection".into(),
+            ));
+        }
         let mut refreshed = token("device-account");
         refreshed.refresh_token = None;
         refreshed.account_label = self.refresh_account.clone();
@@ -176,6 +195,17 @@ impl GrokTransport for MockTransport {
     }
 
     async fn fetch_billing(&self, _: &str) -> Result<Value, GrokApiError> {
+        if self
+            .billing_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(GrokApiError::AuthenticationInvalid(
+                "mock billing rejection".into(),
+            ));
+        }
         if let Some(delay) = self.delay_billing {
             tokio::time::sleep(delay).await;
         }
@@ -306,9 +336,11 @@ async fn persisted_grok_tokens_require_valid_secret_contents() {
             account,
         )
         .unwrap();
+        // Unusable secret contents are Invalid, not a hard error: the record
+        // must stay repairable through a fresh sign-in or logout.
         assert!(matches!(
             provider.auth_status().await,
-            Err(ProviderError::ProtocolIncompatible { .. })
+            Ok(AuthState::Invalid { .. })
         ));
     }
 }
@@ -1135,6 +1167,7 @@ impl GrokTransport for SlowStartTransport {
             user_code: format!("USER-{call}"),
             verification_uri: "https://accounts.example.invalid/device".into(),
             expires_at: Some(Utc::now() + chrono::Duration::minutes(10)),
+            poll_interval_seconds: None,
         })
     }
 
@@ -1808,7 +1841,7 @@ fn derived_monthly_percent_keeps_a_monthly_window_label() {
         .unwrap();
     assert_eq!(normalized.windows.len(), 1);
     assert_eq!(normalized.windows[0].window, UsageWindowKind::Monthly);
-    assert_eq!(normalized.windows[0].measurements[0].name, "weekly_pool");
+    assert_eq!(normalized.windows[0].measurements[0].name, "monthly_pool");
     assert_eq!(normalized.windows[0].measurements[0].used, 10.0);
 }
 
@@ -2415,7 +2448,9 @@ fn malformed_optional_fields_return_partial_data() {
         outcome,
         QueryOutcome::Partial { data, failures }
             if data.products.len() == 1
-                && failures.iter().any(|failure| failure.scope == "weekly")
+                && failures
+                    .iter()
+                    .any(|failure| failure.scope == "usage_percent")
                 && failures.iter().any(|failure| failure.scope == "prepaid.remaining")
     ));
 }
@@ -2583,6 +2618,7 @@ fn token_debug_output_is_redacted() {
             "https://accounts.example.invalid/device?user_code=private-user&device_code=private-device"
                 .into(),
         expires_at: None,
+        poll_interval_seconds: None,
     };
     let debug = format!("{device:?}");
     assert!(!debug.contains("private-flow"));
@@ -2978,4 +3014,283 @@ async fn token_refresh_400_html_content_type_rejects_json_shaped_body() {
     } else {
         panic!("expected ProtocolIncompatible");
     }
+}
+
+#[tokio::test]
+async fn device_poll_access_denied_maps_to_denied() {
+    let base = single_response_server(mock_http_response(
+        "400 Bad Request",
+        "application/json",
+        r#"{"error":"access_denied"}"#,
+    ));
+    let transport = HttpGrokTransport::new(http_config(&base)).unwrap();
+    let poll = transport
+        .poll_device_authorization("device-secret")
+        .await
+        .unwrap();
+    assert_eq!(poll, OAuthPoll::Denied);
+}
+
+#[tokio::test]
+async fn device_poll_expired_token_maps_to_expired() {
+    let base = single_response_server(mock_http_response(
+        "400 Bad Request",
+        "application/json",
+        r#"{"error":"expired_token"}"#,
+    ));
+    let transport = HttpGrokTransport::new(http_config(&base)).unwrap();
+    let poll = transport
+        .poll_device_authorization("device-secret")
+        .await
+        .unwrap();
+    assert_eq!(poll, OAuthPoll::Expired);
+}
+
+#[tokio::test]
+async fn device_poll_slow_down_is_rate_limited_with_hint() {
+    let base = single_response_server(mock_http_response(
+        "400 Bad Request",
+        "application/json",
+        r#"{"error":"slow_down"}"#,
+    ));
+    let transport = HttpGrokTransport::new(http_config(&base)).unwrap();
+    let error = transport
+        .poll_device_authorization("device-secret")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        GrokApiError::RateLimited {
+            message: "Grok device polling must slow down".into(),
+            retry_after_seconds: Some(5),
+        }
+    );
+}
+
+#[tokio::test]
+async fn device_authorization_parses_the_rfc8628_poll_interval() {
+    let base = single_response_server(mock_http_response(
+        "200 OK",
+        "application/json",
+        r#"{"device_code":"device-secret","user_code":"SHOW-ME","verification_uri":"https://accounts.example.invalid/device","expires_in":600,"interval":7}"#,
+    ));
+    let transport = HttpGrokTransport::new(http_config(&base)).unwrap();
+    let authorization = transport.start_device_authorization().await.unwrap();
+    assert_eq!(authorization.poll_interval_seconds, Some(7));
+}
+
+#[tokio::test]
+async fn denied_device_authorization_clears_the_pending_flow() {
+    let transport = MockTransport {
+        poll_results: Mutex::new(VecDeque::from([Ok(OAuthPoll::Denied)])),
+        ..MockTransport::default()
+    };
+    let provider = GrokProvider::with_transport(Arc::new(transport));
+    let challenge = provider
+        .start_auth(AuthStartRequest {
+            method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    let error = provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProviderError::AuthenticationInvalid { .. }));
+    assert_eq!(
+        provider.auth_status().await.unwrap(),
+        AuthState::NotAuthenticated
+    );
+}
+
+#[tokio::test]
+async fn expired_device_authorization_clears_the_pending_flow() {
+    let transport = MockTransport {
+        poll_results: Mutex::new(VecDeque::from([Ok(OAuthPoll::Expired)])),
+        ..MockTransport::default()
+    };
+    let provider = GrokProvider::with_transport(Arc::new(transport));
+    let challenge = provider
+        .start_auth(AuthStartRequest {
+            method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    let error = provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProviderError::AuthenticationInvalid { .. }));
+    assert_eq!(
+        provider.auth_status().await.unwrap(),
+        AuthState::NotAuthenticated
+    );
+}
+
+#[tokio::test]
+async fn corrupt_persisted_credential_reports_invalid_and_stays_repairable() {
+    let credentials = Arc::new(CredentialStore::new(MemoryCredentialBackend::default()));
+    let key = CredentialKey::new("grok", "corrupt").unwrap();
+    let mut stored = Credential::new();
+    stored
+        .insert("session", SecretValue::new(b"not a token".to_vec()))
+        .unwrap();
+    credentials.set(&key, stored).unwrap();
+
+    let provider = GrokProvider::with_transport_and_store_for_account(
+        Arc::new(MockTransport::default()),
+        credentials.clone(),
+        "corrupt",
+    )
+    .unwrap();
+    assert!(matches!(
+        provider.auth_status().await.unwrap(),
+        AuthState::Invalid { .. }
+    ));
+
+    // A fresh sign-in overwrites the unreadable record.
+    let challenge = provider
+        .start_auth(AuthStartRequest {
+            method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        provider.auth_status().await.unwrap(),
+        AuthState::Authenticated { .. }
+    ));
+}
+
+#[tokio::test]
+async fn corrupt_persisted_credential_does_not_block_logout() {
+    let credentials = Arc::new(CredentialStore::new(MemoryCredentialBackend::default()));
+    let key = CredentialKey::new("grok", "corrupt").unwrap();
+    let mut stored = Credential::new();
+    stored
+        .insert("session", SecretValue::new(b"{".to_vec()))
+        .unwrap();
+    credentials.set(&key, stored).unwrap();
+
+    let provider = GrokProvider::with_transport_and_store_for_account(
+        Arc::new(MockTransport::default()),
+        credentials.clone(),
+        "corrupt",
+    )
+    .unwrap();
+    provider.logout(LogoutRequest::default()).await.unwrap();
+    assert_eq!(
+        provider.auth_status().await.unwrap(),
+        AuthState::NotAuthenticated
+    );
+}
+
+#[tokio::test]
+async fn rejected_query_refreshes_once_and_retries() {
+    let transport = MockTransport {
+        billing_failures: AtomicUsize::new(1),
+        ..MockTransport::default()
+    };
+    let provider = GrokProvider::with_transport(Arc::new(transport));
+    let challenge = provider
+        .start_auth(AuthStartRequest {
+            method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    // The first poll is Pending, the second installs the token.
+    assert!(matches!(
+        provider
+            .complete_auth(AuthCompleteRequest {
+                flow_id: challenge.flow_id.clone(),
+                authorization_code: None,
+                redirect_uri: None,
+            })
+            .await
+            .unwrap(),
+        AuthState::Pending { .. }
+    ));
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        provider.query(UsageQuery::default()).await.unwrap(),
+        QueryOutcome::Complete { .. }
+    ));
+}
+
+#[tokio::test]
+async fn invalid_auth_state_hashes_the_same_account_key_as_authenticated() {
+    use ullage_auth::account_identity;
+    let transport = MockTransport {
+        refresh_failures: AtomicUsize::new(usize::MAX),
+        initial_token_expires_soon: true,
+        ..MockTransport::default()
+    };
+    let provider = GrokProvider::with_transport(Arc::new(transport));
+    let challenge = provider
+        .start_auth(AuthStartRequest {
+            method: Some(AuthMethod::DeviceCode),
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id,
+            authorization_code: None,
+            redirect_uri: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let state = provider.auth_status().await.unwrap();
+    let AuthState::Invalid { account_key, .. } = state else {
+        panic!("a refused refresh must surface as Invalid, got {state:?}");
+    };
+    assert_eq!(
+        account_key.as_deref(),
+        account_identity("device-account").as_deref()
+    );
 }
