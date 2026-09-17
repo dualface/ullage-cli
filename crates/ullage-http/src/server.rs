@@ -244,30 +244,40 @@ async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<()
                         consecutive_failures = 0;
                         accepted
                     }
-                    Err(error) if accept_error_is_transient(&error) => {
-                        consecutive_failures += 1;
-                        if consecutive_failures >= ACCEPT_FAILURE_LIMIT {
-                            break Err(format!(
-                                "http accept failed {consecutive_failures} consecutive times; last error: {error}"
-                            ));
+                    Err(error) => match classify_accept_error(&error) {
+                        // An aborted or network-failed pending connection
+                        // says nothing about listener health: drop it without
+                        // touching the fatal counter so a peer cannot RST the
+                        // daemon offline.
+                        AcceptFailure::Peer => {
+                            tokio::task::yield_now().await;
+                            continue;
                         }
-                        let shift = (consecutive_failures - 1).min(7);
-                        let delay = (ACCEPT_BACKOFF_INITIAL * 2u32.pow(shift))
-                            .min(ACCEPT_BACKOFF_MAXIMUM);
-                        eprintln!(
-                            "warning: http accept failed ({error}); retrying in {} seconds",
-                            delay.as_secs_f64()
-                        );
-                        // The sleep stays select-able so shutdown is not held
-                        // back by a resource-exhaustion backoff.
-                        tokio::select! {
-                            _ = tokio::time::sleep(delay) => continue,
-                            _ = state.service.wait_for_shutdown() => break Ok(()),
+                        AcceptFailure::Resource => {
+                            consecutive_failures += 1;
+                            if consecutive_failures >= ACCEPT_FAILURE_LIMIT {
+                                break Err(format!(
+                                    "http accept failed {consecutive_failures} consecutive times; last error: {error}"
+                                ));
+                            }
+                            let shift = (consecutive_failures - 1).min(7);
+                            let delay = (ACCEPT_BACKOFF_INITIAL * 2u32.pow(shift))
+                                .min(ACCEPT_BACKOFF_MAXIMUM);
+                            eprintln!(
+                                "warning: http accept failed ({error}); retrying in {} seconds",
+                                delay.as_secs_f64()
+                            );
+                            // The sleep stays select-able so shutdown is not
+                            // held back by a resource-exhaustion backoff.
+                            tokio::select! {
+                                _ = tokio::time::sleep(delay) => continue,
+                                _ = state.service.wait_for_shutdown() => break Ok(()),
+                            }
                         }
-                    }
-                    Err(error) => {
-                        break Err(format!("http accept failed permanently: {error}"));
-                    }
+                        AcceptFailure::Fatal => {
+                            break Err(format!("http accept failed permanently: {error}"));
+                        }
+                    },
                 };
                 let state = state.clone();
                 // A saturated server closes the accepted socket at once: the
@@ -304,14 +314,28 @@ async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<()
     result
 }
 
-/// Errors that mean "the peer or the process ran out of room", not "the
-/// listener is broken": fd-table exhaustion, aborted handshakes, and the
-/// pending network errors Linux passes through accept(2) on the new socket,
-/// which accept(2) requires retrying like EAGAIN. Everything else (a closed
-/// or invalid socket) is fatal.
-fn accept_error_is_transient(error: &std::io::Error) -> bool {
+/// How an `accept()` failure should be treated.
+#[derive(Debug, PartialEq, Eq)]
+enum AcceptFailure {
+    /// The peer or the already-accepted pending connection caused the error:
+    /// aborted handshakes, plus the pending network errors Linux passes
+    /// through accept(2) on the new socket. Drop the connection; it is not
+    /// evidence of listener damage and must not feed the fatal counter.
+    Peer,
+    /// The process ran out of room: fd-table or kernel buffer exhaustion.
+    /// Back off and count toward the fatal threshold.
+    Resource,
+    /// The listener itself is broken (a closed or invalid socket).
+    Fatal,
+}
+
+/// Errors a peer can trigger are `Peer`: `ECONNABORTED`, the pending-network
+/// errno accept(2) tells Linux callers to retry like `EAGAIN`, and Winsock
+/// network errors. `Resource` is limited to process-level exhaustion.
+/// Everything else (a closed or invalid socket) is `Fatal`.
+fn classify_accept_error(error: &std::io::Error) -> AcceptFailure {
     if error.kind() == std::io::ErrorKind::ConnectionAborted {
-        return true;
+        return AcceptFailure::Peer;
     }
     #[cfg(unix)]
     {
@@ -319,14 +343,13 @@ fn accept_error_is_transient(error: &std::io::Error) -> bool {
             error.raw_os_error(),
             Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
         ) {
-            return true;
+            return AcceptFailure::Resource;
         }
         // These errno do not exist on every Unix (Apple has no ENONET), so
         // the Linux-only set stays under its own cfg.
         #[cfg(target_os = "linux")]
         {
-            matches!(
-                error.raw_os_error(),
+            match error.raw_os_error() {
                 Some(
                     libc::ENETDOWN
                         | libc::EPROTO
@@ -335,31 +358,28 @@ fn accept_error_is_transient(error: &std::io::Error) -> bool {
                         | libc::ENONET
                         | libc::EHOSTUNREACH
                         | libc::EOPNOTSUPP
-                        | libc::ENETUNREACH
-                )
-            )
+                        | libc::ENETUNREACH,
+                ) => AcceptFailure::Peer,
+                _ => AcceptFailure::Fatal,
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
-            false
+            AcceptFailure::Fatal
         }
     }
     #[cfg(windows)]
     {
         use windows_sys::Win32::Networking::WinSock;
-        matches!(
-            error.raw_os_error(),
-            Some(
-                WinSock::WSAEMFILE
-                    | WinSock::WSAENOBUFS
-                    | WinSock::WSAENETDOWN
-                    | WinSock::WSAECONNRESET
-            )
-        )
+        match error.raw_os_error() {
+            Some(WinSock::WSAEMFILE | WinSock::WSAENOBUFS) => AcceptFailure::Resource,
+            Some(WinSock::WSAENETDOWN | WinSock::WSAECONNRESET) => AcceptFailure::Peer,
+            _ => AcceptFailure::Fatal,
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {
-        false
+        AcceptFailure::Fatal
     }
 }
 
@@ -1214,15 +1234,19 @@ mod tests {
     }
 
     #[test]
-    fn accept_errors_classify_transient_resource_failures() {
-        assert!(accept_error_is_transient(&std::io::Error::from(
-            std::io::ErrorKind::ConnectionAborted
-        )));
+    fn accept_errors_split_peer_resource_and_fatal() {
+        assert_eq!(
+            classify_accept_error(&std::io::Error::from(
+                std::io::ErrorKind::ConnectionAborted
+            )),
+            AcceptFailure::Peer
+        );
         #[cfg(unix)]
         {
             for code in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
-                assert!(
-                    accept_error_is_transient(&std::io::Error::from_raw_os_error(code)),
+                assert_eq!(
+                    classify_accept_error(&std::io::Error::from_raw_os_error(code)),
+                    AcceptFailure::Resource,
                     "errno {code}"
                 );
             }
@@ -1237,18 +1261,21 @@ mod tests {
                 libc::EOPNOTSUPP,
                 libc::ENETUNREACH,
             ] {
-                assert!(
-                    accept_error_is_transient(&std::io::Error::from_raw_os_error(code)),
+                assert_eq!(
+                    classify_accept_error(&std::io::Error::from_raw_os_error(code)),
+                    AcceptFailure::Peer,
                     "errno {code}"
                 );
             }
-            assert!(!accept_error_is_transient(
-                &std::io::Error::from_raw_os_error(libc::EINVAL)
-            ));
+            assert_eq!(
+                classify_accept_error(&std::io::Error::from_raw_os_error(libc::EINVAL)),
+                AcceptFailure::Fatal
+            );
         }
-        assert!(!accept_error_is_transient(&std::io::Error::from(
-            std::io::ErrorKind::PermissionDenied
-        )));
+        assert_eq!(
+            classify_accept_error(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            AcceptFailure::Fatal
+        );
     }
 
     #[test]
