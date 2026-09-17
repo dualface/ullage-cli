@@ -1274,10 +1274,16 @@ impl Provider for CursorProvider {
         self.ensure_credentials_loaded().await?;
         // A flow nobody finished would stay pending forever otherwise, and a
         // pending flow names no account, so the identity behind it would stay
-        // invisible to anything comparing accounts.
-        let expired_flow = self.expire_pending_flow_gated().await?;
+        // invisible to anything comparing accounts. Expiry, the conditional
+        // invalid_reason write, and the snapshot share one credential_gate
+        // section: start_auth installs its replacement flow under the same
+        // gate, so a fresh challenge is never masked by a stale expiry result.
+        let _persist_gate = self.credential_gate.lock().await;
         let mut state = self.lock_state()?;
-        if expired_flow && state.auth.is_none() && state.invalid_account_key.is_some() {
+        if state.expire_pending_flow()
+            && state.auth.is_none()
+            && state.invalid_account_key.is_some()
+        {
             state.invalid_reason = Some("the Cursor sign-in was not completed".into());
         }
         let state = state;
@@ -1599,7 +1605,7 @@ fn provider_as_api_failure(error: ProviderError) -> ApiFailure {
 mod tests {
     use std::collections::VecDeque;
     use std::future::Future;
-    use std::task::{Context, Poll, Waker};
+    use std::task::{Context, Poll, Wake, Waker};
 
     use super::*;
 
@@ -1650,6 +1656,33 @@ mod tests {
         match future.as_mut().poll(&mut context) {
             Poll::Ready(output) => output,
             Poll::Pending => panic!("stub future unexpectedly yielded"),
+        }
+    }
+
+    /// Drives a future on a bare thread for the concurrency tests; provider
+    /// futures only ever park on the provider's own gates, so a
+    /// thread-unparking waker is enough.
+    fn block_on<F: Future>(future: F) -> F::Output {
+        struct ThreadWake(std::thread::Thread);
+
+        impl Wake for ThreadWake {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
+            }
+
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+
+        let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(output) => return output,
+                Poll::Pending => std::thread::park(),
+            }
         }
     }
 
@@ -1735,6 +1768,51 @@ mod tests {
         assert!(matches!(
             ready(provider.query(UsageQuery::default())).unwrap(),
             QueryOutcome::Partial { .. } | QueryOutcome::Complete { .. }
+        ));
+    }
+
+    #[test]
+    fn an_expired_flow_cannot_mask_a_replacement_challenge() {
+        let provider = provider_with_exchanges(1);
+        // The abandoned flow belonged to a previously invalidated account, so
+        // expiring it records invalid_reason; a replacement flow installed
+        // meanwhile must not end up masked by that write.
+        provider.lock_state().unwrap().invalid_account_key = Some("user|abc123".into());
+        ready(provider.start_auth(AuthStartRequest {
+            method: Some(AuthMethod::ApiToken),
+            redirect_uri: None,
+        }))
+        .unwrap();
+        expire_pending_flow(&provider);
+
+        let provider = &provider;
+        std::thread::scope(|scope| {
+            // Holding the state lock parks auth_status inside its serialized
+            // credential_gate section while start_auth queues on the gate
+            // behind it, forcing the expiry snapshot strictly before the
+            // replacement install.
+            let state_guard = provider.lock_state().unwrap();
+            let status = scope.spawn(|| block_on(provider.auth_status()));
+            // auth_status acquires credential_gate and then parks on the state
+            // lock; only then may start_auth queue on the gate behind it.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let restart = scope.spawn(|| {
+                block_on(provider.start_auth(AuthStartRequest {
+                    method: Some(AuthMethod::ApiToken),
+                    redirect_uri: None,
+                }))
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(state_guard);
+            assert!(matches!(
+                status.join().unwrap().unwrap(),
+                AuthState::Invalid { .. }
+            ));
+            restart.join().unwrap().unwrap();
+        });
+        assert!(matches!(
+            block_on(provider.auth_status()).unwrap(),
+            AuthState::Pending { .. }
         ));
     }
 }

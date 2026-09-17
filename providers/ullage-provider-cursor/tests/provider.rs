@@ -176,7 +176,9 @@ impl CursorApi for RacingExchangeApi {
         if api_key == "good-key" {
             Ok(jwt_exchange())
         } else {
-            Err(ApiFailure::authentication("the Cursor API key was rejected"))
+            Err(ApiFailure::authentication(
+                "the Cursor API key was rejected",
+            ))
         }
     }
 
@@ -1598,9 +1600,8 @@ fn a_losing_concurrent_completion_cannot_clear_the_committed_flow() {
         write_started,
         release_write: Mutex::new(Some(release_write_rx)),
     }));
-    let provider = Arc::new(
-        CursorProvider::with_api_and_store(Arc::new(RacingExchangeApi), store).unwrap(),
-    );
+    let provider =
+        Arc::new(CursorProvider::with_api_and_store(Arc::new(RacingExchangeApi), store).unwrap());
     let challenge = run_ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::ApiToken),
         redirect_uri: None,
