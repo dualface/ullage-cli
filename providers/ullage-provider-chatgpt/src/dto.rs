@@ -7,6 +7,9 @@ use ullage_core::{
 
 const FIVE_HOURS_SECONDS: u64 = 5 * 60 * 60;
 const WEEK_SECONDS: u64 = 7 * 24 * 60 * 60;
+/// Largest integer an `f64` still represents exactly (2^53); a count past it
+/// cannot be reported as a measurement without silently rounding.
+const MAX_EXACT_F64_INTEGER: u64 = 1 << 53;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatGptWorkspace {
@@ -24,7 +27,7 @@ pub struct ChatGptUsageResponse {
     pub code_review_rate_limit: Option<ChatGptRateLimit>,
     #[serde(default)]
     pub credits: Option<ChatGptCredits>,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
+    #[serde(default, deserialize_with = "deserialize_lenient_list")]
     pub additional_rate_limits: Vec<ChatGptAdditionalRateLimit>,
     #[serde(default)]
     pub rate_limit_reset_credits: Option<ChatGptResetCredits>,
@@ -135,7 +138,7 @@ impl ChatGptUsage {
             .rate_limit_reset_credits
             .and_then(|credits| credits.available_count)
         {
-            if available_count > 9_007_199_254_740_992 {
+            if available_count > MAX_EXACT_F64_INTEGER {
                 return Err(ProviderError::ProtocolIncompatible {
                     message: "rate limit reset credit count exceeds exact numeric range".into(),
                 });
@@ -173,12 +176,19 @@ impl ChatGptUsage {
     }
 }
 
-fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+/// Entries in a vendor list are informational: one malformed element must not
+/// take the whole usage response down with it, so each is parsed on its own
+/// and unparseable ones are dropped.
+fn deserialize_lenient_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
-    T: Deserialize<'de> + Default,
+    T: serde::de::DeserializeOwned,
 {
-    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+    Ok(Option::<Vec<serde_json::Value>>::deserialize(deserializer)?
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
 }
 
 fn append_rate_limit(

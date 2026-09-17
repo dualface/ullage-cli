@@ -1,4 +1,4 @@
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, SystemTime};
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -221,6 +221,8 @@ struct TokenResponse {
     id_token: Option<String>,
     #[serde(default)]
     expires_in: Option<i64>,
+    #[serde(default)]
+    token_type: Option<String>,
 }
 
 fn token_set(
@@ -239,25 +241,43 @@ fn token_set(
     {
         return Err(protocol_error("OAuth token exceeds the supported size"));
     }
-    HeaderValue::from_str(&response.access_token)
-        .map_err(|_| protocol_error("OAuth access token cannot be used as an HTTP header"))?;
+    if response
+        .token_type
+        .as_deref()
+        .is_some_and(|token_type| !token_type.eq_ignore_ascii_case("bearer"))
+    {
+        return Err(protocol_error(
+            "OAuth token response used an unsupported token type",
+        ));
+    }
     if require_refresh_token && response.refresh_token.as_deref().is_none_or(str::is_empty) {
         return Err(protocol_error("OAuth token response omitted refresh token"));
     }
-    if response.expires_in.is_some_and(|seconds| seconds < 0) {
-        return Err(protocol_error("OAuth expires_in cannot be negative"));
-    }
-    let expires_at = response
+    // Same strictness as the Claude provider: a missing or non-positive
+    // expires_in is a malformed token response, not a never-expiring token.
+    let expires_in = response
         .expires_in
-        .map(|seconds| {
-            Duration::try_seconds(seconds)
-                .and_then(|duration| Utc::now().checked_add_signed(duration))
-                .ok_or_else(|| protocol_error("OAuth expires_in is outside supported range"))
-        })
-        .transpose()?;
-    OAuthTokenSet::new(response.access_token, response.refresh_token, expires_at)
-        .and_then(|tokens| tokens.with_identity_token(response.id_token))
-        .map_err(|_| protocol_error("OAuth token response omitted access token"))
+        .filter(|seconds| *seconds > 0)
+        .ok_or_else(|| protocol_error("OAuth token response omitted a valid expiry"))?;
+    let expires_at = Duration::try_seconds(expires_in)
+        .and_then(|duration| Utc::now().checked_add_signed(duration))
+        .ok_or_else(|| protocol_error("OAuth expires_in is outside supported range"))?;
+    let tokens = OAuthTokenSet::new(
+        response.access_token,
+        response.refresh_token,
+        Some(expires_at),
+    )
+    .map_err(|error| protocol_error(provider_message(error)))?;
+    tokens
+        .with_identity_token(response.id_token)
+        .map_err(|error| protocol_error(provider_message(error)))
+}
+
+fn provider_message(error: ullage_core::ProviderError) -> String {
+    match error {
+        ullage_core::ProviderError::ProtocolIncompatible { message } => message,
+        other => other.to_string(),
+    }
 }
 
 async fn decode_json<T: DeserializeOwned>(
@@ -294,12 +314,19 @@ fn jwt_claims(token: &str) -> Result<serde_json::Map<String, serde_json::Value>,
         return Err(protocol_error("JWT exceeds the supported size"));
     }
     let mut parts = token.split('.');
-    let (_header, payload, signature) = (parts.next(), parts.next(), parts.next());
-    if payload.is_none() || signature.is_none() || parts.next().is_some() {
-        return Err(protocol_error("OAuth token is not a three-part JWT"));
+    let payload = match (parts.next(), parts.next(), parts.next()) {
+        (Some(header), Some(payload), Some(signature))
+            if !header.is_empty() && !payload.is_empty() && !signature.is_empty() =>
+        {
+            payload
+        }
+        _ => return Err(protocol_error("OAuth token is not a signed three-part JWT")),
+    };
+    if parts.next().is_some() {
+        return Err(protocol_error("OAuth token is not a signed three-part JWT"));
     }
     let decoded = URL_SAFE_NO_PAD
-        .decode(payload.unwrap_or_default())
+        .decode(payload)
         .map_err(|_| protocol_error("JWT payload is not base64url"))?;
     if decoded.len() > MAX_JWT_BYTES {
         return Err(protocol_error("JWT claims exceed the supported size"));
@@ -371,7 +398,7 @@ fn classify_status(
             headers
                 .get(RETRY_AFTER)
                 .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse().ok()),
+                .and_then(|value| parse_retry_after(value, SystemTime::now())),
         ),
         status if status.is_server_error() => {
             ChatGptApiError::new(ChatGptApiErrorKind::Network, message)
@@ -381,11 +408,12 @@ fn classify_status(
 }
 
 fn is_edge_challenge(status: StatusCode, headers: &HeaderMap) -> bool {
-    has_cf_mitigated(headers)
-        || (matches!(
-            status,
-            StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE
-        ) && !is_json_content_type(headers))
+    // Only the statuses Cloudflare actually challenges with; a `cf-mitigated`
+    // header on a 401 must not mask an authentication failure as a network one.
+    matches!(
+        status,
+        StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE
+    ) && (has_cf_mitigated(headers) || !is_json_content_type(headers))
 }
 
 fn has_cf_mitigated(headers: &HeaderMap) -> bool {
@@ -427,6 +455,21 @@ fn edge_challenge_error(
         message.push_str(cf_ray);
     }
     ChatGptApiError::new(ChatGptApiErrorKind::Network, message)
+}
+
+/// `Retry-After` may be delta-seconds or an HTTP-date; both are accepted, a
+/// past date producing a delay of 0 and a sub-second one rounding up, same as
+/// the Claude provider.
+fn parse_retry_after(value: &str, now: SystemTime) -> Option<u64> {
+    value.parse().ok().or_else(|| {
+        httpdate::parse_http_date(value).ok().map(|deadline| {
+            deadline.duration_since(now).map_or(0, |duration| {
+                duration
+                    .as_secs()
+                    .saturating_add(u64::from(duration.subsec_nanos() != 0))
+            })
+        })
+    })
 }
 
 fn network_error(operation: &str, _: reqwest::Error) -> ChatGptApiError {

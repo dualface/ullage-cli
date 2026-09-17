@@ -366,3 +366,78 @@ async fn concrete_adapter_accepts_nullable_additional_rate_limits() {
         server.join().unwrap();
     }
 }
+
+#[tokio::test]
+async fn a_cf_mitigated_401_is_still_an_authentication_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        respond(
+            listener.accept().unwrap().0,
+            "401 Unauthorized",
+            &[
+                ("Content-Type", "text/html"),
+                ("cf-mitigated", "challenge"),
+                ("cf-ray", "9a1b2c3d4e5f6g7h-SIN"),
+            ],
+            "<html>challenge</html>",
+        )
+    });
+    let api = ReqwestChatGptApi::new(test_config(&base_url)).unwrap();
+    let tokens = OAuthTokenSet::new("access-secret", None, None).unwrap();
+    let error = api.query_usage(&tokens, "workspace-123").await.unwrap_err();
+    // cf-mitigated on a 401 must not mask an authentication failure as a
+    // network edge challenge.
+    assert_eq!(error.kind, ChatGptApiErrorKind::AuthenticationInvalid);
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn rate_limit_parses_a_retry_after_http_date() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let deadline =
+        httpdate::fmt_http_date(std::time::SystemTime::now() + std::time::Duration::from_secs(90));
+    let server = thread::spawn(move || {
+        respond(
+            listener.accept().unwrap().0,
+            "429 Too Many Requests",
+            &[("Retry-After", deadline.as_str())],
+            "{}",
+        )
+    });
+    let api = ReqwestChatGptApi::new(test_config(&base_url)).unwrap();
+    let tokens = OAuthTokenSet::new("access-secret", None, None).unwrap();
+    let error = api.query_usage(&tokens, "workspace-123").await.unwrap_err();
+    assert_eq!(error.kind, ChatGptApiErrorKind::RateLimited);
+    let delay = error.retry_after_seconds.unwrap();
+    assert!((88..=91).contains(&delay), "delay was {delay}");
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn a_token_response_needs_a_valid_expiry_and_bearer_type() {
+    let bodies = [
+        r#"{"access_token":"access","refresh_token":"refresh","expires_in":3600,"token_type":"MAC"}"#,
+        r#"{"access_token":"access","refresh_token":"refresh"}"#,
+        r#"{"access_token":"access","refresh_token":"refresh","expires_in":0}"#,
+        r#"{"access_token":"access","refresh_token":"refresh","expires_in":-5}"#,
+    ];
+    for body in bodies {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server =
+            thread::spawn(move || respond(listener.accept().unwrap().0, "200 OK", &[], body));
+        let api = ReqwestChatGptApi::new(test_config(&base_url)).unwrap();
+        let error = api
+            .exchange_code("auth-code", "pkce-verifier", "http://localhost/callback")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            ChatGptApiErrorKind::ProtocolIncompatible,
+            "{body}"
+        );
+        server.join().unwrap();
+    }
+}
