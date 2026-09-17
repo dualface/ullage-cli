@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll, Wake, Waker};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -65,6 +67,45 @@ impl CredentialBackend for MemoryCredentialBackend {
     }
 }
 
+/// A backend whose first `write` reports its start and then blocks until the
+/// test releases it, holding `install_exchange`'s persist window open while a
+/// racing completion tries to clear the same pending flow.
+struct BlockingWriteBackend {
+    inner: MemoryCredentialBackend,
+    write_started: mpsc::Sender<()>,
+    release_write: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+impl CredentialBackend for BlockingWriteBackend {
+    fn kind(&self) -> BackendKind {
+        self.inner.kind()
+    }
+
+    fn coordination_scope(&self) -> BackendScope {
+        self.inner.coordination_scope()
+    }
+
+    fn probe(&self) -> Result<Availability, CredentialError> {
+        self.inner.probe()
+    }
+
+    fn read(&self, key: &CredentialKey) -> Result<Vec<u8>, CredentialError> {
+        self.inner.read(key)
+    }
+
+    fn write(&self, key: &CredentialKey, value: &[u8]) -> Result<(), CredentialError> {
+        let _ = self.write_started.send(());
+        if let Some(release) = self.release_write.lock().unwrap().take() {
+            let _ = release.recv();
+        }
+        self.inner.write(key, value)
+    }
+}
+
+/// Routes the exchange by key so two racing completions of the same pending
+/// flow take opposite paths: the good key wins, the bad one is rejected.
+struct RacingExchangeApi;
+
 struct DelayedApi {
     release_exchange: Arc<AtomicBool>,
     fail_exchange: bool,
@@ -126,6 +167,37 @@ impl CursorApi for FakeApi {
 
     async fn hard_limit(&self, _: &str) -> Result<HardLimit, ApiFailure> {
         self.hard_limit.clone()
+    }
+}
+
+#[async_trait]
+impl CursorApi for RacingExchangeApi {
+    async fn exchange_user_api_key(&self, api_key: &str) -> Result<ExchangeTokens, ApiFailure> {
+        if api_key == "good-key" {
+            Ok(jwt_exchange())
+        } else {
+            Err(ApiFailure::authentication("the Cursor API key was rejected"))
+        }
+    }
+
+    async fn poll_login(&self, _: &str, _: &str) -> Result<Option<ExchangeTokens>, ApiFailure> {
+        unreachable!("the race test signs in with API keys")
+    }
+
+    async fn current_period(&self, _: &str) -> Result<CurrentPeriodUsage, ApiFailure> {
+        unreachable!("the race test does not query usage")
+    }
+
+    async fn plan_info(&self, _: &str) -> Result<PlanInfoResponse, ApiFailure> {
+        unreachable!("the race test does not query usage")
+    }
+
+    async fn credit_grants(&self, _: &str) -> Result<CreditGrantsBalance, ApiFailure> {
+        unreachable!("the race test does not query usage")
+    }
+
+    async fn hard_limit(&self, _: &str) -> Result<HardLimit, ApiFailure> {
+        unreachable!("the race test does not query usage")
     }
 }
 
@@ -405,6 +477,33 @@ fn run_ready<F: Future>(future: F) -> F::Output {
     match future.as_mut().poll(&mut context) {
         Poll::Ready(output) => output,
         Poll::Pending => panic!("fake future unexpectedly yielded"),
+    }
+}
+
+/// Drives a future on a bare thread for the multi-threaded race test; the
+/// provider's futures only ever park on its own gates, so a thread-unparking
+/// waker is enough.
+fn block_on<F: Future>(future: F) -> F::Output {
+    struct ThreadWake(std::thread::Thread);
+
+    impl Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = Box::pin(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::park(),
+        }
     }
 }
 
@@ -1484,4 +1583,65 @@ fn malformed_current_period_fields_degrade_to_partial() {
         }
         other => panic!("unexpected outcome: {other:?}"),
     }
+}
+
+#[test]
+fn a_losing_concurrent_completion_cannot_clear_the_committed_flow() {
+    // The PMQA-001 window: a failing complete_auth used to clear the pending
+    // flow between a winning call's store write and its in-memory commit,
+    // leaving a stored credential the session never adopted. The persist gate
+    // must keep the loser parked until the commit lands.
+    let (write_started, write_started_rx) = mpsc::channel();
+    let (release_write, release_write_rx) = mpsc::channel();
+    let store = Arc::new(CredentialStore::new(BlockingWriteBackend {
+        inner: MemoryCredentialBackend::default(),
+        write_started,
+        release_write: Mutex::new(Some(release_write_rx)),
+    }));
+    let provider = Arc::new(
+        CursorProvider::with_api_and_store(Arc::new(RacingExchangeApi), store).unwrap(),
+    );
+    let challenge = run_ready(provider.start_auth(AuthStartRequest {
+        method: Some(AuthMethod::ApiToken),
+        redirect_uri: None,
+    }))
+    .unwrap();
+
+    let complete = |provider: &Arc<CursorProvider>, api_key: &str| {
+        block_on(provider.complete_auth(AuthCompleteRequest {
+            flow_id: challenge.flow_id.clone(),
+            authorization_code: Some(api_key.to_owned()),
+            redirect_uri: None,
+        }))
+    };
+    std::thread::scope(|scope| {
+        let winner = scope.spawn(|| complete(&provider, "good-key"));
+        // The winner is inside the persist window once its store write starts.
+        write_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+
+        let loser = scope.spawn(|| complete(&provider, "bad-key"));
+        // While the write is still open the loser must stay parked on the
+        // gate; finishing early is exactly the bug this guards against.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!loser.is_finished());
+
+        release_write.send(()).unwrap();
+        assert!(matches!(
+            winner.join().unwrap(),
+            Ok(AuthState::Authenticated { .. })
+        ));
+        assert!(matches!(
+            loser.join().unwrap(),
+            Err(ProviderError::ProtocolIncompatible { .. })
+        ));
+    });
+    assert!(matches!(
+        run_ready(provider.auth_status()).unwrap(),
+        AuthState::Authenticated {
+            account_key: Some(ref key),
+            ..
+        } if *key == ullage_auth::account_identity("user|abc123").unwrap()
+    ));
 }
