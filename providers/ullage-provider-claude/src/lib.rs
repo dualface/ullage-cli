@@ -21,7 +21,9 @@ use ullage_core::{
 };
 use url::Url;
 
-pub use api::{AuthorizationCodeExchange, ClaudeApi, ClaudeTokenResponse, HttpClaudeApi};
+pub use api::{
+    AuthorizationCodeExchange, ClaudeApi, ClaudeHttpConfig, ClaudeTokenResponse, HttpClaudeApi,
+};
 pub use dto::{
     ClaudeAccount, ClaudeExtraUsage, ClaudeLimit, ClaudeLimitScope, ClaudeOrganization,
     ClaudeProfile, ClaudeScopeLabel, ClaudeUsageResponse, ClaudeUsageWindow,
@@ -411,13 +413,12 @@ impl Provider for ClaudeProvider {
         let Some((credential, _)) = self.credentials.load()? else {
             return Ok(());
         };
-        let revoke_token = credential
-            .refresh_token
-            .as_deref()
-            .unwrap_or(&credential.access_token)
-            .to_owned();
+        let (revoke_token, token_type_hint) = match credential.refresh_token.as_deref() {
+            Some(refresh_token) => (refresh_token.to_owned(), "refresh_token"),
+            None => (credential.access_token.clone(), "access_token"),
+        };
         let clear_guard = CredentialClearGuard::new(self.credentials.clone());
-        match self.api.revoke_token(&revoke_token).await {
+        match self.api.revoke_token(&revoke_token, token_type_hint).await {
             Ok(()) => clear_guard.clear(),
             Err(error) => {
                 clear_guard.preserve();
@@ -428,9 +429,43 @@ impl Provider for ClaudeProvider {
 
     async fn query(&self, _request: UsageQuery) -> ProviderResult<QueryOutcome<Self::VendorUsage>> {
         let _guard = self.lifecycle_lock.lock().await;
-        let (credential, credential_version) = self.usable_credential_locked().await?;
-        let profile = self.api.profile(&credential.access_token).await;
-        let usage = self.api.usage(&credential.access_token).await;
+        let (mut credential, mut credential_version) = self.usable_credential_locked().await?;
+        let (mut profile, mut usage) = tokio::join!(
+            self.api.profile(&credential.access_token),
+            self.api.usage(&credential.access_token),
+        );
+        let profile_rejected = matches!(profile, Err(ProviderError::AuthenticationInvalid { .. }));
+        let usage_rejected = matches!(usage, Err(ProviderError::AuthenticationInvalid { .. }));
+        if profile_rejected || usage_rejected {
+            // A token that passed the expiry check but is rejected anyway gets
+            // one forced refresh and retry, the same recovery the ChatGPT
+            // provider applies to a rejected access token.
+            self.refresh_auth_locked().await?;
+            (credential, credential_version) =
+                self.credentials
+                    .load()?
+                    .ok_or_else(|| ProviderError::AuthenticationInvalid {
+                        message: "Claude credential disappeared after refresh".into(),
+                    })?;
+            let (retried_profile, retried_usage) = tokio::join!(
+                async {
+                    if profile_rejected {
+                        self.api.profile(&credential.access_token).await
+                    } else {
+                        profile
+                    }
+                },
+                async {
+                    if usage_rejected {
+                        self.api.usage(&credential.access_token).await
+                    } else {
+                        usage
+                    }
+                },
+            );
+            profile = retried_profile;
+            usage = retried_usage;
+        }
 
         if let (Err(profile_error), Err(usage_error)) = (&profile, &usage) {
             return Err(preferred_error(profile_error.clone(), usage_error.clone()));
@@ -546,20 +581,31 @@ pub fn normalize(value: ClaudeUsage) -> ProviderResult<SubscriptionUsage> {
                 window,
             )?;
         }
+        let mut limit_window_ids = std::collections::HashSet::new();
         for limit in &usage.limits {
-            let Some(model) = limit.scope.as_ref().and_then(|scope| scope.model.as_ref()) else {
-                continue;
-            };
             validate_measurement(limit.percent, "model usage utilization")?;
-            windows.push(UsageWindow {
-                window: UsageWindowKind::Other {
-                    id: format!(
+            // A limit scoped to something other than a model still counts, so
+            // it is keyed by its kind and group rather than dropped silently.
+            let model = limit.scope.as_ref().and_then(|scope| scope.model.as_ref());
+            let (id, label) = match model {
+                Some(model) => (
+                    format!(
                         "model_{}_{}_{}",
                         slug(&limit.kind),
                         slug(&limit.group),
                         slug(&model.display_name)
                     ),
-                    label: format!("{} ({})", model.display_name, limit.kind),
+                    format!("{} ({})", model.display_name, limit.kind),
+                ),
+                None => (
+                    format!("limit_{}_{}", slug(&limit.kind), slug(&limit.group)),
+                    limit.kind.clone(),
+                ),
+            };
+            windows.push(UsageWindow {
+                window: UsageWindowKind::Other {
+                    id: unique_window_id(&mut limit_window_ids, id),
+                    label,
                 },
                 resets_at: limit.resets_at,
                 measurements: vec![UsageMeasurement {
@@ -653,6 +699,21 @@ fn validate_measurement(value: f64, name: &str) -> ProviderResult<()> {
             message: format!("Claude returned invalid {name}"),
         })
     }
+}
+
+/// Distinct raw limits can slug to the same id (`"a-b"` and `"a_b"`); a
+/// `_2`, `_3`, ... suffix keeps every reported limit its own window.
+fn unique_window_id(used: &mut std::collections::HashSet<String>, base: String) -> String {
+    if used.insert(base.clone()) {
+        return base;
+    }
+    for suffix in 2_u32.. {
+        let candidate = format!("{base}_{suffix}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!()
 }
 
 fn slug(value: &str) -> String {
@@ -986,7 +1047,7 @@ mod tests {
             Ok(token_response("refreshed", None))
         }
 
-        async fn revoke_token(&self, _: &str) -> ProviderResult<()> {
+        async fn revoke_token(&self, _: &str, _: &str) -> ProviderResult<()> {
             Ok(())
         }
 
@@ -1490,7 +1551,7 @@ mod tests {
             Ok(token_response("refreshed", None))
         }
 
-        async fn revoke_token(&self, _: &str) -> ProviderResult<()> {
+        async fn revoke_token(&self, _: &str, _: &str) -> ProviderResult<()> {
             Ok(())
         }
 
@@ -1522,7 +1583,7 @@ mod tests {
             Ok(token_response("refreshed", None))
         }
 
-        async fn revoke_token(&self, _: &str) -> ProviderResult<()> {
+        async fn revoke_token(&self, _: &str, _: &str) -> ProviderResult<()> {
             Ok(())
         }
 
@@ -1548,7 +1609,7 @@ mod tests {
             Ok(token_response("refreshed", None))
         }
 
-        async fn revoke_token(&self, _: &str) -> ProviderResult<()> {
+        async fn revoke_token(&self, _: &str, _: &str) -> ProviderResult<()> {
             self.entered.notify_one();
             std::future::pending().await
         }
@@ -1575,7 +1636,7 @@ mod tests {
             Ok(token_response("refreshed", None))
         }
 
-        async fn revoke_token(&self, _: &str) -> ProviderResult<()> {
+        async fn revoke_token(&self, _: &str, _: &str) -> ProviderResult<()> {
             if self.revoke_calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 Err(ProviderError::RateLimited {
                     message: "revoke rate limited".into(),

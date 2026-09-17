@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeProfile {
@@ -109,7 +109,7 @@ pub struct ClaudeUsageResponse {
     pub seven_day_oauth_apps: Option<ClaudeUsageWindow>,
     #[serde(default)]
     pub extra_usage: Option<ClaudeExtraUsage>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_list")]
     pub limits: Vec<ClaudeLimit>,
     #[serde(default)]
     pub subscription_type: Option<String>,
@@ -161,6 +161,21 @@ pub struct ClaudeLimitScope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeScopeLabel {
     pub display_name: String,
+}
+
+/// Entries in a vendor list are informational: one malformed element must not
+/// take the whole usage response down with it, so each is parsed on its own
+/// and unparseable ones are dropped.
+fn deserialize_lenient_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    Ok(Option::<Vec<serde_json::Value>>::deserialize(deserializer)?
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
 }
 
 pub(crate) fn normalize_plan(raw: &str, tier: Option<&str>) -> String {

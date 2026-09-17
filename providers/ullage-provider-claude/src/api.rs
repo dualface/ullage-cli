@@ -11,7 +11,27 @@ const API_BASE: &str = "https://api.anthropic.com";
 const TOKEN_ENDPOINT: &str = "https://platform.claude.com/v1/oauth/token";
 const REVOKE_ENDPOINT: &str = "https://platform.claude.com/v1/oauth/token/revoke";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
+const USER_AGENT_VALUE: &str = concat!("ullage/", env!("CARGO_PKG_VERSION"));
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// Endpoints the HTTP adapter talks to. `Default` is production; tests point
+/// the same adapter at a local mock so the wire shape is what gets checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeHttpConfig {
+    pub api_base: String,
+    pub token_endpoint: String,
+    pub revoke_endpoint: String,
+}
+
+impl Default for ClaudeHttpConfig {
+    fn default() -> Self {
+        Self {
+            api_base: API_BASE.into(),
+            token_endpoint: TOKEN_ENDPOINT.into(),
+            revoke_endpoint: REVOKE_ENDPOINT.into(),
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AuthorizationCodeExchange {
@@ -66,7 +86,7 @@ pub trait ClaudeApi: Send + Sync {
         request: AuthorizationCodeExchange,
     ) -> ProviderResult<ClaudeTokenResponse>;
     async fn refresh_token(&self, refresh_token: &str) -> ProviderResult<ClaudeTokenResponse>;
-    async fn revoke_token(&self, token: &str) -> ProviderResult<()>;
+    async fn revoke_token(&self, token: &str, token_type_hint: &str) -> ProviderResult<()>;
     async fn profile(&self, access_token: &str) -> ProviderResult<ClaudeProfile>;
     async fn usage(&self, access_token: &str) -> ProviderResult<ClaudeUsageResponse>;
 }
@@ -74,10 +94,15 @@ pub trait ClaudeApi: Send + Sync {
 #[derive(Clone)]
 pub struct HttpClaudeApi {
     client: reqwest::Client,
+    config: ClaudeHttpConfig,
 }
 
 impl HttpClaudeApi {
     pub fn new() -> ProviderResult<Self> {
+        Self::with_config(ClaudeHttpConfig::default())
+    }
+
+    pub fn with_config(config: ClaudeHttpConfig) -> ProviderResult<Self> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
@@ -85,7 +110,7 @@ impl HttpClaudeApi {
             .map_err(|_| ProviderError::Network {
                 message: "failed to initialize the Claude HTTP client".into(),
             })?;
-        Ok(Self { client })
+        Ok(Self { client, config })
     }
 
     async fn authenticated_get<T: DeserializeOwned>(
@@ -95,11 +120,11 @@ impl HttpClaudeApi {
     ) -> ProviderResult<T> {
         let response = self
             .client
-            .get(format!("{API_BASE}{path}"))
+            .get(format!("{}{path}", self.config.api_base))
             .header(AUTHORIZATION, bearer(token)?)
             .header("anthropic-beta", OAUTH_BETA)
             .header(ACCEPT, "application/json")
-            .header(USER_AGENT, "ullage/0.1")
+            .header(USER_AGENT, USER_AGENT_VALUE)
             .send()
             .await
             .map_err(network_error)?;
@@ -125,10 +150,10 @@ impl ClaudeApi for HttpClaudeApi {
 
         let response = self
             .client
-            .post(TOKEN_ENDPOINT)
+            .post(&self.config.token_endpoint)
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json")
-            .header(USER_AGENT, "ullage/0.1")
+            .header(USER_AGENT, USER_AGENT_VALUE)
             .json(&Body {
                 grant_type: "authorization_code",
                 client_id: crate::CLAUDE_CLIENT_ID,
@@ -154,10 +179,10 @@ impl ClaudeApi for HttpClaudeApi {
 
         let response = self
             .client
-            .post(TOKEN_ENDPOINT)
+            .post(&self.config.token_endpoint)
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json")
-            .header(USER_AGENT, "ullage/0.1")
+            .header(USER_AGENT, USER_AGENT_VALUE)
             .json(&Body {
                 grant_type: "refresh_token",
                 client_id: crate::CLAUDE_CLIENT_ID,
@@ -170,23 +195,23 @@ impl ClaudeApi for HttpClaudeApi {
         decode_json(response).await
     }
 
-    async fn revoke_token(&self, token: &str) -> ProviderResult<()> {
+    async fn revoke_token(&self, token: &str, token_type_hint: &str) -> ProviderResult<()> {
         #[derive(Serialize)]
         struct Body<'a> {
             token: &'a str,
-            token_type_hint: &'static str,
+            token_type_hint: &'a str,
             client_id: &'static str,
         }
 
         let response = self
             .client
-            .post(REVOKE_ENDPOINT)
+            .post(&self.config.revoke_endpoint)
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json")
-            .header(USER_AGENT, "ullage/0.1")
+            .header(USER_AGENT, USER_AGENT_VALUE)
             .json(&Body {
                 token,
-                token_type_hint: "refresh_token",
+                token_type_hint,
                 client_id: crate::CLAUDE_CLIENT_ID,
             })
             .send()
@@ -220,10 +245,8 @@ fn network_error(_: reqwest::Error) -> ProviderError {
 }
 
 async fn decode_json<T: DeserializeOwned>(response: reqwest::Response) -> ProviderResult<T> {
-    let status = response.status();
-    let retry_after_seconds = retry_after_seconds(&response);
-    if !status.is_success() {
-        return Err(status_error(status.as_u16(), retry_after_seconds));
+    if !response.status().is_success() {
+        return Err(error_response(response).await);
     }
     let body = bounded_body(response).await?;
     serde_json::from_slice(&body).map_err(|_| ProviderError::ProtocolIncompatible {
@@ -232,13 +255,24 @@ async fn decode_json<T: DeserializeOwned>(response: reqwest::Response) -> Provid
 }
 
 async fn decode_empty(response: reqwest::Response) -> ProviderResult<()> {
-    let status = response.status();
-    let retry_after_seconds = retry_after_seconds(&response);
-    if status.is_success() {
+    if response.status().is_success() {
         Ok(())
     } else {
-        Err(status_error(status.as_u16(), retry_after_seconds))
+        Err(error_response(response).await)
     }
+}
+
+/// Classifies a failed response. The body still goes through the bounded
+/// reader so an OAuth error code (not its free-text description, which is
+/// never echoed) can refine the classification.
+async fn error_response(response: reqwest::Response) -> ProviderError {
+    let status = response.status();
+    let retry_after_seconds = retry_after_seconds(&response);
+    let body = match bounded_body(response).await {
+        Ok(body) => body,
+        Err(error) => return error,
+    };
+    status_error(status.as_u16(), retry_after_seconds, &body)
 }
 
 fn retry_after_seconds(response: &reqwest::Response) -> Option<u64> {
@@ -274,7 +308,24 @@ async fn bounded_body(mut response: reqwest::Response) -> ProviderResult<Vec<u8>
     Ok(body)
 }
 
-pub(crate) fn status_error(status: u16, retry_after_seconds: Option<u64>) -> ProviderError {
+#[derive(Deserialize)]
+struct OAuthErrorBody {
+    error: String,
+}
+
+/// Reads the RFC 6749 `error` member out of an error response body. Anything
+/// that is not a JSON object carrying a string `error` is simply no code.
+fn oauth_error_code(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<OAuthErrorBody>(body)
+        .ok()
+        .map(|parsed| parsed.error)
+}
+
+pub(crate) fn status_error(
+    status: u16,
+    retry_after_seconds: Option<u64>,
+    body: &[u8],
+) -> ProviderError {
     match status {
         401 => ProviderError::AuthenticationInvalid {
             message: "Claude returned HTTP 401 (unauthorized)".into(),
@@ -282,10 +333,25 @@ pub(crate) fn status_error(status: u16, retry_after_seconds: Option<u64>) -> Pro
         403 => ProviderError::AuthenticationInvalid {
             message: "Claude returned HTTP 403 (forbidden)".into(),
         },
+        408 => ProviderError::Network {
+            message: "Claude returned HTTP 408 (request timeout)".into(),
+        },
         429 => ProviderError::RateLimited {
             message: "Claude returned HTTP 429 (rate limited)".into(),
             retry_after_seconds,
         },
+        _ if status >= 500 => ProviderError::Network {
+            message: format!("Claude returned server error HTTP {status}"),
+        },
+        // The grant itself was rejected: the credential is dead and needs
+        // re-authentication, not a retry. Every other client-side failure —
+        // invalid_client, a malformed error body, an unknown code — stays a
+        // protocol failure.
+        _ if oauth_error_code(body).as_deref() == Some("invalid_grant") => {
+            ProviderError::AuthenticationInvalid {
+                message: "Claude rejected the stored OAuth credential (invalid_grant)".into(),
+            }
+        }
         _ => ProviderError::ProtocolIncompatible {
             message: format!("Claude returned unexpected HTTP status {status}"),
         },
@@ -301,20 +367,59 @@ mod tests {
     #[test]
     fn distinguishes_security_and_rate_limit_statuses() {
         assert!(matches!(
-            status_error(401, None),
+            status_error(401, None, b""),
             ProviderError::AuthenticationInvalid { message } if message.contains("401")
         ));
         assert!(matches!(
-            status_error(403, None),
+            status_error(403, None, b""),
             ProviderError::AuthenticationInvalid { message } if message.contains("403")
         ));
         assert_eq!(
-            status_error(429, Some(17)),
+            status_error(429, Some(17), b""),
             ProviderError::RateLimited {
                 message: "Claude returned HTTP 429 (rate limited)".into(),
                 retry_after_seconds: Some(17),
             }
         );
+    }
+
+    #[test]
+    fn maps_oauth_invalid_grant_to_invalid_authentication() {
+        assert!(matches!(
+            status_error(400, None, br#"{"error":"invalid_grant"}"#),
+            ProviderError::AuthenticationInvalid { .. }
+        ));
+        // A credential error still wins on an unexpected status.
+        assert!(matches!(
+            status_error(422, None, br#"{"error":"invalid_grant"}"#),
+            ProviderError::AuthenticationInvalid { .. }
+        ));
+    }
+
+    #[test]
+    fn keeps_other_oauth_errors_as_protocol_failures() {
+        for body in [
+            &br#"{"error":"invalid_client"}"#[..],
+            &br#"{"error":"unknown_error"}"#[..],
+            b"not json",
+            br#"{"error":{"nested":"object"}}"#,
+            b"",
+        ] {
+            assert!(matches!(
+                status_error(400, None, body),
+                ProviderError::ProtocolIncompatible { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn maps_timeouts_and_server_errors_to_network() {
+        for status in [408, 500, 502, 503, 599] {
+            assert!(matches!(
+                status_error(status, None, br#"{"error":"invalid_grant"}"#),
+                ProviderError::Network { .. }
+            ));
+        }
     }
 
     #[test]
