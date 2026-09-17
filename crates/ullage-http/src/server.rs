@@ -268,7 +268,7 @@ async fn run_listener(listener: TcpListener, state: Arc<HttpState>) -> Result<()
                                 delay.as_secs_f64()
                             );
                             // The sleep stays select-able so shutdown is not
-                            // held back by a resource-exhaustion backoff.
+                            // held back by the transient-failure backoff.
                             tokio::select! {
                                 _ = tokio::time::sleep(delay) => continue,
                                 _ = state.service.wait_for_shutdown() => break Ok(()),
@@ -322,8 +322,9 @@ enum AcceptFailure {
     /// through accept(2) on the new socket. Drop the connection; it is not
     /// evidence of listener damage and must not feed the fatal counter.
     Peer,
-    /// The process ran out of room: fd-table or kernel buffer exhaustion.
-    /// Back off and count toward the fatal threshold.
+    /// The process or host is in a recoverable degraded state: fd-table or
+    /// kernel buffer exhaustion, or a local network-subsystem failure
+    /// (`WSAENETDOWN`). Back off and count toward the fatal threshold.
     Resource,
     /// The listener itself is broken (a closed or invalid socket).
     Fatal,
