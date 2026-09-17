@@ -1787,22 +1787,39 @@ mod tests {
 
         let provider = &provider;
         std::thread::scope(|scope| {
-            // Holding the state lock parks auth_status inside its serialized
-            // credential_gate section while start_auth queues on the gate
-            // behind it, forcing the expiry snapshot strictly before the
-            // replacement install.
+            // Park auth_status on the state lock, then prove through
+            // try_lock that it keeps holding credential_gate while it waits:
+            // expiry, the invalid_reason write, and the snapshot must share
+            // one gate section so start_auth's install cannot interleave.
             let state_guard = provider.lock_state().unwrap();
             let status = scope.spawn(|| block_on(provider.auth_status()));
-            // auth_status acquires credential_gate and then parks on the state
-            // lock; only then may start_auth queue on the gate behind it.
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut acquired = false;
+            for _ in 0..5_000 {
+                if provider.credential_gate.try_lock().is_err() {
+                    acquired = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(
+                acquired,
+                "auth_status never held credential_gate on its state wait"
+            );
+            // A transient hold would release between expiry and snapshot;
+            // the serialized section keeps the gate for the whole wait.
+            for _ in 0..50 {
+                assert!(
+                    provider.credential_gate.try_lock().is_err(),
+                    "auth_status released credential_gate mid-section"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             let restart = scope.spawn(|| {
                 block_on(provider.start_auth(AuthStartRequest {
                     method: Some(AuthMethod::ApiToken),
                     redirect_uri: None,
                 }))
             });
-            std::thread::sleep(std::time::Duration::from_millis(100));
             drop(state_guard);
             assert!(matches!(
                 status.join().unwrap().unwrap(),
