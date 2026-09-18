@@ -195,15 +195,16 @@ fn complete_auth_resolves_a_name_reference_with_spaces() {
 
 #[test]
 fn complete_auth_searches_later_pages_for_a_name() {
+    let filler = |id: i64| AdminAccount {
+        id,
+        name: Some(format!("other-{id}")),
+        ..AdminAccount::default()
+    };
     let provider = Sub2apiProvider::with_api(StubApi::queue(vec![
         Call::Accounts {
             page: 1,
             result: Ok(AccountsPage {
-                items: vec![AdminAccount {
-                    id: 1,
-                    name: Some("other".into()),
-                    ..AdminAccount::default()
-                }],
+                items: (1..=100).map(filler).collect(),
                 total: 101,
                 page: 1,
                 page_size: 100,
@@ -218,6 +219,54 @@ fn complete_auth_searches_later_pages_for_a_name() {
                 page: 2,
                 page_size: 100,
                 pages: 2,
+            }),
+        },
+    ]));
+    let challenge = ready(provider.start_auth(AuthStartRequest::default())).unwrap();
+    let state = ready(provider.complete_auth(AuthCompleteRequest {
+        flow_id: challenge.flow_id,
+        authorization_code: Some(paste("work")),
+        redirect_uri: None,
+    }))
+    .unwrap();
+    assert_eq!(
+        state,
+        AuthState::Authenticated {
+            account_label: Some("work".into()),
+            account_key: Some("7".into()),
+            expires_at: None,
+        }
+    );
+}
+
+#[test]
+fn complete_auth_continues_past_page_one_when_pages_is_absent() {
+    // Older gateway responses document only items/total/page/page_size: a
+    // missing `pages` field must not stop the lookup after page 1.
+    let filler = |id: i64| AdminAccount {
+        id,
+        name: Some(format!("other-{id}")),
+        ..AdminAccount::default()
+    };
+    let provider = Sub2apiProvider::with_api(StubApi::queue(vec![
+        Call::Accounts {
+            page: 1,
+            result: Ok(AccountsPage {
+                items: (1..=100).map(filler).collect(),
+                total: 101,
+                page: 1,
+                page_size: 100,
+                pages: 0,
+            }),
+        },
+        Call::Accounts {
+            page: 2,
+            result: Ok(AccountsPage {
+                items: vec![upstream_account()],
+                total: 101,
+                page: 2,
+                page_size: 100,
+                pages: 0,
             }),
         },
     ]));
@@ -356,6 +405,37 @@ fn query_forces_live_usage() {
         ullage_core::UsageWindowKind::FiveHours
     );
     assert_eq!(normalized.plan.as_deref(), Some("PRO"));
+}
+
+#[test]
+fn a_degraded_upstream_reports_a_partial_failure() {
+    let provider = Sub2apiProvider::with_api(StubApi::queue(vec![
+        Call::Account {
+            id: 7,
+            result: Ok(upstream_account()),
+        },
+        Call::Usage {
+            id: 7,
+            force: true,
+            result: Ok(UsageInfo {
+                error_code: Some("unauthenticated".into()),
+                error: Some("upstream token expired".into()),
+                ..UsageInfo::default()
+            }),
+        },
+    ]));
+    authenticate_by_id(&provider);
+    let outcome = ready(provider.query(UsageQuery::default())).unwrap();
+    let QueryOutcome::Partial { failures, .. } = outcome else {
+        panic!("expected a partial outcome");
+    };
+    assert_eq!(failures[0].scope, "unauthenticated");
+    assert_eq!(failures[0].message, "upstream token expired");
+    // The admin credential itself is fine: the session stays authenticated.
+    assert!(matches!(
+        ready(provider.auth_status()).unwrap(),
+        AuthState::Authenticated { .. }
+    ));
 }
 
 #[test]

@@ -56,9 +56,6 @@ struct GatewaySession {
     upstream_id: i64,
     /// Display name the gateway reports for the upstream account.
     account_name: Option<String>,
-    /// The upstream account's gateway platform, recorded for `--raw` output
-    /// and any future platform-specific handling.
-    platform: Option<String>,
 }
 
 #[derive(Default)]
@@ -245,11 +242,7 @@ impl Sub2apiProvider {
                     .insert("account_name", SecretValue::new(name.as_bytes()))
                     .map_err(credential_error)?;
             }
-            if let Some(platform) = &session.platform {
-                credential
-                    .insert("platform", SecretValue::new(platform.as_bytes()))
-                    .map_err(credential_error)?;
-            }
+
             // A completed sign-in supersedes whatever the store holds.
             store.set(key, credential).map_err(credential_error)?;
         }
@@ -369,7 +362,7 @@ impl Sub2apiProvider {
             {
                 return Ok(account.clone());
             }
-            if page >= listing.pages || listing.items.is_empty() && listing.total > 0 {
+            if !has_next_page(&listing, page) {
                 return Err(ApiFailure::upstream_account_missing(format!(
                     "no sub2api upstream account is named {upstream_ref}"
                 )));
@@ -496,7 +489,6 @@ impl Provider for Sub2apiProvider {
                         admin_key: Zeroizing::new(admin_key),
                         upstream_id: account.id,
                         account_name: account.name,
-                        platform: account.platform,
                     },
                     Err(error) => {
                         return Err(self
@@ -622,14 +614,36 @@ impl Provider for Sub2apiProvider {
                 return Err(self.resolve_api_failure(generation, None, error).await);
             }
         };
-        Ok(QueryOutcome::Complete {
-            data: Sub2apiUsage {
-                account_label: session.account_name.clone(),
-                platform: session.platform.clone(),
-                info,
-                observed_at: Utc::now(),
-            },
-        })
+        let data = Sub2apiUsage {
+            account_label: session.account_name.clone(),
+            info,
+            observed_at: Utc::now(),
+        };
+        // The gateway reports a degraded upstream inside `data` instead of
+        // failing the request (for example `unauthenticated` when the
+        // upstream token died): surface it as a partial failure so `show`
+        // displays the state instead of an empty window list.
+        let upstream_error = data
+            .info
+            .error_code
+            .as_ref()
+            .filter(|c| !c.is_empty())
+            .map(|code| ullage_core::PartialFailure {
+                scope: code.clone(),
+                message: data
+                    .info
+                    .error
+                    .clone()
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| "the gateway reported an upstream error".into()),
+            });
+        if let Some(failure) = upstream_error {
+            return Ok(QueryOutcome::Partial {
+                data,
+                failures: vec![failure],
+            });
+        }
+        Ok(QueryOutcome::Complete { data })
     }
 
     fn normalize(&self, vendor_usage: Self::VendorUsage) -> ProviderResult<SubscriptionUsage> {
@@ -667,6 +681,21 @@ fn parse_connection(pasted: &str) -> Result<(String, String, String), ProviderEr
     ))
 }
 
+/// Whether a fetched listing page promises another one. `pages` is the
+/// gateway's own page count, but older responses only documented
+/// `items`/`total`/`page`/`page_size`, so a missing or zero `pages` falls
+/// back to `page * page_size < total`; either way a short page means the
+/// list is done.
+fn has_next_page(listing: &AccountsPage, page: i64) -> bool {
+    if (listing.items.len() as i64) < api::ACCOUNTS_PAGE_SIZE {
+        return false;
+    }
+    if listing.pages > 0 {
+        return page < listing.pages;
+    }
+    page * api::ACCOUNTS_PAGE_SIZE < listing.total
+}
+
 fn new_flow_id() -> ProviderResult<String> {
     // A timestamp plus sequence is guessable, so the id carries 256 bits of
     // randomness: it is the bearer for completing a pending flow.
@@ -690,15 +719,11 @@ fn stored_session(credential: &Credential) -> ProviderResult<GatewaySession> {
     let account_name = credential
         .get("account_name")
         .and_then(|value| String::from_utf8(value.expose().to_vec()).ok());
-    let platform = credential
-        .get("platform")
-        .and_then(|value| String::from_utf8(value.expose().to_vec()).ok());
     Ok(GatewaySession {
         base_url,
         admin_key: Zeroizing::new(admin_key),
         upstream_id,
         account_name,
-        platform,
     })
 }
 

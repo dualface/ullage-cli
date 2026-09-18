@@ -168,7 +168,8 @@ pub struct UsageInfo {
     pub ai_credits: Vec<AiCredit>,
     /// The gateway reports degraded upstream state here instead of failing
     /// the request (for example `unauthenticated` when the upstream token
-    /// died). Surfaced so normalize can keep the raw value for `--raw`.
+    /// died). `query` surfaces it as a `QueryOutcome::Partial` failure; the
+    /// fields do not appear in the normalized `SubscriptionUsage`.
     #[serde(default)]
     pub error_code: Option<String>,
     #[serde(default)]
@@ -179,9 +180,6 @@ pub struct UsageInfo {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sub2apiUsage {
     pub account_label: Option<String>,
-    /// The upstream account's gateway platform (`openai`, `anthropic`,
-    /// `gemini`, `grok`, `antigravity`, ...), recorded for `--raw` output.
-    pub platform: Option<String>,
     pub info: UsageInfo,
     pub observed_at: DateTime<Utc>,
 }
@@ -339,7 +337,12 @@ fn push_progress(
             unit: MeasurementUnit::Percent,
         });
     }
-    if progress.used_requests.is_some() || progress.limit_requests.is_some() {
+    // `used_requests`/`limit_requests` and `window_stats.requests` both
+    // report a request count; when the stats block is present it already
+    // carries that row, so the pair is only emitted on its own.
+    if progress.window_stats.is_none()
+        && (progress.used_requests.is_some() || progress.limit_requests.is_some())
+    {
         measurements.push(UsageMeasurement {
             name: "requests".into(),
             used: progress.used_requests.unwrap_or(0) as f64,
@@ -388,12 +391,19 @@ fn push_stat(
     });
 }
 
+/// Window spend is emitted in dollars but deliberately not as
+/// `MeasurementUnit::Currency`: the summary maps a limitless currency to a
+/// "balance" reading, which would present consumed window cost as money on
+/// hand. A named unit keeps the number honest (`used 0.42`).
 fn push_cost(measurements: &mut Vec<UsageMeasurement>, name: &str, usd: f64) {
     measurements.push(UsageMeasurement {
         name: name.into(),
         used: usd,
         limit: None,
-        unit: MeasurementUnit::Currency { code: "USD".into() },
+        unit: MeasurementUnit::Other {
+            id: "usd".into(),
+            label: "USD".into(),
+        },
     });
 }
 
@@ -505,7 +515,6 @@ mod tests {
             .with_timezone(&Utc);
         let usage = Sub2apiUsage {
             account_label: Some("work".into()),
-            platform: Some("openai".into()),
             info: UsageInfo {
                 five_hour: Some(UsageProgress {
                     utilization: Some(42.5),
@@ -541,7 +550,12 @@ mod tests {
             .find(|measurement| measurement.name == "cost")
             .unwrap();
         assert_eq!(cost.used, 0.42);
-        assert_eq!(cost.unit, MeasurementUnit::Currency { code: "USD".into() });
+        // Window spend must not be a limitless Currency: the summary would
+        // render it as a balance rather than as consumed cost.
+        assert!(matches!(
+            cost.unit,
+            MeasurementUnit::Other { ref id, .. } if id == "usd"
+        ));
         assert_eq!(normalized.windows[1].window, UsageWindowKind::Weekly);
     }
 
@@ -557,7 +571,6 @@ mod tests {
         );
         let usage = Sub2apiUsage {
             account_label: None,
-            platform: Some("antigravity".into()),
             info: UsageInfo {
                 antigravity_quota: Some(quota),
                 ai_credits: vec![AiCredit {
@@ -591,7 +604,6 @@ mod tests {
     fn normalize_maps_grok_quota_windows() {
         let usage = Sub2apiUsage {
             account_label: None,
-            platform: Some("grok".into()),
             info: UsageInfo {
                 grok_request_quota: Some(QuotaWindow {
                     limit: Some(100),
@@ -626,7 +638,6 @@ mod tests {
     fn normalize_skips_absent_windows_and_falls_back_to_raw_tier() {
         let usage = Sub2apiUsage {
             account_label: None,
-            platform: Some("anthropic".into()),
             info: UsageInfo {
                 seven_day: Some(progress(1.0, None)),
                 subscription_tier_raw: Some("claude-pro".into()),
@@ -644,7 +655,6 @@ mod tests {
     fn windows_without_measurements_are_dropped() {
         let usage = Sub2apiUsage {
             account_label: None,
-            platform: None,
             info: UsageInfo {
                 five_hour: Some(UsageProgress::default()),
                 ..UsageInfo::default()
