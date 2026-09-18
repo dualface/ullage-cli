@@ -3,7 +3,7 @@
 //! Sign-in mirrors the official CLI: a PKCE S256 browser flow against
 //! `app.devin.ai/auth/cli/continue` that returns the authorization code on a
 //! loopback `/callback`, exchanged through Connect-RPC
-//! `ExchangePKCEAuthorizationCode` for an `api_key` and `api_server_url`. A
+//! `ExchangeDevinCLIPKCECode` for a session token and `api_server_url`. A
 //! manual paste-the-key flow (`app.devin.ai/auth/cli/token`) covers headless
 //! setups; the pasted value is the same `api_key` `GetUserStatus` expects in
 //! its `metadata.apiKey`. There is nothing to refresh: the key stands until
@@ -665,7 +665,20 @@ impl Provider for DevinProvider {
                             .await);
                     }
                 };
-                if response.api_key.trim().is_empty() {
+                // The CLI exchange answers with `sessionToken`; older
+                // responses carried `apiKey`. Either is the credential
+                // `GetUserStatus` expects in `metadata.apiKey`.
+                let api_key = if response.api_key.trim().is_empty() {
+                    response
+                        .session_token
+                        .as_deref()
+                        .unwrap_or("")
+                        .trim()
+                        .to_owned()
+                } else {
+                    response.api_key.trim().to_owned()
+                };
+                if api_key.is_empty() {
                     return Err(ProviderError::ProtocolIncompatible {
                         message: "Devin returned an empty API key".into(),
                     });
@@ -694,7 +707,7 @@ impl Provider for DevinProvider {
                 };
                 self.install_session(
                     DevinSession {
-                        api_key: Zeroizing::new(response.api_key.trim().to_owned()),
+                        api_key: Zeroizing::new(api_key),
                         api_server_url,
                     },
                     generation,

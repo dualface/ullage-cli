@@ -1,9 +1,9 @@
 //! Connect-RPC transport for Devin's `SeatManagementService`.
 //!
 //! Two calls share one client: the PKCE authorization-code exchange at
-//! `api.devin.ai`, and `GetUserStatus` at the per-account `api_server_url`
-//! the exchange returned. Both speak Connect-RPC JSON and carry the
-//! `Connect-Protocol-Version: 1` header.
+//! `server.codeium.com`, and `GetUserStatus` at the per-account
+//! `api_server_url` the exchange returned. Both speak Connect-RPC JSON and
+//! carry the `Connect-Protocol-Version: 1` header.
 
 use std::fmt;
 use std::time::Duration;
@@ -16,7 +16,7 @@ use serde_json::json;
 
 use crate::dto::UserStatusResponse;
 
-const EXCHANGE_URL: &str = "https://api.devin.ai/exa.seat_management_pb.SeatManagementService/ExchangePKCEAuthorizationCode";
+const EXCHANGE_URL: &str = "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/ExchangeDevinCLIPKCECode";
 const USER_STATUS_PATH: &str = "/exa.seat_management_pb.SeatManagementService/GetUserStatus";
 /// The server a manually pasted key reports against, matching what the
 /// official CLI stores in `credentials.toml`.
@@ -95,11 +95,13 @@ impl ApiFailure {
     }
 }
 
-/// What a successful `ExchangePKCEAuthorizationCode` returns. Only `api_key`
-/// is required; the server may omit every other field.
+/// What a successful `ExchangeDevinCLIPKCECode` returns. The credential
+/// arrives either as `apiKey` or as `sessionToken`; every other field is
+/// optional.
 #[derive(Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExchangeResponse {
+    #[serde(default)]
     pub api_key: String,
     #[serde(default)]
     pub api_server_url: Option<String>,
@@ -132,7 +134,7 @@ impl fmt::Debug for ExchangeResponse {
 
 #[async_trait]
 pub trait DevinApi: Send + Sync {
-    /// `ExchangePKCEAuthorizationCode`: the PKCE exchange completing browser
+    /// `ExchangeDevinCLIPKCECode`: the PKCE exchange completing browser
     /// sign-in. `redirect_uri` must be the exact URI the authorization used.
     async fn exchange_pkce_code(
         &self,
