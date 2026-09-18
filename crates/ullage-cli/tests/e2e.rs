@@ -440,6 +440,7 @@ impl ControlClient for RecordingClient {
             request_id: request.request_id.clone(),
             result: self.result.clone(),
             diagnostic: None,
+            daemon_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         })
     }
 }

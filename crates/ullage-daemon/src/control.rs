@@ -289,14 +289,12 @@ impl ControlService {
         let diagnostics = request.diagnostics && request.command.accepts_diagnostics();
         let mut diagnostic = None;
         if request.version != CONTROL_PROTOCOL_VERSION {
-            return ControlResponse {
-                version: CONTROL_PROTOCOL_VERSION,
+            return ControlResponse::new(
                 request_id,
-                result: ControlResult::ProtocolMismatch {
+                ControlResult::ProtocolMismatch {
                     supported_version: CONTROL_PROTOCOL_VERSION,
                 },
-                diagnostic: None,
-            };
+            );
         }
         let result = match request.command {
             ControlCommand::DaemonStatus => ControlResult::DaemonStatus(status_payload(
@@ -568,12 +566,7 @@ impl ControlService {
         if !matches!(result, ControlResult::Error(_)) {
             diagnostic = None;
         }
-        ControlResponse {
-            version: CONTROL_PROTOCOL_VERSION,
-            request_id,
-            result,
-            diagnostic,
-        }
+        ControlResponse::new(request_id, result).with_diagnostic(diagnostic)
     }
 }
 
@@ -750,25 +743,21 @@ where
     let envelope: ControlEnvelope =
         serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     let response = if envelope.version != CONTROL_PROTOCOL_VERSION {
-        ControlResponse {
-            version: CONTROL_PROTOCOL_VERSION,
-            request_id: envelope.request_id,
-            result: ControlResult::ProtocolMismatch {
+        ControlResponse::new(
+            envelope.request_id,
+            ControlResult::ProtocolMismatch {
                 supported_version: CONTROL_PROTOCOL_VERSION,
             },
-            diagnostic: None,
-        }
+        )
     } else {
         match serde_json::from_slice::<ControlRequest>(&bytes) {
             Ok(request) => service.handle(request).await,
             // The envelope carried a trustworthy request id, so the client
             // gets a stable error instead of a bare EOF.
-            Err(_) => ControlResponse {
-                version: CONTROL_PROTOCOL_VERSION,
-                request_id: envelope.request_id,
-                result: ControlResult::Error(ControlError::InvalidRequest),
-                diagnostic: None,
-            },
+            Err(_) => ControlResponse::new(
+                envelope.request_id,
+                ControlResult::Error(ControlError::InvalidRequest),
+            ),
         }
     };
     let mut encoded = serde_json::to_vec(&response).map_err(|error| error.to_string())?;

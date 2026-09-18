@@ -202,6 +202,11 @@ account, snapshot, and probe payloads. Version 9 added device pairing and revoca
 `credential_backend` on daemon status. Version 7 added the diagnostics opt-in
 (`diagnostics` / `diagnostic`) and `SetAccountLabel`.
 
+The response envelope also carries an optional `daemon_version`, the daemon's build version. It is
+additive like `diagnostic`, so it does not move the protocol version: daemons built before the field
+existed omit it and a newer CLI reads that absence as "older than me", then prints an upgrade hint on
+stderr pointing at `ullage daemon install` plus a service restart.
+
 Snapshot payloads carry a `stale` flag with failure semantics, not age
 semantics: the daemon sets it when a refresh fails after a successful write
 and clears it on the next success. Data age is always read from

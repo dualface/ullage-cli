@@ -208,6 +208,10 @@ impl LoginError {
 struct Session<'a> {
     client: &'a dyn ControlClient,
     diagnose: bool,
+    /// `daemon_version` from the first response seen this session:
+    /// `Some(inner)` once a daemon answered, `inner` itself `None` when that
+    /// daemon predates version reporting.
+    daemon_version: std::cell::RefCell<Option<Option<String>>>,
 }
 
 impl Session<'_> {
@@ -256,6 +260,11 @@ impl Session<'_> {
         {
             return Err(Self::untrusted());
         }
+        let mut reported = self.daemon_version.borrow_mut();
+        if reported.is_none() {
+            *reported = Some(response.daemon_version.clone());
+        }
+        drop(reported);
         match response.result {
             ControlResult::Error(error) => Err(CallFailure::Control {
                 kind: control_error_kind(&error),
@@ -302,8 +311,12 @@ pub(crate) fn interactive_login(
             ),
         );
     }
-    let session = Session { client, diagnose };
-    match run(&session, prompt, provider_hint, method) {
+    let session = Session {
+        client,
+        diagnose,
+        daemon_version: std::cell::RefCell::new(None),
+    };
+    let mut output = match run(&session, prompt, provider_hint, method) {
         Ok(account) => render_result(
             ControlResult::Account(account),
             format,
@@ -333,7 +346,13 @@ pub(crate) fn interactive_login(
             }
             output
         }
+    };
+    if let Some(version) = session.daemon_version.into_inner() {
+        if let Some(notice) = crate::daemon_upgrade_notice(version.as_deref()) {
+            output.stderr.insert_str(0, &notice);
+        }
     }
+    output
 }
 
 fn run(

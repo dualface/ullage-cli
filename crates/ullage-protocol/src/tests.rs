@@ -19,6 +19,7 @@ fn partial_usage_preserves_data_and_failures() {
         version: CONTROL_PROTOCOL_VERSION,
         request_id: "request-2".into(),
         diagnostic: None,
+        daemon_version: Some("0.1.6".into()),
         result: ControlResult::Usage(QueryOutcome::Partial {
             data: SubscriptionUsage {
                 provider: ProviderId::new("test"),
@@ -41,6 +42,7 @@ fn partial_usage_preserves_data_and_failures() {
         serde_json::json!({
             "version": CONTROL_PROTOCOL_VERSION,
             "request_id": "request-2",
+            "daemon_version": "0.1.6",
             "result": {
                 "result": "usage",
                 "payload": {
@@ -94,6 +96,7 @@ fn daemon_commands_and_auth_challenge_round_trip() {
         version: CONTROL_PROTOCOL_VERSION,
         request_id: "auth-challenge".into(),
         diagnostic: None,
+        daemon_version: None,
         result: ControlResult::AuthChallenge(AuthChallenge {
             flow_id: "flow-1".into(),
             method: ullage_auth::AuthMethod::DeviceCode,
@@ -127,6 +130,7 @@ fn daemon_commands_and_auth_challenge_round_trip() {
             request_id: format!("daemon-error-{index}"),
             result: ControlResult::Error(error),
             diagnostic: Some("provider detail".into()),
+            daemon_version: None,
         };
         let encoded = serde_json::to_string(&response).unwrap();
         assert_eq!(
@@ -564,6 +568,7 @@ fn daemon_status_serializes_the_credential_backend() {
         version: CONTROL_PROTOCOL_VERSION,
         request_id: "status-1".into(),
         diagnostic: None,
+        daemon_version: Some("0.1.6".into()),
         result: ControlResult::DaemonStatus(DaemonStatusPayload {
             shutting_down: false,
             accounts: Vec::new(),
@@ -634,6 +639,27 @@ fn diagnostics_are_opt_in_and_omitted_by_default() {
     assert_eq!(
         serde_json::to_value(&with_detail).unwrap()["diagnostic"],
         "provider detail"
+    );
+}
+
+#[test]
+fn daemon_version_defaults_to_absent_for_older_daemons() {
+    let decoded: ControlResponse = serde_json::from_value(serde_json::json!({
+        "version": CONTROL_PROTOCOL_VERSION,
+        "request_id": "legacy",
+        "result": { "result": "ack" }
+    }))
+    .unwrap();
+    assert_eq!(decoded.daemon_version, None);
+
+    let response = ControlResponse::new("request-4", ControlResult::Ack);
+    assert_eq!(
+        response.daemon_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(
+        serde_json::to_value(&response).unwrap()["daemon_version"],
+        env!("CARGO_PKG_VERSION")
     );
 }
 

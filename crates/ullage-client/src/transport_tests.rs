@@ -53,6 +53,7 @@ fn system_client_accepts_a_private_same_user_socket() {
             request_id: request.request_id,
             result: ControlResult::Ack,
             diagnostic: None,
+            daemon_version: None,
         };
         serde_json::to_writer(&mut stream, &response).unwrap();
         stream.write_all(b"\n").unwrap();
@@ -105,6 +106,7 @@ fn readiness_rejects_stopping_and_protocol_mismatch_responses() {
                 request_id: request.request_id,
                 result,
                 diagnostic: None,
+                daemon_version: None,
             };
             serde_json::to_writer(&mut stream, &response).unwrap();
             stream.write_all(b"\n").unwrap();
@@ -161,6 +163,7 @@ fn readiness_retries_through_not_ready_until_ready() {
                 request_id: request.request_id,
                 result,
                 diagnostic: None,
+                daemon_version: None,
             };
             serde_json::to_writer(&mut stream, &response).unwrap();
             stream.write_all(b"\n").unwrap();
@@ -195,6 +198,7 @@ fn stop_probe_recognizes_authenticated_non_ready_daemons() {
             request_id: "stop-probe".into(),
             result,
             diagnostic: None,
+            daemon_version: None,
         };
         assert_eq!(
             classify_readiness_response(&response, "stop-probe").unwrap(),
@@ -228,6 +232,7 @@ fn stop_waits_through_shutting_down_until_the_endpoint_disappears() {
                 credential_backend: CredentialBackendId::native(),
             }),
             diagnostic: None,
+            daemon_version: None,
         };
         serde_json::to_writer(&mut stream, &response).unwrap();
         stream.write_all(b"\n").unwrap();
@@ -579,6 +584,7 @@ fn run_daemon_waits_out_a_stopping_daemon_instead_of_spawning() {
                     credential_backend: CredentialBackendId::native(),
                 }),
                 diagnostic: None,
+                daemon_version: None,
             };
             if serde_json::to_writer(&mut stream, &response).is_err()
                 || stream.write_all(b"\n").is_err()
@@ -626,6 +632,7 @@ fn run_daemon_reports_a_daemon_that_never_frees_the_endpoint() {
                     credential_backend: CredentialBackendId::native(),
                 }),
                 diagnostic: None,
+                daemon_version: None,
             };
             if serde_json::to_writer(&mut stream, &response).is_err()
                 || stream.write_all(b"\n").is_err()
@@ -687,6 +694,7 @@ fn daemon_stop_fails_while_a_non_service_daemon_still_answers() {
                         credential_backend: CredentialBackendId::native(),
                     }),
                     diagnostic: None,
+                    daemon_version: None,
                 };
                 serde_json::to_writer(&mut stream, &response).unwrap();
                 stream.write_all(b"\n").unwrap();

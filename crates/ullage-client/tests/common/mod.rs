@@ -83,6 +83,7 @@ pub fn response(request: &ControlRequest, result: ControlResult) -> ControlRespo
         request_id: request.request_id.clone(),
         result,
         diagnostic: None,
+        daemon_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     }
 }
 

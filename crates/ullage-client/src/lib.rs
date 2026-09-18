@@ -367,5 +367,46 @@ pub fn execute_with(
     if let Some(detail) = response.diagnostic {
         output.stderr = with_diagnostic(&output.stderr, &detail, cli.output);
     }
+    if let Some(notice) = daemon_upgrade_notice(response.daemon_version.as_deref()) {
+        output.stderr.insert_str(0, &notice);
+    }
     output
+}
+
+/// Dotted numeric triple for build versions like `0.1.6`; a `-suffix`
+/// (pre-release or local build tag) is ignored. Anything else is not
+/// comparable and yields `None`.
+fn parse_build_version(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split(['.', '-']);
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+/// Warning text when the answering daemon is older than this CLI build. A
+/// missing `daemon_version` means the daemon predates the field, which is
+/// always older than a client that understands it. Unparseable versions
+/// stay silent rather than warn on a build that may simply be newer.
+pub(crate) fn daemon_upgrade_notice(daemon_version: Option<&str>) -> Option<String> {
+    let cli_version = env!("CARGO_PKG_VERSION");
+    let older = match daemon_version {
+        None => true,
+        Some(version) => match (
+            parse_build_version(version),
+            parse_build_version(cli_version),
+        ) {
+            (Some(daemon), Some(cli)) => daemon < cli,
+            _ => false,
+        },
+    };
+    if !older {
+        return None;
+    }
+    let daemon = daemon_version.unwrap_or("unknown, predates version reporting");
+    Some(format!(
+        "warning: the running daemon ({daemon}) is older than this CLI ({cli_version}); \
+         upgrades and new providers stay invisible until it is restarted\n  upgrade: \
+         ullage daemon install && ullage daemon stop && ullage daemon start\n"
+    ))
 }

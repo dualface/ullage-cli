@@ -192,6 +192,71 @@ fn maps_the_complete_command_surface_to_control_requests() {
 }
 
 #[test]
+fn warns_when_the_running_daemon_is_older_than_the_cli() {
+    fn older_daemon(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        let mut response = response(request, ControlResult::Providers(Vec::new()));
+        response.daemon_version = Some("0.0.1".into());
+        Ok(response)
+    }
+
+    let output = run_from(
+        ["ullage", "provider", "list"],
+        &MockClient::new(older_daemon),
+    );
+    assert_eq!(output.code, ExitCode::Success);
+    assert!(output.stderr.contains("warning"), "{}", output.stderr);
+    assert!(output.stderr.contains("0.0.1"), "{}", output.stderr);
+    assert!(
+        output.stderr.contains("daemon install"),
+        "{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn warns_when_the_daemon_predates_version_reporting() {
+    fn legacy_daemon(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        let mut response = response(request, ControlResult::Providers(Vec::new()));
+        response.daemon_version = None;
+        Ok(response)
+    }
+
+    let output = run_from(
+        ["ullage", "provider", "list"],
+        &MockClient::new(legacy_daemon),
+    );
+    assert_eq!(output.code, ExitCode::Success);
+    assert!(output.stderr.contains("warning"), "{}", output.stderr);
+    assert!(
+        output.stderr.contains("daemon install"),
+        "{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn stays_silent_when_the_daemon_matches_or_exceeds_the_cli() {
+    fn current_daemon(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        Ok(response(request, ControlResult::Providers(Vec::new())))
+    }
+
+    fn newer_daemon(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        let mut response = response(request, ControlResult::Providers(Vec::new()));
+        response.daemon_version = Some("999.0.0".into());
+        Ok(response)
+    }
+
+    for client in [
+        MockClient::new(current_daemon),
+        MockClient::new(newer_daemon),
+    ] {
+        let output = run_from(["ullage", "provider", "list"], &client);
+        assert_eq!(output.code, ExitCode::Success);
+        assert!(!output.stderr.contains("warning"), "{}", output.stderr);
+    }
+}
+
+#[test]
 fn probe_can_trigger_without_waiting() {
     let client = MockClient::new(|request| Ok(response(request, ControlResult::Ack)));
     let output = run_from(["ullage", "probe", "primary", "--no-wait"], &client);
@@ -2160,6 +2225,7 @@ impl ControlClient for LoginClient {
             request_id: request.request_id.clone(),
             result,
             diagnostic,
+            daemon_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         })
     }
 }

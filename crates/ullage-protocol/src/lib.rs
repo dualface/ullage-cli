@@ -198,6 +198,11 @@ pub struct ControlResponse {
     /// for diagnostics and the result is an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
+    /// Build version of the daemon that produced the response. Daemons built
+    /// before this field existed omit it, so `None` already tells a client it
+    /// talks to an older binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_version: Option<String>,
 }
 
 impl ControlResponse {
@@ -207,6 +212,7 @@ impl ControlResponse {
             request_id: request_id.into(),
             result,
             diagnostic: None,
+            daemon_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         }
     }
 
