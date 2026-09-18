@@ -32,10 +32,11 @@ const PROVIDER_CURSOR: &str = "cursor";
 const PROVIDER_OPENCODE: &str = "opencode";
 const PROVIDER_DEVIN: &str = "devin";
 const PROVIDER_CODEX2API: &str = "codex2api";
+const PROVIDER_SUB2API: &str = "sub2api";
 
 /// The compiled-in provider ids, shared by the registry construction and
 /// `config` validation so a new provider cannot silently skip either.
-pub(crate) const PROVIDER_IDS: [&str; 7] = [
+pub(crate) const PROVIDER_IDS: [&str; 8] = [
     PROVIDER_CLAUDE,
     PROVIDER_CHATGPT,
     PROVIDER_GROK,
@@ -43,6 +44,7 @@ pub(crate) const PROVIDER_IDS: [&str; 7] = [
     PROVIDER_OPENCODE,
     PROVIDER_DEVIN,
     PROVIDER_CODEX2API,
+    PROVIDER_SUB2API,
 ];
 
 pub fn production_registry(config: &AppConfig) -> Result<ProviderRegistry, String> {
@@ -141,6 +143,7 @@ pub fn registry_with_credentials(
     let opencode_credentials = credentials.clone();
     let devin_credentials = credentials.clone();
     let codex2api_credentials = credentials.clone();
+    let sub2api_credentials = credentials.clone();
     let cursor_api: Arc<dyn ullage_provider_cursor::CursorApi> = Arc::new(
         ullage_provider_cursor::HttpCursorApi::new()
             .map_err(|_| "Cursor provider initialization failed")?,
@@ -220,6 +223,25 @@ pub fn registry_with_credentials(
             ) as Arc<dyn RegisteredProvider>)
         })
         .map_err(|_| "codex2api provider registration failed")?;
+
+    let sub2api_api: Arc<dyn ullage_provider_sub2api::Sub2apiApi> = Arc::new(
+        ullage_provider_sub2api::HttpSub2apiApi::new()
+            .map_err(|_| "sub2api provider initialization failed")?,
+    );
+    registry
+        .register_factory(
+            descriptor(PROVIDER_SUB2API, "sub2api", false),
+            move |account_id| {
+                Ok(Arc::new(
+                    ullage_provider_sub2api::Sub2apiProvider::with_api_and_store_for_account(
+                        sub2api_api.clone(),
+                        sub2api_credentials.clone(),
+                        account_id,
+                    )?,
+                ) as Arc<dyn RegisteredProvider>)
+            },
+        )
+        .map_err(|_| "sub2api provider registration failed")?;
     Ok(registry)
 }
 

@@ -2223,6 +2223,7 @@ dependencies = [
  "ullage-provider-devin",
  "ullage-provider-grok",
  "ullage-provider-opencode",
+ "ullage-provider-sub2api",
 ]
 
 [[package]]
@@ -2406,6 +2407,21 @@ dependencies = [
 [[package]]
 name = "ullage-provider-opencode"
 version = "0.1.7"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ullage-auth",
+ "ullage-core",
+ "zeroize",
+]
+
+[[package]]
+name = "ullage-provider-sub2api"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "chrono",

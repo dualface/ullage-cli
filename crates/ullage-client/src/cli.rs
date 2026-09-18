@@ -214,7 +214,7 @@ pub enum ProviderCommand {
 pub enum AccountCommand {
     /// Create an account for a provider id.
     Add {
-        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, or codex2api. Not a display name.
+        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, codex2api, or sub2api. Not a display name.
         #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: String,
         /// Account label sent to the provider during probes. Distinct from the account id.
@@ -323,7 +323,7 @@ pub enum AuthCommand {
     /// as `claude`, not a display name.
     #[command(after_help = AUTH_LOGIN_AFTER_HELP)]
     Login {
-        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, or codex2api. Not a display name.
+        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, codex2api, or sub2api. Not a display name.
         #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: Option<String>,
         /// Existing account id. Omit this flag to walk the interactive login flow.
@@ -352,7 +352,7 @@ pub enum AuthCommand {
     /// that re-adds an identity keeps both rows unless it removes the old one
     /// with `account remove`.
     Complete {
-        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, or codex2api. Not a display name.
+        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, codex2api, or sub2api. Not a display name.
         #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: String,
         /// Stable account id, not the account label.
@@ -377,7 +377,7 @@ pub enum AuthCommand {
     },
     /// Show the stored authentication state for an account id.
     Status {
-        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, or codex2api. Not a display name.
+        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, codex2api, or sub2api. Not a display name.
         #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: String,
         /// Stable account id, not the account label.
@@ -386,7 +386,7 @@ pub enum AuthCommand {
     },
     /// Forget stored credentials for an account id.
     Logout {
-        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, or codex2api. Not a display name.
+        /// Provider id such as claude, chatgpt, grok, cursor, opencode, devin, codex2api, or sub2api. Not a display name.
         #[arg(value_name = "PROVIDER_ID", value_parser = free_text_argument)]
         provider: String,
         /// Stable account id, not the account label.

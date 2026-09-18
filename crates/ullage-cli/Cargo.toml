@@ -36,6 +36,7 @@ ullage-provider-cursor.workspace = true
 ullage-provider-opencode.workspace = true
 ullage-provider-devin.workspace = true
 ullage-provider-codex2api.workspace = true
+ullage-provider-sub2api.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

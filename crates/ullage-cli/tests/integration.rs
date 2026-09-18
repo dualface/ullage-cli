@@ -389,6 +389,7 @@ fn production_composition_registers_all_providers() {
             "devin",
             "grok",
             "opencode",
+            "sub2api",
         ]
     );
     assert!(

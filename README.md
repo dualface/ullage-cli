@@ -78,6 +78,9 @@ You do not need the internal account ID. Each provider says what to paste:
   Devin API key instead
 - codex2api: the gateway base URL, admin key, and the upstream account id or
   email, separated by spaces (`base_url admin_key upstream_ref`)
+- sub2api: `base_url admin_key upstream_ref` — the gateway base URL (HTTPS or
+  loopback HTTP), the admin API key from the gateway settings, and the
+  upstream account id or name — typed without echo as one line
 
 After login, `ullage show --all` looks like this:
 
@@ -161,9 +164,10 @@ Rejected on load:
 ```
 
 `provider` must be one of `claude`, `chatgpt`, `grok`, `cursor`, `opencode`,
-`devin`, or `codex2api`. Provider OAuth and billing endpoints are compiled in
-and cannot be redirected here; the codex2api gateway is the exception — its
-base URL arrives with the credential pasted at login.
+`devin`, `codex2api`, or `sub2api`. Provider OAuth and billing endpoints are
+compiled in and cannot be redirected here; the codex2api and sub2api gateways
+are the exception — their base URL arrives with the credential pasted at
+login.
 
 ### Credentials
 

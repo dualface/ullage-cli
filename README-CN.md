@@ -59,6 +59,9 @@ ullage auth login
 - OpenCode：在 opencode.ai/auth 签发的 OpenCode Go API key
 - Devin：浏览器登录，没有可粘贴的内容。`--method api-token` 可改为粘贴 Devin API key
 - codex2api：网关 base URL、admin key 与上游账号 id 或 email，空格分隔（`base_url admin_key upstream_ref`）
+- sub2api：一行 `base_url admin_key upstream_ref`——网关 base URL（HTTPS
+  或环回 HTTP）、网关设置里生成的 admin API key、上游账号 id 或 name——
+  无回显地输入
 
 登录之后，`ullage show --all` 看起来像这样：
 
@@ -135,7 +138,10 @@ Balance        credits 0
 }
 ```
 
-`provider` 必须是 `claude`、`chatgpt`、`grok`、`cursor`、`opencode`、`devin` 或 `codex2api` 之一。提供方的 OAuth 和计费端点编译进二进制，不能在这里改写；codex2api 网关例外——其 base URL 来自登录时粘贴的凭据。
+`provider` 必须是 `claude`、`chatgpt`、`grok`、`cursor`、`opencode`、
+`devin`、`codex2api` 或 `sub2api` 之一。提供方的 OAuth 和计费端点编译
+进二进制，不能在这里改写；codex2api 与 sub2api 网关例外——其 base URL
+来自登录时粘贴的凭据。
 
 ### 凭据
 
