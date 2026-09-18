@@ -47,8 +47,10 @@ const MAX_LOOKUP_PAGES: i64 = 20;
 static FLOW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// The resolved upstream account identity the admin key and base URL point
-/// at. Persisted per credential field; `upstream_id` is the stable identity
-/// used for usage calls and duplicate-account detection.
+/// at. Persisted per credential field. `upstream_id` identifies the upstream
+/// account inside its own gateway and serves usage calls; the reported
+/// deduplication identity is `account_key()`, which binds the id to the
+/// normalized gateway URL.
 #[derive(Clone)]
 struct GatewaySession {
     base_url: String,
