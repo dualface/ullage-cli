@@ -379,7 +379,10 @@ fn production_composition_registers_all_providers() {
         .into_iter()
         .map(|descriptor| descriptor.id.as_str().to_owned())
         .collect::<Vec<_>>();
-    assert_eq!(ids, ["chatgpt", "claude", "cursor", "grok", "opencode"]);
+    assert_eq!(
+        ids,
+        ["chatgpt", "claude", "cursor", "devin", "grok", "opencode"]
+    );
     assert!(
         registry
             .descriptors()

@@ -2219,6 +2219,7 @@ dependencies = [
  "ullage-provider-chatgpt",
  "ullage-provider-claude",
  "ullage-provider-cursor",
+ "ullage-provider-devin",
  "ullage-provider-grok",
  "ullage-provider-opencode",
 ]
@@ -2352,6 +2353,22 @@ dependencies = [
  "tokio",
  "ullage-auth",
  "ullage-core",
+ "zeroize",
+]
+
+[[package]]
+name = "ullage-provider-devin"
+version = "0.1.6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ullage-auth",
+ "ullage-core",
+ "url",
  "zeroize",
 ]
 
