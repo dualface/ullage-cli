@@ -65,13 +65,11 @@ ullage auth login
 ```console
 $ ullage show --all
 ==== claude - max_20x ====
-updated <1m ago
 5h             remains 91%      resets in 3h37m   [-#########]
 weekly         used up          resets in 41h07m  [----------]
 fable          remains 25%      resets in 41h07m  [-------###]
 
 ==== chatgpt - pro ====
-updated <1m ago
 weekly-Codex   used up          resets in 3d05h   [----------]
 Reset          credits 0
 Balance        credits 0
@@ -326,7 +324,7 @@ ullage show --all --no-metric-filter
 
 `--metric <display-name>` 只保留显示名精确匹配的摘要行，忽略大小写和该行所属窗口；重复该标志则保留多个名字的并集。`--no-metric-filter` 本次调用忽略账户已存储的过滤器。两个标志都不给时，可读摘要会隐藏各账户已存储 `account.metrics` 列表点名的行：`show --all` 遵循每个账户自己的列表，`probe` 应用它所查询账户的已存储列表。非法度量名以退出码 `64` 结束，且不联系守护进程。两个标志只影响可读摘要：`--raw` 和 JSON 输出保留全部测量。
 
-当过滤器导致没有可显示的行，但该账户仍有可摘要的度量时，账户标题和 `updated` 行会保留，一行 `! no rows match the metric filter: <names>` 会列出过滤器中的名字，过期、上限和部分失败提示仍会打印；不会回退到原始表。没有可摘要测量的账户仍和以前一样回退到原始输出。
+当过滤器导致没有可显示的行，但该账户仍有可摘要的度量时，账户标题会保留，一行 `! no rows match the metric filter: <names>` 会列出过滤器中的名字，过期、上限和部分失败提示仍会打印；不会回退到原始表。没有可摘要测量的账户仍和以前一样回退到原始输出。
 
 表格输出默认是可读摘要：每个可用测量一行，包含窗口、度量、剩余配额、窗口重置时间，以及作为最后一列的十格进度条。用尽的行显示 `used up` 而不是 `remains 0%`，后者看起来像空测量；不足百分之零点五的行显示 `remains <1%`，而不是向下取整成同一个零。重置时间在两天内用小时和分钟（`resets in 33h30m`），因为 `in 1d` 看不出等待是 25 小时还是 47 小时；超过两天后改用天。
 
@@ -336,7 +334,6 @@ ullage show --all --no-metric-filter
 
 ```text
 ==== claude - pro ====
-updated 2m ago
 5h           usage  remains 97%  resets in 3h56m  [##########]
 weekly       usage  remains 89%  resets in 5d15h  [-#########]
 Weekly Opus  usage  remains 89%  resets in 5d15h  [-#########]

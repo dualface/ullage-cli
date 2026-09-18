@@ -502,11 +502,10 @@ struct SummaryRender<'a> {
 /// Renders the readable summary body, falling back to the raw table when no
 /// measurement survives the mapping.
 ///
-/// An active metric filter keeps the account heading and its update time but
-/// replaces the rows with a warning when it leaves no row to show; it never
-/// falls back to raw output, because the raw table would contradict the
-/// filter. A summary that was empty before filtering still falls back as
-/// before.
+/// An active metric filter keeps the account heading but replaces the rows
+/// with a warning when it leaves no row to show; it never falls back to raw
+/// output, because the raw table would contradict the filter. A summary that
+/// was empty before filtering still falls back as before.
 fn render_usage_summary(
     outcome: &QueryOutcome<SubscriptionUsage>,
     stale: bool,
@@ -538,11 +537,7 @@ fn render_usage_summary(
     }
 
     let filtered = filter.summarize(usage);
-    let mut output = render_line(
-        &format!("updated {}", relative_past(filtered.observed_at, now)),
-        Style::Dim,
-        palette,
-    );
+    let mut output = String::new();
     if filtered.is_empty() {
         output.push_str(&render_line(
             &format!(

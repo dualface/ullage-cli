@@ -269,7 +269,7 @@ pub fn render_section_header(text: &str, palette: &Palette) -> String {
     output
 }
 
-/// Renders one standalone summary line, such as `updated 2m ago`.
+/// Renders one standalone summary line, such as `! limit reached`.
 ///
 /// The text is sanitized before it is wrapped, so a caller that interpolates
 /// provider data still cannot emit an escape sequence.

@@ -147,7 +147,6 @@ fn stored_hide_filter_without_surviving_rows_warns_and_keeps_notices_without_raw
         "{}",
         stored.stdout
     );
-    assert!(stored.stdout.contains("\nupdated "), "{}", stored.stdout);
     assert!(
         !stored.stdout.contains("showing raw data"),
         "{}",

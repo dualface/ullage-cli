@@ -3192,9 +3192,8 @@ fn show_defaults_to_a_readable_summary_with_a_trailing_progress_bar() {
     assert_eq!(output.code, ExitCode::Success);
     let stdout = output.stdout.as_str();
     assert!(stdout.starts_with("==== claude - pro ====\n"), "{stdout}");
-    assert_eq!(
-        stdout.lines().nth(1).unwrap(),
-        "updated <1m ago",
+    assert!(
+        stdout.lines().nth(1).unwrap().starts_with("5h "),
         "{stdout}"
     );
 

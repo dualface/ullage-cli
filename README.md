@@ -84,13 +84,11 @@ After login, `ullage show --all` looks like this:
 ```console
 $ ullage show --all
 ==== claude - max_20x ====
-updated <1m ago
 5h             remains 91%      resets in 3h37m   [-#########]
 weekly         used up          resets in 41h07m  [----------]
 fable          remains 25%      resets in 41h07m  [-------###]
 
 ==== chatgpt - pro ====
-updated <1m ago
 weekly-Codex   used up          resets in 3d05h   [----------]
 Reset          credits 0
 Balance        credits 0
@@ -429,7 +427,7 @@ flags affect the readable summary only: `--raw` and JSON output keep every
 measurement.
 
 When either filter leaves no row to show but the account still has
-summarizable metrics, the account heading and the `updated` line stay, a
+summarizable metrics, the account heading stays, a
 `! no rows match the metric filter: <names>` line names the filter's names, and
 the stale, limit, and partial notices still print; the raw table is not used
 as a fallback. An account with no summarizable measurements still falls back to
@@ -461,7 +459,6 @@ and partial notices.
 
 ```text
 ==== claude - pro ====
-updated 2m ago
 5h           usage  remains 97%  resets in 3h56m  [##########]
 weekly       usage  remains 89%  resets in 5d15h  [-#########]
 Weekly Opus  usage  remains 89%  resets in 5d15h  [-#########]
