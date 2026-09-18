@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use ullage_protocol::{
-    Account, AccountId, AuthCompleteRequest, AuthState, CONTROL_PROTOCOL_VERSION, Capability,
-    ControlCommand, ControlRequest, ControlResult, ProviderDescriptor, ProviderId,
+    Account, AccountId, AuthCompleteRequest, AuthMethod, AuthState, CONTROL_PROTOCOL_VERSION,
+    Capability, ControlCommand, ControlRequest, ControlResult, ProviderDescriptor, ProviderId,
 };
 
 use crate::prompt::{Prompt, SecretInput};
@@ -555,6 +555,14 @@ fn select_account(
     })
 }
 
+/// How `complete_auth` learns the provider's answer.
+enum PendingCompletion {
+    /// The user hands a value back: a callback URL, `code#state`, or a token.
+    Pasted(String),
+    /// The provider is polled until it reports the outcome itself.
+    Poll,
+}
+
 /// Runs the authorization flow, restarting it as long as the user wants to
 /// retry. Returns the account label the provider reported, if any.
 fn authenticate(
@@ -630,7 +638,7 @@ fn authenticate_once(
         },
     };
 
-    let state = match challenge.input.as_ref() {
+    let completion = match challenge.input.as_ref() {
         Some(input) => {
             let question = format!("Paste {}", input.prompt);
             let value = if input.secret {
@@ -663,6 +671,55 @@ fn authenticate_once(
                     stage: LoginStage::CompleteAuth,
                 });
             }
+            PendingCompletion::Pasted(value)
+        }
+        // A browser flow whose provider listens on the loopback itself can also
+        // finish from a pasted callback URL: when the browser runs on another
+        // machine or container, the redirect never reaches the daemon, but the
+        // address bar still shows the full URL.
+        None if challenge.method == AuthMethod::BrowserOAuth => {
+            prompt.tell("Approve the request, then press Enter to continue.");
+            prompt.tell(
+                "If the browser cannot reach the callback address, paste the full callback \
+                 URL here instead.",
+            );
+            match prompt.ask("Press Enter once approved, or paste the callback URL") {
+                None => {
+                    return Err(LoginError::Aborted {
+                        stage: LoginStage::CompleteAuth,
+                    });
+                }
+                Some(answer) => {
+                    let answer = answer.trim();
+                    if answer.is_empty() {
+                        PendingCompletion::Poll
+                    } else if answer.chars().any(is_unsafe_control) {
+                        prompt.tell(
+                            "The pasted value contains control characters; aborting the \
+                             sign-in rather than sending them to the provider.",
+                        );
+                        return Err(LoginError::Aborted {
+                            stage: LoginStage::CompleteAuth,
+                        });
+                    } else {
+                        PendingCompletion::Pasted(answer.to_owned())
+                    }
+                }
+            }
+        }
+        None => {
+            prompt.tell("Nothing to paste back. Approve the request, then continue.");
+            prompt
+                .ask("Press Enter once you have approved it")
+                .ok_or(LoginError::Aborted {
+                    stage: LoginStage::CompleteAuth,
+                })?;
+            PendingCompletion::Poll
+        }
+    };
+
+    let state = match completion {
+        PendingCompletion::Pasted(value) => {
             let redirect_uri = callback_origin(&value);
             expect_state(
                 session
@@ -682,23 +739,15 @@ fn authenticate_once(
                 LoginStage::CompleteAuth,
             )?
         }
-        None => {
-            prompt.tell("Nothing to paste back. Approve the request, then continue.");
-            prompt
-                .ask("Press Enter once you have approved it")
-                .ok_or(LoginError::Aborted {
-                    stage: LoginStage::CompleteAuth,
-                })?;
-            poll_device_flow(
-                session,
-                prompt,
-                &complete,
-                provider,
-                account,
-                &challenge.flow_id,
-                challenge.expires_at,
-            )?
-        }
+        PendingCompletion::Poll => poll_device_flow(
+            session,
+            prompt,
+            &complete,
+            provider,
+            account,
+            &challenge.flow_id,
+            challenge.expires_at,
+        )?,
     };
 
     let label = match state {

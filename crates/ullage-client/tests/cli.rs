@@ -2423,6 +2423,31 @@ fn interactive_login_hides_a_secret_and_skips_the_paste_for_device_flows() {
     )));
 }
 
+/// A loopback browser flow also accepts the callback URL pasted by hand, for
+/// browsers that cannot reach the daemon's 127.0.0.1 listener.
+#[test]
+fn interactive_login_accepts_a_pasted_callback_for_browser_flows() {
+    let mut client = LoginClient::new();
+    client.challenge_input = None;
+    // Provider 1, paste the callback URL instead of pressing Enter, accept the
+    // default label.
+    let mut prompt = ullage_cli::prompt::ScriptedPrompt::new([
+        "1",
+        "http://127.0.0.1:54321/callback?code=abc&state=flow-1",
+        "",
+    ]);
+    let output = run_from_with(["ullage", "auth", "login"], &client, &mut prompt);
+    assert_eq!(output.code, ExitCode::Success, "{}", output.stderr);
+    assert!(client.saw(|command| matches!(
+        command,
+        ControlCommand::CompleteAuth { request, .. }
+            if request.authorization_code.as_deref()
+                == Some("http://127.0.0.1:54321/callback?code=abc&state=flow-1")
+                && request.redirect_uri.as_deref()
+                    == Some("http://127.0.0.1:54321/callback")
+    )));
+}
+
 #[test]
 fn interactive_login_preselects_a_named_provider() {
     let client = LoginClient::new();
