@@ -83,13 +83,13 @@ After login, `ullage show --all` looks like this:
 
 ```console
 $ ullage show --all
-==== ACCOUNT account-1 (claude · max_20x) ====
+==== claude - max_20x ====
 updated <1m ago
 5h             remains 91%      resets in 3h37m   [-#########]
 weekly         used up          resets in 41h07m  [----------]
 fable          remains 25%      resets in 41h07m  [-------###]
 
-==== ACCOUNT account-2 (chatgpt · pro) ====
+==== chatgpt - pro ====
 updated <1m ago
 weekly-Codex   used up          resets in 3d05h   [----------]
 Reset          credits 0
@@ -460,7 +460,7 @@ falls back to the raw table with a note, and still carries the stale, limit,
 and partial notices.
 
 ```text
-==== ACCOUNT claude-work (claude · pro) ====
+==== claude - pro ====
 updated 2m ago
 5h           usage  remains 97%  resets in 3h56m  [##########]
 weekly       usage  remains 89%  resets in 5d15h  [-#########]

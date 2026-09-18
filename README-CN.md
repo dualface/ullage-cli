@@ -64,13 +64,13 @@ ullage auth login
 
 ```console
 $ ullage show --all
-==== ACCOUNT account-1 (claude · max_20x) ====
+==== claude - max_20x ====
 updated <1m ago
 5h             remains 91%      resets in 3h37m   [-#########]
 weekly         used up          resets in 41h07m  [----------]
 fable          remains 25%      resets in 41h07m  [-------###]
 
-==== ACCOUNT account-2 (chatgpt · pro) ====
+==== chatgpt - pro ====
 updated <1m ago
 weekly-Codex   used up          resets in 3d05h   [----------]
 Reset          credits 0
@@ -335,7 +335,7 @@ ullage show --all --no-metric-filter
 这两类仍出现在原始表中。用 `--raw` 可看到；不给该标志时，若映射后没有任何测量存活，账户块会带说明回退到原始表，并仍带过期、上限和部分失败提示。
 
 ```text
-==== ACCOUNT claude-work (claude · pro) ====
+==== claude - pro ====
 updated 2m ago
 5h           usage  remains 97%  resets in 3h56m  [##########]
 weekly       usage  remains 89%  resets in 5d15h  [-#########]

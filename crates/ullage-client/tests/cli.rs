@@ -2640,9 +2640,7 @@ fn show_header_aligns_account_and_usage_keys_in_one_paragraph() {
     );
     assert_eq!(output.code, ExitCode::Success);
     assert!(
-        output
-            .stdout
-            .starts_with("==== ACCOUNT primary (claude) ====\n"),
+        output.stdout.starts_with("==== claude ====\n"),
         "{}",
         output.stdout
     );
@@ -2718,21 +2716,11 @@ fn show_separates_multiple_accounts_with_section_headers() {
     );
     assert_eq!(output.code, ExitCode::Partial, "{}", output.stderr);
     let stdout = output.stdout.as_str();
-    let primary = stdout
-        .find("==== ACCOUNT primary (claude) ====")
-        .expect(stdout);
-    let secondary = stdout
-        .find("==== ACCOUNT secondary (cursor) ====")
-        .expect(stdout);
+    let primary = stdout.find("==== claude ====").expect(stdout);
+    let secondary = stdout.find("==== cursor ====").expect(stdout);
     assert!(primary < secondary, "{stdout}");
-    assert!(
-        stdout.contains("==== ACCOUNT primary (claude) ====\nSTATUS"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("\n\n==== ACCOUNT secondary (cursor) ===="),
-        "{stdout}"
-    );
+    assert!(stdout.contains("==== claude ====\nSTATUS"), "{stdout}");
+    assert!(stdout.contains("\n\n==== cursor ===="), "{stdout}");
     let warning = stdout.find("WARNING").expect(stdout);
     let last_error = stdout.find("LAST_ERROR").expect(stdout);
     assert!(secondary < warning, "{stdout}");
@@ -2757,15 +2745,13 @@ fn show_section_header_is_colored_only_when_color_is_always() {
     assert!(
         colored
             .stdout
-            .contains("\u{1b}[1;36m==== ACCOUNT primary (claude) ====\u{1b}[0m"),
+            .contains("\u{1b}[1;36m==== claude ====\u{1b}[0m"),
         "{}",
         colored.stdout
     );
     assert!(!plain.stdout.contains('\u{1b}'), "{}", plain.stdout);
     assert!(
-        plain
-            .stdout
-            .starts_with("==== ACCOUNT primary (claude) ====\n"),
+        plain.stdout.starts_with("==== claude ====\n"),
         "{}",
         plain.stdout
     );
@@ -3205,10 +3191,7 @@ fn show_defaults_to_a_readable_summary_with_a_trailing_progress_bar() {
 
     assert_eq!(output.code, ExitCode::Success);
     let stdout = output.stdout.as_str();
-    assert!(
-        stdout.starts_with("==== ACCOUNT primary (claude \u{b7} pro) ====\n"),
-        "{stdout}"
-    );
+    assert!(stdout.starts_with("==== claude - pro ====\n"), "{stdout}");
     assert_eq!(
         stdout.lines().nth(1).unwrap(),
         "updated <1m ago",
@@ -3244,10 +3227,7 @@ fn show_raw_restores_the_provider_table() {
 
     assert_eq!(output.code, ExitCode::Success);
     let stdout = output.stdout.as_str();
-    assert!(
-        stdout.starts_with("==== ACCOUNT primary (claude) ====\nSTATUS"),
-        "{stdout}"
-    );
+    assert!(stdout.starts_with("==== claude ====\nSTATUS"), "{stdout}");
     let header = line_starting_with(stdout, "| WINDOW ");
     for column in ["MEASUREMENT", "USED", "LIMIT", "UNIT", "RESETS_AT"] {
         assert!(header.contains(column), "{stdout}");
@@ -3621,7 +3601,7 @@ fn hostile_provider_strings_never_reach_the_summary_renderer() {
         let mut usage = summarizable_usage();
         usage.windows[1].window = UsageWindowKind::Other {
             id: "evil".into(),
-            label: "boss\n==== ACCOUNT forged (claude) ====".into(),
+            label: "boss\n==== claude - forged ====".into(),
         };
         usage.windows[1].measurements[0].name = "spend\r##########".into();
         Ok(response(
@@ -3838,9 +3818,7 @@ fn probe_shares_the_summary_view_and_its_raw_escape_hatch() {
     );
 
     assert!(
-        summary
-            .stdout
-            .starts_with("==== ACCOUNT primary (claude \u{b7} pro) ====\n"),
+        summary.stdout.starts_with("==== claude - pro ====\n"),
         "{}",
         summary.stdout
     );
@@ -3886,7 +3864,7 @@ fn raw_table_output_is_byte_stable() {
     assert_eq!(
         output.stdout,
         concat!(
-            "==== ACCOUNT primary (claude) ====\n",
+            "==== claude ====\n",
             "STATUS         current\n",
             "PROVIDER       claude\n",
             "ACCOUNT_LABEL  [redacted]\n",

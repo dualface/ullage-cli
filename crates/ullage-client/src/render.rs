@@ -360,7 +360,7 @@ fn render_probe(
         return render_usage_outcome(&payload.usage, reveal, diagnose, palette, Vec::new());
     }
     let filter = ResolvedMetricFilter::persisted(&payload.metrics);
-    let mut block = account_section_header(&payload.account_id, &payload.usage, palette);
+    let mut block = account_section_header(&payload.account_id, &payload.usage, false, palette);
     block.push_str(&render_usage_summary(
         &payload.usage,
         false,
@@ -394,17 +394,24 @@ fn render_snapshots(
         }
         layout
     });
+    // The account id only earns a place in the heading when more than one
+    // rendered account shares the same provider.
+    let mut provider_counts = std::collections::HashMap::new();
+    for snapshot in snapshots {
+        *provider_counts
+            .entry(snapshot_provider(&snapshot.usage))
+            .or_insert(0usize) += 1;
+    }
     let mut blocks = Vec::new();
     for snapshot in snapshots {
+        let show_account = provider_counts[snapshot_provider(&snapshot.usage)] > 1;
         let mut block = if raw {
-            let mut block = render_section_header(
-                &format!(
-                    "ACCOUNT {} ({})",
-                    sanitize_cell(&snapshot.account_id),
-                    sanitize_cell(snapshot_provider(&snapshot.usage))
-                ),
-                palette,
-            );
+            let mut heading = sanitize_cell(snapshot_provider(&snapshot.usage)).to_string();
+            if show_account {
+                heading.push_str(" - ");
+                heading.push_str(sanitize_cell(&snapshot.account_id));
+            }
+            let mut block = render_section_header(&heading, palette);
             let status = if snapshot.stale {
                 Cell::new("stale").styled(Style::Warning)
             } else {
@@ -420,7 +427,12 @@ fn render_snapshots(
             block
         } else {
             let filter = metric_choice.for_saved(&snapshot.metrics);
-            let mut block = account_section_header(&snapshot.account_id, &snapshot.usage, palette);
+            let mut block = account_section_header(
+                &snapshot.account_id,
+                &snapshot.usage,
+                show_account,
+                palette,
+            );
             block.push_str(&render_usage_summary(
                 &snapshot.usage,
                 snapshot.stale,
@@ -446,27 +458,29 @@ fn render_snapshots(
     blocks.join("\n")
 }
 
-/// The summary view folds provider and plan into the account heading.
+/// The summary view folds provider and plan into the account heading; the
+/// account id joins them only when sibling blocks share the provider.
 fn account_section_header(
     account_id: &str,
     usage: &QueryOutcome<SubscriptionUsage>,
+    show_account: bool,
     palette: &Palette,
 ) -> String {
-    let plan = usage_data(usage)
+    let mut heading = sanitize_cell(snapshot_provider(usage)).to_string();
+    if let Some(plan) = usage_data(usage)
         .plan
         .as_deref()
         .map(str::trim)
         .filter(|plan| !plan.is_empty())
-        .map(|plan| format!(" \u{b7} {}", sanitize_cell(plan)))
-        .unwrap_or_default();
-    render_section_header(
-        &format!(
-            "ACCOUNT {} ({}{plan})",
-            sanitize_cell(account_id),
-            sanitize_cell(snapshot_provider(usage))
-        ),
-        palette,
-    )
+    {
+        heading.push_str(" - ");
+        heading.push_str(sanitize_cell(plan));
+    }
+    if show_account {
+        heading.push_str(" - ");
+        heading.push_str(sanitize_cell(account_id));
+    }
+    render_section_header(&heading, palette)
 }
 
 /// The rendering state shared by every summary block of one invocation.

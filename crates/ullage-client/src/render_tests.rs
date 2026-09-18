@@ -35,10 +35,13 @@ fn palette() -> Palette {
 #[test]
 fn snapshot_headers_redact_control_characters_in_ids() {
     let output = render_snapshots(
-        &[snapshot(
-            "good\r==== ACCOUNT evil (x) ====\x1b[31m",
-            "claude\n==== ACCOUNT forged (x) ====",
-        )],
+        &[
+            snapshot(
+                "good\r==== ACCOUNT evil (x) ====\x1b[31m",
+                "claude\n==== ACCOUNT forged (x) ====",
+            ),
+            snapshot("second", "claude\n==== ACCOUNT forged (x) ===="),
+        ],
         false,
         true,
         false,
@@ -46,12 +49,12 @@ fn snapshot_headers_redact_control_characters_in_ids() {
         &MetricFilterChoice::Persisted,
     );
     assert!(
-        output.starts_with("==== ACCOUNT [redacted] ([redacted]) ====\n"),
+        output.starts_with("==== [redacted] - [redacted] ====\n"),
         "{output}"
     );
     assert_eq!(
         output.lines().filter(|line| line.contains("====")).count(),
-        1,
+        2,
         "{output}"
     );
     assert!(!output.contains("evil"), "{output}");
@@ -82,10 +85,7 @@ fn snapshot_headers_read_provider_from_partial_outcomes() {
         &palette(),
         &MetricFilterChoice::Persisted,
     );
-    assert!(
-        output.starts_with("==== ACCOUNT primary (cursor) ====\n"),
-        "{output}"
-    );
+    assert!(output.starts_with("==== cursor ====\n"), "{output}");
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn summary_headers_redact_control_characters_in_ids_and_plans() {
         &MetricFilterChoice::Persisted,
     );
     assert!(
-        output.starts_with("==== ACCOUNT [redacted] ([redacted] \u{b7} [redacted]) ====\n"),
+        output.starts_with("==== [redacted] - [redacted] ====\n"),
         "{output}"
     );
     assert_eq!(
@@ -133,10 +133,26 @@ fn summary_headers_omit_an_absent_plan() {
         &palette(),
         &MetricFilterChoice::Persisted,
     );
-    assert!(
-        output.starts_with("==== ACCOUNT primary (claude) ====\n"),
-        "{output}"
+    assert!(output.starts_with("==== claude ====\n"), "{output}");
+}
+
+#[test]
+fn headers_name_the_account_only_when_a_provider_repeats() {
+    let output = render_snapshots(
+        &[
+            snapshot("first", "claude"),
+            snapshot("second", "claude"),
+            snapshot("solo", "cursor"),
+        ],
+        false,
+        false,
+        false,
+        &palette(),
+        &MetricFilterChoice::Persisted,
     );
+    assert!(output.contains("==== claude - first ====\n"), "{output}");
+    assert!(output.contains("==== claude - second ====\n"), "{output}");
+    assert!(output.contains("==== cursor ====\n"), "{output}");
 }
 
 #[test]

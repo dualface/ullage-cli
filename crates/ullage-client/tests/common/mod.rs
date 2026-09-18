@@ -205,14 +205,17 @@ pub fn partial_profile_incompatible(
 }
 
 pub fn account_block<'a>(stdout: &'a str, account: &str) -> &'a str {
-    let marker = format!("==== ACCOUNT {account} ");
-    let start = stdout
+    let marker = format!("- {account} ====");
+    let marker_end = stdout
         .find(&marker)
+        .map(|offset| offset + marker.len())
         .unwrap_or_else(|| panic!("no section for {account:?}:\n{stdout}"));
-    let remainder = &stdout[start + marker.len()..];
-    let end = remainder
-        .find("\n==== ACCOUNT ")
-        .map(|offset| start + marker.len() + offset + 1)
+    let start = stdout[..marker_end]
+        .rfind("==== ")
+        .expect("section header start");
+    let end = stdout[marker_end..]
+        .find("\n==== ")
+        .map(|offset| marker_end + offset + 1)
         .unwrap_or(stdout.len());
     &stdout[start..end]
 }
