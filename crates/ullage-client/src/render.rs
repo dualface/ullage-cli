@@ -394,66 +394,72 @@ fn render_snapshots(
         }
         layout
     });
-    // The account id only earns a place in the heading when more than one
-    // rendered account shares the same provider.
-    let mut provider_counts = std::collections::HashMap::new();
+    // Accounts that share a provider render as one adjacent group: each
+    // group keeps its first-seen position, members keep their order inside
+    // it. The account id only earns a place in the heading when a group has
+    // more than one member.
+    let mut groups: Vec<(&str, Vec<&SnapshotPayload>)> = Vec::new();
     for snapshot in snapshots {
-        *provider_counts
-            .entry(snapshot_provider(&snapshot.usage))
-            .or_insert(0usize) += 1;
+        let provider = snapshot_provider(&snapshot.usage);
+        match groups.iter_mut().find(|(seen, _)| *seen == provider) {
+            Some((_, members)) => members.push(snapshot),
+            None => groups.push((provider, vec![snapshot])),
+        }
     }
     let mut blocks = Vec::new();
-    for snapshot in snapshots {
-        let show_account = provider_counts[snapshot_provider(&snapshot.usage)] > 1;
-        let mut block = if raw {
-            let mut heading = sanitize_cell(snapshot_provider(&snapshot.usage)).to_string();
-            if show_account {
-                heading.push_str(" - ");
-                heading.push_str(sanitize_cell(&snapshot.account_id));
-            }
-            let mut block = render_section_header(&heading, palette);
-            let status = if snapshot.stale {
-                Cell::new("stale").styled(Style::Warning)
-            } else {
-                Cell::new("current")
-            };
-            block.push_str(&render_usage_outcome(
-                &snapshot.usage,
-                reveal,
-                diagnose,
-                palette,
-                vec![("STATUS", status)],
-            ));
-            block
-        } else {
-            let filter = metric_choice.for_saved(&snapshot.metrics);
-            let mut block = account_section_header(
-                &snapshot.account_id,
-                &snapshot.usage,
-                show_account,
-                palette,
-            );
-            block.push_str(&render_usage_summary(
-                &snapshot.usage,
-                snapshot.stale,
-                &SummaryRender {
+    for (_, members) in &groups {
+        let show_account = members.len() > 1;
+        for snapshot in members {
+            let mut block = if raw {
+                let mut heading = sanitize_cell(snapshot_provider(&snapshot.usage)).to_string();
+                if show_account {
+                    heading.push_str(" - ");
+                    heading.push_str(sanitize_cell(&snapshot.account_id));
+                }
+                let mut block = render_section_header(&heading, palette);
+                let status = if snapshot.stale {
+                    Cell::new("stale").styled(Style::Warning)
+                } else {
+                    Cell::new("current")
+                };
+                block.push_str(&render_usage_outcome(
+                    &snapshot.usage,
                     reveal,
                     diagnose,
                     palette,
-                    now,
-                    layout: layout.as_ref(),
-                },
-                &filter,
-            ));
-            block
-        };
-        if snapshot.last_error.is_some() {
-            block.push_str(&render_pairs(
-                &[("LAST_ERROR", Cell::new("[redacted]").styled(Style::Error))],
-                palette,
-            ));
+                    vec![("STATUS", status)],
+                ));
+                block
+            } else {
+                let filter = metric_choice.for_saved(&snapshot.metrics);
+                let mut block = account_section_header(
+                    &snapshot.account_id,
+                    &snapshot.usage,
+                    show_account,
+                    palette,
+                );
+                block.push_str(&render_usage_summary(
+                    &snapshot.usage,
+                    snapshot.stale,
+                    &SummaryRender {
+                        reveal,
+                        diagnose,
+                        palette,
+                        now,
+                        layout: layout.as_ref(),
+                    },
+                    &filter,
+                ));
+                block
+            };
+            if snapshot.last_error.is_some() {
+                block.push_str(&render_pairs(
+                    &[("LAST_ERROR", Cell::new("[redacted]").styled(Style::Error))],
+                    palette,
+                ));
+            }
+            blocks.push(block);
         }
-        blocks.push(block);
     }
     blocks.join("\n")
 }

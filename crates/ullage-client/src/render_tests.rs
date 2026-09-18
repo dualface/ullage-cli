@@ -137,6 +137,26 @@ fn summary_headers_omit_an_absent_plan() {
 }
 
 #[test]
+fn snapshots_group_accounts_by_provider() {
+    let output = render_snapshots(
+        &[
+            snapshot("first", "claude"),
+            snapshot("solo", "cursor"),
+            snapshot("second", "claude"),
+        ],
+        false,
+        false,
+        false,
+        &palette(),
+        &MetricFilterChoice::Persisted,
+    );
+    let first = output.find("==== claude - first ====").unwrap();
+    let second = output.find("==== claude - second ====").unwrap();
+    let solo = output.find("==== cursor ====").unwrap();
+    assert!(first < second && second < solo, "{output}");
+}
+
+#[test]
 fn headers_name_the_account_only_when_a_provider_repeats() {
     let output = render_snapshots(
         &[
