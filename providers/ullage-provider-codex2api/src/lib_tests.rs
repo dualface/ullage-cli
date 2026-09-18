@@ -148,7 +148,7 @@ fn complete_auth_validates_the_triple_and_reports_identity() {
         state,
         AuthState::Authenticated {
             account_label: Some("ops@example.com".into()),
-            account_key: Some("7".into()),
+            account_key: ullage_auth::account_identity("http://localhost:8317#7"),
             expires_at: None,
         }
     );
@@ -371,4 +371,40 @@ fn pasted_triple_parsing_is_strict() {
     assert!(parse_pasted_credentials("http://localhost k display name").is_err());
     assert!(parse_pasted_credentials("http://localhost").is_err());
     assert!(parse_pasted_credentials("http://10.0.0.2 k 7").is_err());
+}
+
+#[test]
+fn account_key_is_scoped_to_the_gateway_and_hashed() {
+    let first = upstream_account_key("http://localhost:8317", 7);
+    let second = upstream_account_key("http://localhost:9000", 7);
+    assert!(first.is_some());
+    assert_ne!(first, second);
+    assert_eq!(
+        first,
+        ullage_auth::account_identity("http://localhost:8317#7")
+    );
+}
+
+#[test]
+fn gateway_free_text_is_sanitized_at_the_boundary() {
+    let mut account = stub_account();
+    account.email = Some("ops\u{202e}@example.com".into());
+    account.name = Some("na\u{07}me".into());
+    let label = dto::account_label(&account).unwrap();
+    assert_eq!(label, "ops@example.com");
+    account.email = None;
+    assert_eq!(dto::account_label(&account).unwrap(), "name");
+    let usage = Codex2apiUsage {
+        account_label: None,
+        account_key: None,
+        plan_type: Some("pro\u{1b}[2J".into()),
+        subscription_expires_at: None,
+        window_7d_kind: None,
+        five_hours: QuotaWindow::default(),
+        long: QuotaWindow::default(),
+        spark: QuotaWindow::default(),
+        observed_at: Utc::now(),
+    };
+    let normalized = dto::normalize(usage).unwrap();
+    assert_eq!(normalized.plan.as_deref(), Some("pro[2J"));
 }

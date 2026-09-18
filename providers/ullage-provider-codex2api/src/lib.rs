@@ -25,6 +25,7 @@ use chrono::{DateTime, Duration, Utc};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
     Credential, CredentialError, CredentialKey, CredentialStore, LogoutRequest, SecretValue,
+    account_identity,
 };
 use ullage_core::{
     Capability, PartialFailure, Provider, ProviderDescriptor, ProviderError, ProviderId,
@@ -259,7 +260,9 @@ impl Codex2apiProvider {
             store.set(key, credential).map_err(credential_error)?;
         }
         let account_label = session.account_label.clone();
-        let account_key = session.upstream_id.map(|id| id.to_string());
+        let account_key = session
+            .upstream_id
+            .and_then(|id| upstream_account_key(&session.base_url, id));
         let mut state = self.lock_state()?;
         if !Self::flow_is_current(&state, expected_generation, expected_flow) {
             return Err(ProviderError::ProtocolIncompatible {
@@ -320,10 +323,11 @@ impl Codex2apiProvider {
             } else {
                 state.generation = state.generation.wrapping_add(1);
                 state.pending_flow = None;
-                state.invalid_account_key = state
-                    .credentials
-                    .as_ref()
-                    .and_then(|session| session.upstream_id.map(|id| id.to_string()));
+                state.invalid_account_key = state.credentials.as_ref().and_then(|session| {
+                    session
+                        .upstream_id
+                        .and_then(|id| upstream_account_key(&session.base_url, id))
+                });
                 state.credentials = None;
                 state.invalid_reason = Some(error.message.clone());
             }
@@ -548,17 +552,20 @@ impl Provider for Codex2apiProvider {
             return Ok(AuthState::Invalid {
                 reason: reason.clone(),
                 account_key: state.invalid_account_key.clone().or_else(|| {
-                    state
-                        .credentials
-                        .as_ref()
-                        .and_then(|session| session.upstream_id.map(|id| id.to_string()))
+                    state.credentials.as_ref().and_then(|session| {
+                        session
+                            .upstream_id
+                            .and_then(|id| upstream_account_key(&session.base_url, id))
+                    })
                 }),
             });
         }
         if let Some(session) = &state.credentials {
             return Ok(AuthState::Authenticated {
                 account_label: session.account_label.clone(),
-                account_key: session.upstream_id.map(|id| id.to_string()),
+                account_key: session
+                    .upstream_id
+                    .and_then(|id| upstream_account_key(&session.base_url, id)),
                 expires_at: None,
             });
         }
@@ -750,6 +757,16 @@ fn merge_window(
             .or(dto::parse_gateway_time(listed_reset)),
         billed,
     }
+}
+
+/// The stable `account_key` for an upstream account. Gateway account ids are
+/// per-gateway serials, so the bare number collides across gateways: the
+/// daemon retires accounts that share an identity, and a second gateway
+/// reporting the same id would retire the first one's credential. Scoping the
+/// key by base URL and hashing it per the `account_identity` convention keeps
+/// dedup working within one gateway and impossible across two.
+fn upstream_account_key(base_url: &str, upstream_id: i64) -> Option<String> {
+    account_identity(&format!("{base_url}#{upstream_id}"))
 }
 
 fn new_flow_id() -> ProviderResult<String> {

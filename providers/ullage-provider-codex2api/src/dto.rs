@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ullage_core::{
     MeasurementUnit, ProviderId, ProviderResult, SubscriptionUsage, UsageMeasurement, UsageWindow,
-    UsageWindowKind,
+    UsageWindowKind, is_unsafe_identity_character,
 };
 
 /// `GET /api/admin/accounts` answers one `accounts` array whose items already
@@ -127,7 +127,7 @@ pub fn normalize(usage: Codex2apiUsage) -> ProviderResult<SubscriptionUsage> {
     Ok(SubscriptionUsage {
         provider: ProviderId::new("codex2api"),
         account_label: usage.account_label,
-        plan: usage.plan_type,
+        plan: usage.plan_type.map(|plan| sanitize_gateway_text(&plan)),
         subscription_expires_at: usage.subscription_expires_at,
         observed_at: usage.observed_at,
         windows,
@@ -175,6 +175,17 @@ pub fn parse_gateway_time(value: Option<&str>) -> Option<DateTime<Utc>> {
         .map(|instant| instant.with_timezone(&Utc))
 }
 
+/// Strips characters that can hide or reorder terminal output. The gateway's
+/// free-text fields are attacker-controlled when `base_url` points at a
+/// hostile service, so they are cleaned at the provider boundary before they
+/// can reach prompts, labels, or the raw table.
+pub fn sanitize_gateway_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !is_unsafe_identity_character(*character))
+        .collect()
+}
+
 /// Selects the display label for a matched account: the email identifies the
 /// upstream login, so it wins over the operator-chosen name.
 pub fn account_label(account: &GatewayAccount) -> Option<String> {
@@ -186,7 +197,7 @@ pub fn account_label(account: &GatewayAccount) -> Option<String> {
             .name
             .as_deref()
             .filter(|name| !name.trim().is_empty()))
-        .map(str::to_owned)
+        .map(sanitize_gateway_text)
 }
 
 #[cfg(test)]
