@@ -20,8 +20,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
-    Credential, CredentialError, CredentialKey, CredentialStore, CredentialVersion, LogoutRequest,
-    SecretValue,
+    Credential, CredentialError, CredentialKey, CredentialStore, LogoutRequest, SecretValue,
 };
 use ullage_core::{
     Capability, Provider, ProviderDescriptor, ProviderError, ProviderId, ProviderResult,
@@ -73,15 +72,12 @@ pub type CallbackFactory =
 #[derive(Default)]
 struct ProviderState {
     generation: u64,
-    session_id: u64,
     pending_flow: Option<PendingFlow>,
     /// The live session: `api_key` is the whole credential and
     /// `api_server_url` is where it reports. No expiry is known; a key
     /// stands until the server rejects it.
     session: Option<DevinSession>,
     invalid_reason: Option<String>,
-    /// Store version `session` was observed at.
-    stored_version: Option<CredentialVersion>,
     /// A stored record that will not decode is corrupt, not absent: the flag
     /// keeps `auth_status` able to report Invalid and logout able to delete
     /// the record even though no key can be read out of it.
@@ -262,25 +258,21 @@ impl DevinProvider {
             Ok(stored) => stored,
             Err(CredentialError::NotFound) => {
                 let mut state = self.lock_state()?;
-                state.stored_version = None;
                 state.credentials_loaded = true;
                 return Ok(());
             }
             Err(error) => return Err(credential_error(error)),
         };
-        let stored_version = stored.version();
         match credential_string(stored.credential(), "api_key") {
             Ok(api_key) => {
                 let api_server_url = credential_string(stored.credential(), "api_server_url")
                     .unwrap_or_else(|_| DEFAULT_API_SERVER_URL.to_owned());
                 let mut state = self.lock_state()?;
                 state.generation = state.generation.wrapping_add(1);
-                state.session_id = state.session_id.wrapping_add(1);
                 state.session = Some(DevinSession {
                     api_key: Zeroizing::new(api_key),
                     api_server_url,
                 });
-                state.stored_version = Some(stored_version);
                 state.credentials_loaded = true;
             }
             // The record exists but does not decode into a usable key: it is
@@ -288,7 +280,6 @@ impl DevinProvider {
             // delete it.
             Err(_) => {
                 let mut state = self.lock_state()?;
-                state.stored_version = Some(stored_version);
                 state.stored_credential_corrupt = true;
                 state.credentials_loaded = true;
             }
@@ -315,7 +306,7 @@ impl DevinProvider {
                 });
             }
         }
-        let stored_version = if let Some((store, key)) = &self.credentials {
+        if let Some((store, key)) = &self.credentials {
             let mut credential = Credential::new();
             credential
                 .insert("api_key", SecretValue::new(session.api_key.as_bytes()))
@@ -327,14 +318,7 @@ impl DevinProvider {
                 )
                 .map_err(credential_error)?;
             // A completed sign-in supersedes whatever the store holds.
-            Some(
-                store
-                    .set(key, credential)
-                    .map_err(credential_error)?
-                    .version(),
-            )
-        } else {
-            None
+            store.set(key, credential).map_err(credential_error)?;
         };
         let mut state = self.lock_state()?;
         if !Self::flow_is_current(&state, expected_generation, expected_flow) {
@@ -342,9 +326,7 @@ impl DevinProvider {
                 message: "Devin authentication operation was superseded".into(),
             });
         }
-        state.stored_version = stored_version;
         state.generation = state.generation.wrapping_add(1);
-        state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = None;
         state.invalid_reason = None;
         state.stored_credential_corrupt = false;
@@ -394,7 +376,6 @@ impl DevinProvider {
                 }
             } else {
                 state.generation = state.generation.wrapping_add(1);
-                state.session_id = state.session_id.wrapping_add(1);
                 state.pending_flow = None;
                 state.session = None;
                 state.invalid_reason = Some(error.message.clone());
@@ -459,7 +440,6 @@ impl DevinProvider {
         // credential without first validating that potentially invalid key.
         state.credentials_loaded = true;
         state.generation = state.generation.wrapping_add(1);
-        state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = Some(PendingFlow::Browser {
             flow_id,
             verifier,
@@ -512,7 +492,6 @@ impl Provider for DevinProvider {
                 let mut state = self.lock_state()?;
                 state.credentials_loaded = true;
                 state.generation = state.generation.wrapping_add(1);
-                state.session_id = state.session_id.wrapping_add(1);
                 state.pending_flow = Some(PendingFlow::ManualToken {
                     flow_id,
                     expires_at,
@@ -788,10 +767,8 @@ impl Provider for DevinProvider {
             }
         }
         state.generation = state.generation.wrapping_add(1);
-        state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = None;
         state.session = None;
-        state.stored_version = None;
         state.invalid_reason = None;
         state.stored_credential_corrupt = false;
         Ok(())

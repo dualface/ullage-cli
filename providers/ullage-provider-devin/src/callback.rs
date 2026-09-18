@@ -6,6 +6,7 @@
 //! to `complete_auth` through a shared slot.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -111,9 +112,12 @@ impl From<std::io::Error> for BindError {
 }
 
 /// Accepts connections until the flow expires or a request carrying the
-/// expected `state` stores its outcome. Other requests still get a proper
-/// HTTP answer so a stray browser hit (favicon, wrong path) cannot kill the
-/// listener early.
+/// expected `state` stores its outcome. Each connection is served in its
+/// own task and every read carries the flow's remaining lifetime as its
+/// deadline, so a local process that connects and then goes silent can
+/// stall neither the listener nor the login window. Other requests still
+/// get a proper HTTP answer so a stray browser hit (favicon, wrong path)
+/// cannot kill the listener early.
 async fn accept_loop(
     listener: tokio::net::TcpListener,
     expected_state: String,
@@ -121,6 +125,13 @@ async fn accept_loop(
     received: Arc<Mutex<Option<CallbackOutcome>>>,
 ) {
     loop {
+        if received
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+        {
+            return;
+        }
         let remaining = (expires_at - Utc::now()).to_std();
         let Ok(remaining) = remaining else {
             return;
@@ -129,22 +140,36 @@ async fn accept_loop(
         let Ok(Ok((mut stream, _))) = accepted else {
             return;
         };
-        if let Some(outcome) = handle_connection(&mut stream, &expected_state).await {
-            *received
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(outcome);
-            return;
-        }
+        let expected_state = expected_state.clone();
+        let received = Arc::clone(&received);
+        tokio::spawn(async move {
+            if let Some(outcome) = handle_connection(&mut stream, &expected_state, expires_at).await
+            {
+                let mut slot = received
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // The first valid redirect wins; a racing second connection
+                // must not overwrite a captured code.
+                if slot.is_none() {
+                    *slot = Some(outcome);
+                }
+            }
+        });
     }
 }
 
 /// Reads one request, answers it, and returns the outcome when it carried
 /// the expected `state`. Wrong paths and foreign state get an answer too,
-/// but no outcome, so the listener survives them.
+/// but no outcome, so the listener survives them. Reads are bounded by
+/// `expires_at`: a peer that connects and never finishes its request lets
+/// go at the flow's own deadline instead of hanging the listener.
 async fn handle_connection(
     stream: &mut tokio::net::TcpStream,
     expected_state: &str,
+    expires_at: DateTime<Utc>,
 ) -> Option<CallbackOutcome> {
+    let deadline =
+        tokio::time::Instant::now() + (expires_at - Utc::now()).to_std().unwrap_or(Duration::ZERO);
     let mut buf = Vec::with_capacity(2048);
     let mut chunk = [0_u8; 1024];
     loop {
@@ -153,9 +178,9 @@ async fn handle_connection(
         {
             break;
         }
-        match stream.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(read) => {
+        match tokio::time::timeout_at(deadline, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+            Ok(Ok(read)) => {
                 buf.extend_from_slice(&chunk[..read]);
                 if buf.len() > MAX_REQUEST_BYTES {
                     break;
