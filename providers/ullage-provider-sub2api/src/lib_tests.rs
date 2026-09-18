@@ -153,7 +153,7 @@ fn complete_auth_resolves_an_id_reference_and_authenticates() {
         ready(provider.auth_status()).unwrap(),
         AuthState::Authenticated {
             account_label: Some("work".into()),
-            account_key: Some("7".into()),
+            account_key: Some("http://127.0.0.1:55001#7".into()),
             expires_at: None,
         }
     );
@@ -187,7 +187,7 @@ fn complete_auth_resolves_a_name_reference_with_spaces() {
         state,
         AuthState::Authenticated {
             account_label: Some("my work account".into()),
-            account_key: Some("9".into()),
+            account_key: Some("http://127.0.0.1:55001#9".into()),
             expires_at: None,
         }
     );
@@ -233,7 +233,7 @@ fn complete_auth_searches_later_pages_for_a_name() {
         state,
         AuthState::Authenticated {
             account_label: Some("work".into()),
-            account_key: Some("7".into()),
+            account_key: Some("http://127.0.0.1:55001#7".into()),
             expires_at: None,
         }
     );
@@ -281,7 +281,7 @@ fn complete_auth_continues_past_page_one_when_pages_is_absent() {
         state,
         AuthState::Authenticated {
             account_label: Some("work".into()),
-            account_key: Some("7".into()),
+            account_key: Some("http://127.0.0.1:55001#7".into()),
             expires_at: None,
         }
     );
@@ -484,6 +484,27 @@ fn a_rejected_key_during_query_invalidates_the_session() {
         ready(provider.auth_status()).unwrap(),
         AuthState::Invalid { .. }
     ));
+}
+
+#[test]
+fn the_account_key_binds_the_upstream_id_to_its_gateway() {
+    // Two gateways may number their upstream accounts identically; binding
+    // the key to the base URL stops duplicate-account retirement from ever
+    // confusing a same-id account on another gateway.
+    let session = |base_url: &str| GatewaySession {
+        base_url: base_url.to_owned(),
+        admin_key: Zeroizing::new("key".into()),
+        upstream_id: 1,
+        account_name: None,
+    };
+    assert_eq!(
+        session("https://a.example").account_key(),
+        "https://a.example#1"
+    );
+    assert_ne!(
+        session("https://a.example").account_key(),
+        session("https://b.example").account_key()
+    );
 }
 
 #[test]

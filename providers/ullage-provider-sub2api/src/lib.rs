@@ -58,6 +58,17 @@ struct GatewaySession {
     account_name: Option<String>,
 }
 
+impl GatewaySession {
+    /// The deduplication identity reported as `account_key`. An upstream id
+    /// is unique only inside its own gateway — two gateways routinely share
+    /// id 1 — so the key binds the id to the normalized gateway URL: the
+    /// same upstream on the same gateway dedupes, the same numeric id on
+    /// another gateway does not.
+    fn account_key(&self) -> String {
+        format!("{}#{}", self.base_url, self.upstream_id)
+    }
+}
+
 #[derive(Default)]
 struct ProviderState {
     generation: u64,
@@ -258,7 +269,7 @@ impl Sub2apiProvider {
         state.stored_credential_corrupt = false;
         let auth = AuthState::Authenticated {
             account_label: session.account_name.clone(),
-            account_key: Some(session.upstream_id.to_string()),
+            account_key: Some(session.account_key()),
             expires_at: None,
         };
         state.session = Some(session);
@@ -299,10 +310,7 @@ impl Sub2apiProvider {
             error.kind,
             ApiFailureKind::Authentication | ApiFailureKind::UpstreamAccountMissing
         ) {
-            let account_key = state
-                .session
-                .as_ref()
-                .map(|session| session.upstream_id.to_string());
+            let account_key = state.session.as_ref().map(GatewaySession::account_key);
             if expected_flow.is_some() {
                 // The failure belongs to the pending flow alone: dropping the
                 // live session behind it would downgrade a healthy sign-in.
@@ -470,8 +478,9 @@ impl Provider for Sub2apiProvider {
                 message: "sub2api sign-in expired".into(),
             });
         }
-        // `authorization_code` arrives as protocol plaintext; from here on
-        // the only held copies are Zeroizing.
+        // `authorization_code` arrives as protocol plaintext; the paste and
+        // the derived admin key are held as Zeroizing, while base_url and
+        // upstream_ref are non-secret and stay plain.
         let pasted = Zeroizing::new(authorization_code.unwrap_or_default());
         let session = match parse_connection(&pasted) {
             Ok((base_url, admin_key, upstream_ref)) => {
@@ -486,7 +495,7 @@ impl Provider for Sub2apiProvider {
                 match upstream {
                     Ok(account) => GatewaySession {
                         base_url,
-                        admin_key: Zeroizing::new(admin_key),
+                        admin_key,
                         upstream_id: account.id,
                         account_name: account.name,
                     },
@@ -516,16 +525,13 @@ impl Provider for Sub2apiProvider {
         if let Some(reason) = &state.invalid_reason {
             return Ok(AuthState::Invalid {
                 reason: reason.clone(),
-                account_key: state
-                    .session
-                    .as_ref()
-                    .map(|session| session.upstream_id.to_string()),
+                account_key: state.session.as_ref().map(GatewaySession::account_key),
             });
         }
         if let Some(session) = &state.session {
             return Ok(AuthState::Authenticated {
                 account_label: session.account_name.clone(),
-                account_key: Some(session.upstream_id.to_string()),
+                account_key: Some(session.account_key()),
                 expires_at: None,
             });
         }
@@ -653,8 +659,9 @@ impl Provider for Sub2apiProvider {
 
 /// Splits the pasted connection string on its first two spaces: `base_url`
 /// and `admin_key` never contain spaces, so the third field takes the whole
-/// remainder and an upstream account name may itself contain spaces.
-fn parse_connection(pasted: &str) -> Result<(String, String, String), ProviderError> {
+/// remainder and an upstream account name may itself contain spaces. Only
+/// the admin key is secret; it leaves the split already wrapped.
+fn parse_connection(pasted: &str) -> Result<(String, Zeroizing<String>, String), ProviderError> {
     let pasted = pasted.trim();
     let (base_url, rest) =
         pasted
@@ -676,7 +683,7 @@ fn parse_connection(pasted: &str) -> Result<(String, String, String), ProviderEr
     }
     Ok((
         base_url.to_owned(),
-        admin_key.to_owned(),
+        Zeroizing::new(admin_key.to_owned()),
         upstream_ref.to_owned(),
     ))
 }
