@@ -2220,6 +2220,7 @@ dependencies = [
  "ullage-provider-claude",
  "ullage-provider-cursor",
  "ullage-provider-grok",
+ "ullage-provider-opencode",
 ]
 
 [[package]]
@@ -2367,6 +2368,21 @@ dependencies = [
  "tokio",
  "ullage-auth",
  "ullage-core",
+]
+
+[[package]]
+name = "ullage-provider-opencode"
+version = "0.1.6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ullage-auth",
+ "ullage-core",
+ "zeroize",
 ]
 
 [[package]]

@@ -371,7 +371,7 @@ impl CredentialBackend for MemoryBackend {
 }
 
 #[test]
-fn production_composition_registers_all_four_providers() {
+fn production_composition_registers_all_providers() {
     let credentials = Arc::new(CredentialStore::new(MemoryBackend::default()));
     let registry = ullage_app::registry_with_credentials(credentials).unwrap();
     let ids = registry
@@ -379,7 +379,7 @@ fn production_composition_registers_all_four_providers() {
         .into_iter()
         .map(|descriptor| descriptor.id.as_str().to_owned())
         .collect::<Vec<_>>();
-    assert_eq!(ids, ["chatgpt", "claude", "cursor", "grok"]);
+    assert_eq!(ids, ["chatgpt", "claude", "cursor", "grok", "opencode"]);
     assert!(
         registry
             .descriptors()

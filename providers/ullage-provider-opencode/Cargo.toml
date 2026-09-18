@@ -1,0 +1,19 @@
+[package]
+name = "ullage-provider-opencode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+ullage-auth.workspace = true
+ullage-core.workspace = true
+zeroize = { version = "1", features = ["derive"] }

@@ -356,7 +356,7 @@ fn known_value_flag_label(flag: &str) -> Option<&'static str> {
 pub(crate) fn error_hint_for_control(error: &ControlError) -> Option<String> {
     match error {
         ControlError::Registry(RegistryError::NotFound(_)) => Some(
-            "pass a compiled-in provider id such as claude, chatgpt, grok, or cursor; run \
+            "pass a compiled-in provider id such as claude, chatgpt, grok, cursor, or opencode; run \
              `ullage provider list` to see ids"
                 .into(),
         ),
@@ -372,7 +372,7 @@ pub(crate) fn error_hint(kind: &str) -> Option<&'static str> {
              `ullage daemon run` in another terminal",
         ),
         "provider_registry_error" => Some(
-            "pass a compiled-in provider id such as claude, chatgpt, grok, or cursor; run \
+            "pass a compiled-in provider id such as claude, chatgpt, grok, cursor, or opencode; run \
              `ullage provider list` to see ids",
         ),
         "account_not_found" | "account_selector_not_found" => {

@@ -11,6 +11,7 @@ members = [
     "providers/ullage-provider-chatgpt",
     "providers/ullage-provider-grok",
     "providers/ullage-provider-cursor",
+    "providers/ullage-provider-opencode",
 ]
 resolver = "3"
 
@@ -45,3 +46,4 @@ ullage-provider-claude = { path = "providers/ullage-provider-claude" }
 ullage-provider-chatgpt = { path = "providers/ullage-provider-chatgpt" }
 ullage-provider-grok = { path = "providers/ullage-provider-grok" }
 ullage-provider-cursor = { path = "providers/ullage-provider-cursor" }
+ullage-provider-opencode = { path = "providers/ullage-provider-opencode" }

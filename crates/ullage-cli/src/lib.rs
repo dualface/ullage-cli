@@ -44,14 +44,16 @@ const PROVIDER_CLAUDE: &str = "claude";
 const PROVIDER_CHATGPT: &str = "chatgpt";
 const PROVIDER_GROK: &str = "grok";
 const PROVIDER_CURSOR: &str = "cursor";
+const PROVIDER_OPENCODE: &str = "opencode";
 
 /// The compiled-in provider ids, shared by the registry construction and
 /// `config` validation so a new provider cannot silently skip either.
-pub(crate) const PROVIDER_IDS: [&str; 4] = [
+pub(crate) const PROVIDER_IDS: [&str; 5] = [
     PROVIDER_CLAUDE,
     PROVIDER_CHATGPT,
     PROVIDER_GROK,
     PROVIDER_CURSOR,
+    PROVIDER_OPENCODE,
 ];
 
 pub fn production_registry(config: &AppConfig) -> Result<ProviderRegistry, String> {
@@ -147,6 +149,7 @@ pub fn registry_with_credentials(
         )
         .map_err(|_| "Grok provider registration failed")?;
 
+    let opencode_credentials = credentials.clone();
     let cursor_api: Arc<dyn ullage_provider_cursor::CursorApi> = Arc::new(
         ullage_provider_cursor::HttpCursorApi::new()
             .map_err(|_| "Cursor provider initialization failed")?,
@@ -165,6 +168,25 @@ pub fn registry_with_credentials(
             },
         )
         .map_err(|_| "Cursor provider registration failed")?;
+
+    let opencode_api: Arc<dyn ullage_provider_opencode::OpencodeApi> = Arc::new(
+        ullage_provider_opencode::HttpOpencodeApi::new()
+            .map_err(|_| "OpenCode provider initialization failed")?,
+    );
+    registry
+        .register_factory(
+            descriptor(PROVIDER_OPENCODE, "OpenCode", false),
+            move |account_id| {
+                Ok(Arc::new(
+                    ullage_provider_opencode::OpencodeProvider::with_api_and_store_for_account(
+                        opencode_api.clone(),
+                        opencode_credentials.clone(),
+                        account_id,
+                    )?,
+                ) as Arc<dyn RegisteredProvider>)
+            },
+        )
+        .map_err(|_| "OpenCode provider registration failed")?;
     Ok(registry)
 }
 

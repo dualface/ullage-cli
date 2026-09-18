@@ -33,6 +33,7 @@ ullage-provider-claude.workspace = true
 ullage-provider-chatgpt.workspace = true
 ullage-provider-grok.workspace = true
 ullage-provider-cursor.workspace = true
+ullage-provider-opencode.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
