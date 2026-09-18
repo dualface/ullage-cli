@@ -164,7 +164,8 @@ Rejected on load:
 
 `provider` must be one of `claude`, `chatgpt`, `grok`, `cursor`, `opencode`,
 `devin`, or `codex2api`. Provider OAuth and billing endpoints are compiled in
-and cannot be redirected here.
+and cannot be redirected here; the codex2api gateway is the exception — its
+base URL arrives with the credential pasted at login.
 
 ### Credentials
 

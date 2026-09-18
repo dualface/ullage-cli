@@ -137,7 +137,7 @@ Balance        credits 0
 }
 ```
 
-`provider` 必须是 `claude`、`chatgpt`、`grok`、`cursor`、`opencode`、`devin` 或 `codex2api` 之一。提供方的 OAuth 和计费端点编译进二进制，不能在这里改写。
+`provider` 必须是 `claude`、`chatgpt`、`grok`、`cursor`、`opencode`、`devin` 或 `codex2api` 之一。提供方的 OAuth 和计费端点编译进二进制，不能在这里改写；codex2api 网关例外——其 base URL 来自登录时粘贴的凭据。
 
 ### 凭据
 

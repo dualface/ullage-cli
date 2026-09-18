@@ -655,16 +655,20 @@ impl Provider for Codex2apiProvider {
         let account = account.clone();
         // The refresh call probes just this one upstream account; its values
         // overlay the list-embedded ones, which may lag a gateway probe cycle.
-        let refresh = self
+        let mut refresh_failure = None;
+        let refresh = match self
             .api
             .refresh_usage(&session.base_url, &session.admin_key, account.id)
-            .await;
-        let refresh = match refresh {
+            .await
+        {
             Ok(refresh) => Some(refresh),
             Err(error) if error.kind == ApiFailureKind::Authentication => {
                 return Err(self.resolve_api_failure(generation, None, error).await);
             }
-            Err(_) => None,
+            Err(error) => {
+                refresh_failure = Some(error);
+                None
+            }
         };
         let usage = Codex2apiUsage {
             account_label: dto::account_label(&account).or(session.account_label.clone()),
@@ -709,17 +713,18 @@ impl Provider for Codex2apiProvider {
             ),
             observed_at: Utc::now(),
         };
-        if refresh.is_none() {
+        if let Some(failure) = refresh_failure {
             // The list row still carries the last probed values, so the query
             // delivers data but flags that it is not the realtime reading a
-            // manual probe asked for.
+            // manual probe asked for. `from_error` keeps the sanitized
+            // category text: the daemon rewrites anything else to "protocol
+            // incompatible", which would misreport a network failure.
             return Ok(QueryOutcome::Partial {
                 data: usage,
-                failures: vec![PartialFailure {
-                    scope: "usage_refresh".into(),
-                    message: "the realtime usage refresh failed; values come from the account list"
-                        .into(),
-                }],
+                failures: vec![PartialFailure::from_error(
+                    "usage_refresh",
+                    &failure.into_provider_error(),
+                )],
             });
         }
         Ok(QueryOutcome::Complete { data: usage })

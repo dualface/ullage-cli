@@ -576,7 +576,12 @@ fn authenticate_once(
             prompt.tell("Open this URL in your browser and approve the request:");
             prompt.tell(&format!("  {uri}"));
         }
-        None => prompt.tell("Approve the request in your browser."),
+        // A paste-only flow (ApiToken) has no browser step: printing the
+        // browser line there would mislead the user right before the secret
+        // prompt. Challenges that still need a browser carry a URI, so the
+        // generic line stays only for URI-less flows with nothing to paste.
+        None if challenge.input.is_none() => prompt.tell("Approve the request in your browser."),
+        None => {}
     }
     if let Some(code) = challenge.user_code.as_deref() {
         prompt.tell(&format!(
