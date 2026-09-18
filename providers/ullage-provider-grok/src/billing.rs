@@ -303,7 +303,9 @@ pub fn parse_billing(
     let products_values = fields(object, PRODUCTS_FIELDS);
     recognized |= !products_values.is_empty();
     let (products, products_valid) = first_products(products_values, &mut failures);
-    // Credits envelope without a percent pool is Partial, not Complete empty windows.
+    // A zero-usage credits envelope omits every percent key because proto3
+    // drops zero-valued scalars, so an absent key means 0% used (inferred
+    // below); a present-but-unusable key keeps its Partial failure instead.
     let credits_schema =
         current_period_key_present || credit_usage_field_present || product_usage_field_present;
     let kind_missing = current_period.as_ref().is_none_or(|p| p.kind.is_none());
