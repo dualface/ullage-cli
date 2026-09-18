@@ -355,13 +355,13 @@ fn classify_accept_error(error: &std::io::Error) -> AcceptFailure {
             match error.raw_os_error() {
                 Some(
                     libc::ENETDOWN
-                        | libc::EPROTO
-                        | libc::ENOPROTOOPT
-                        | libc::EHOSTDOWN
-                        | libc::ENONET
-                        | libc::EHOSTUNREACH
-                        | libc::EOPNOTSUPP
-                        | libc::ENETUNREACH,
+                    | libc::EPROTO
+                    | libc::ENOPROTOOPT
+                    | libc::EHOSTDOWN
+                    | libc::ENONET
+                    | libc::EHOSTUNREACH
+                    | libc::EOPNOTSUPP
+                    | libc::ENETUNREACH,
                 ) => AcceptFailure::Peer,
                 _ => AcceptFailure::Fatal,
             }
@@ -829,7 +829,9 @@ fn host_is_allowed(host: Option<&str>, allowed_hosts: &[String]) -> bool {
         return false;
     };
     let normalized = host.trim().to_ascii_lowercase();
-    allowed_hosts.iter().any(|candidate| candidate == &normalized)
+    allowed_hosts
+        .iter()
+        .any(|candidate| candidate == &normalized)
 }
 
 fn bearer_token(authorization: Option<&str>) -> Option<&str> {
@@ -979,11 +981,7 @@ fn json_error_payload(
     )
 }
 
-fn response_document(
-    version: u16,
-    request_id: String,
-    value: impl Serialize,
-) -> serde_json::Value {
+fn response_document(version: u16, request_id: String, value: impl Serialize) -> serde_json::Value {
     let mut encoded =
         serde_json::to_value(value).unwrap_or_else(|_| serde_json::json!({"error":"storage"}));
     if let serde_json::Value::Object(map) = &mut encoded {
@@ -1241,9 +1239,7 @@ mod tests {
     #[test]
     fn accept_errors_split_peer_resource_and_fatal() {
         assert_eq!(
-            classify_accept_error(&std::io::Error::from(
-                std::io::ErrorKind::ConnectionAborted
-            )),
+            classify_accept_error(&std::io::Error::from(std::io::ErrorKind::ConnectionAborted)),
             AcceptFailure::Peer
         );
         #[cfg(unix)]
@@ -1292,15 +1288,11 @@ mod tests {
                 );
             }
             assert_eq!(
-                classify_accept_error(&std::io::Error::from_raw_os_error(
-                    WinSock::WSAECONNRESET
-                )),
+                classify_accept_error(&std::io::Error::from_raw_os_error(WinSock::WSAECONNRESET)),
                 AcceptFailure::Peer
             );
             assert_eq!(
-                classify_accept_error(&std::io::Error::from_raw_os_error(
-                    WinSock::WSAEINVAL
-                )),
+                classify_accept_error(&std::io::Error::from_raw_os_error(WinSock::WSAEINVAL)),
                 AcceptFailure::Fatal
             );
         }
@@ -1314,7 +1306,9 @@ mod tests {
     fn json_content_type_matches_case_and_parameters() {
         assert!(content_type_is_json(Some("application/json")));
         assert!(content_type_is_json(Some("APPLICATION/JSON")));
-        assert!(content_type_is_json(Some("application/JSON; charset=utf-8")));
+        assert!(content_type_is_json(Some(
+            "application/JSON; charset=utf-8"
+        )));
         assert!(!content_type_is_json(Some("text/json")));
         assert!(!content_type_is_json(Some("application/jsonx")));
         assert!(!content_type_is_json(None));

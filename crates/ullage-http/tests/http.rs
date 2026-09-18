@@ -560,12 +560,7 @@ async fn rejects_duplicate_and_malformed_query_parameters() {
         "",
     );
     assert_eq!(bad_wait.status, 400, "{}", bad_wait.body);
-    let bare_flag = get(
-        harness.addr,
-        "/v1/status?flag",
-        Some(&harness.token),
-        "",
-    );
+    let bare_flag = get(harness.addr, "/v1/status?flag", Some(&harness.token), "");
     assert_eq!(bare_flag.status, 400, "{}", bare_flag.body);
     let diagnose_off = get(
         harness.addr,
@@ -695,7 +690,11 @@ async fn stalled_request_body_times_out_as_408() {
         Duration::from_secs(20),
     );
     assert_eq!(response.status, 408, "{}", response.body);
-    assert!(response.body.contains("request_timeout"), "{}", response.body);
+    assert!(
+        response.body.contains("request_timeout"),
+        "{}",
+        response.body
+    );
     harness.shutdown().await;
 }
 
