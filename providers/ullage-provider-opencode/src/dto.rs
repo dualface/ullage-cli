@@ -43,6 +43,8 @@ pub struct OpencodeUsage {
 
 pub fn normalize(usage: OpencodeUsage) -> ProviderResult<SubscriptionUsage> {
     let mut windows = Vec::new();
+    // OpenCode Go's `rolling` quota is its documented five-hour window, so it
+    // maps directly onto `FiveHours` rather than an unknown duration.
     push_window(
         &mut windows,
         UsageWindowKind::FiveHours,

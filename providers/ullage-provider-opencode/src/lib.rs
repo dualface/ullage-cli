@@ -16,8 +16,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
-    Credential, CredentialError, CredentialKey, CredentialStore, CredentialVersion, LogoutRequest,
-    SecretValue,
+    Credential, CredentialError, CredentialKey, CredentialStore, LogoutRequest, SecretValue,
 };
 use ullage_core::{
     Capability, Provider, ProviderDescriptor, ProviderError, ProviderId, ProviderResult,
@@ -39,14 +38,11 @@ static FLOW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
 struct ProviderState {
     generation: u64,
-    session_id: u64,
     pending_flow: Option<PendingFlow>,
     /// The stored or freshly pasted key. It is the whole session: OpenCode
     /// issues no secondary token and reports no account identity or expiry.
     api_key: Option<Zeroizing<String>>,
     invalid_reason: Option<String>,
-    /// Store version `api_key` was observed at.
-    stored_version: Option<CredentialVersion>,
     /// A stored record that will not decode is corrupt, not absent: the flag
     /// keeps `auth_status` able to report Invalid and logout able to delete
     /// the record even though no key can be read out of it.
@@ -161,20 +157,16 @@ impl OpencodeProvider {
             Ok(stored) => stored,
             Err(CredentialError::NotFound) => {
                 let mut state = self.lock_state()?;
-                state.stored_version = None;
                 state.credentials_loaded = true;
                 return Ok(());
             }
             Err(error) => return Err(credential_error(error)),
         };
-        let stored_version = stored.version();
         match credential_string(stored.credential(), "api_key") {
             Ok(api_key) => {
                 let mut state = self.lock_state()?;
                 state.generation = state.generation.wrapping_add(1);
-                state.session_id = state.session_id.wrapping_add(1);
                 state.api_key = Some(Zeroizing::new(api_key));
-                state.stored_version = Some(stored_version);
                 state.credentials_loaded = true;
             }
             // The record exists but does not decode into a usable key: it is
@@ -182,7 +174,6 @@ impl OpencodeProvider {
             // delete it.
             Err(_) => {
                 let mut state = self.lock_state()?;
-                state.stored_version = Some(stored_version);
                 state.stored_credential_corrupt = true;
                 state.credentials_loaded = true;
             }
@@ -209,30 +200,21 @@ impl OpencodeProvider {
                 });
             }
         }
-        let stored_version = if let Some((store, key)) = &self.credentials {
+        if let Some((store, key)) = &self.credentials {
             let mut credential = Credential::new();
             credential
                 .insert("api_key", SecretValue::new(api_key.as_bytes()))
                 .map_err(credential_error)?;
             // A completed sign-in supersedes whatever the store holds.
-            Some(
-                store
-                    .set(key, credential)
-                    .map_err(credential_error)?
-                    .version(),
-            )
-        } else {
-            None
-        };
+            store.set(key, credential).map_err(credential_error)?;
+        }
         let mut state = self.lock_state()?;
         if !Self::flow_is_current(&state, expected_generation, expected_flow) {
             return Err(ProviderError::ProtocolIncompatible {
                 message: "OpenCode authentication operation was superseded".into(),
             });
         }
-        state.stored_version = stored_version;
         state.generation = state.generation.wrapping_add(1);
-        state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = None;
         state.invalid_reason = None;
         state.stored_credential_corrupt = false;
@@ -284,7 +266,6 @@ impl OpencodeProvider {
                 }
             } else {
                 state.generation = state.generation.wrapping_add(1);
-                state.session_id = state.session_id.wrapping_add(1);
                 state.pending_flow = None;
                 state.api_key = None;
                 state.invalid_reason = Some(error.message.clone());
@@ -357,7 +338,6 @@ impl Provider for OpencodeProvider {
         // credential without first validating that potentially invalid key.
         state.credentials_loaded = true;
         state.generation = state.generation.wrapping_add(1);
-        state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = Some(PendingFlow {
             flow_id,
             expires_at,
@@ -485,10 +465,8 @@ impl Provider for OpencodeProvider {
             }
         }
         state.generation = state.generation.wrapping_add(1);
-        state.session_id = state.session_id.wrapping_add(1);
         state.pending_flow = None;
         state.api_key = None;
-        state.stored_version = None;
         state.invalid_reason = None;
         state.stored_credential_corrupt = false;
         Ok(())
