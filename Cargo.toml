@@ -13,6 +13,7 @@ members = [
     "providers/ullage-provider-cursor",
     "providers/ullage-provider-opencode",
     "providers/ullage-provider-devin",
+    "providers/ullage-provider-codex2api",
 ]
 resolver = "3"
 
@@ -49,3 +50,4 @@ ullage-provider-grok = { path = "providers/ullage-provider-grok" }
 ullage-provider-cursor = { path = "providers/ullage-provider-cursor" }
 ullage-provider-opencode = { path = "providers/ullage-provider-opencode" }
 ullage-provider-devin = { path = "providers/ullage-provider-devin" }
+ullage-provider-codex2api = { path = "providers/ullage-provider-codex2api" }

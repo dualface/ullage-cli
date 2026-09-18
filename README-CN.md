@@ -56,6 +56,9 @@ ullage auth login
 - ChatGPT：`code` 查询值
 - Grok：设备码流程，没有可粘贴的内容。打开页面并自行完成
 - Cursor：浏览器登录，没有可粘贴的内容。打开页面并自行完成。`--method api-token` 保留旧路径：在 cursor.com/dashboard 创建 User API Key，然后无回显地输入
+- OpenCode：在 opencode.ai/auth 签发的 OpenCode Go API key
+- Devin：浏览器登录，没有可粘贴的内容。`--method api-token` 可改为粘贴 Devin API key
+- codex2api：网关 base URL、admin key 与上游账号 id 或 email，空格分隔（`base_url admin_key upstream_ref`）
 
 登录之后，`ullage show --all` 看起来像这样：
 
@@ -134,7 +137,7 @@ Balance        credits 0
 }
 ```
 
-`provider` 必须是 `claude`、`chatgpt`、`grok` 或 `cursor` 之一。提供方的 OAuth 和计费端点编译进二进制，不能在这里改写。
+`provider` 必须是 `claude`、`chatgpt`、`grok`、`cursor`、`opencode`、`devin` 或 `codex2api` 之一。提供方的 OAuth 和计费端点编译进二进制，不能在这里改写。
 
 ### 凭据
 

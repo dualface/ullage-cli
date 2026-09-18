@@ -31,16 +31,18 @@ const PROVIDER_GROK: &str = "grok";
 const PROVIDER_CURSOR: &str = "cursor";
 const PROVIDER_OPENCODE: &str = "opencode";
 const PROVIDER_DEVIN: &str = "devin";
+const PROVIDER_CODEX2API: &str = "codex2api";
 
 /// The compiled-in provider ids, shared by the registry construction and
 /// `config` validation so a new provider cannot silently skip either.
-pub(crate) const PROVIDER_IDS: [&str; 6] = [
+pub(crate) const PROVIDER_IDS: [&str; 7] = [
     PROVIDER_CLAUDE,
     PROVIDER_CHATGPT,
     PROVIDER_GROK,
     PROVIDER_CURSOR,
     PROVIDER_OPENCODE,
     PROVIDER_DEVIN,
+    PROVIDER_CODEX2API,
 ];
 
 pub fn production_registry(config: &AppConfig) -> Result<ProviderRegistry, String> {
@@ -138,6 +140,7 @@ pub fn registry_with_credentials(
 
     let opencode_credentials = credentials.clone();
     let devin_credentials = credentials.clone();
+    let codex2api_credentials = credentials.clone();
     let cursor_api: Arc<dyn ullage_provider_cursor::CursorApi> = Arc::new(
         ullage_provider_cursor::HttpCursorApi::new()
             .map_err(|_| "Cursor provider initialization failed")?,
@@ -194,6 +197,29 @@ pub fn registry_with_credentials(
             },
         )
         .map_err(|_| "Devin provider registration failed")?;
+
+    // The gateway base URL arrives with the pasted credential, so one shared
+    // transport serves every account instance; each instance binds its own
+    // base URL, admin key, and upstream account.
+    let codex2api_api: Arc<dyn ullage_provider_codex2api::Codex2apiApi> = Arc::new(
+        ullage_provider_codex2api::HttpCodex2apiApi::new()
+            .map_err(|_| "codex2api provider initialization failed")?,
+    );
+    let mut codex2api_descriptor = descriptor(PROVIDER_CODEX2API, "Codex2API", false);
+    codex2api_descriptor
+        .capabilities
+        .push(Capability::SubscriptionExpiry);
+    registry
+        .register_factory(codex2api_descriptor, move |account_id| {
+            Ok(Arc::new(
+                ullage_provider_codex2api::Codex2apiProvider::with_api_and_store_for_account(
+                    codex2api_api.clone(),
+                    codex2api_credentials.clone(),
+                    account_id,
+                )?,
+            ) as Arc<dyn RegisteredProvider>)
+        })
+        .map_err(|_| "codex2api provider registration failed")?;
     Ok(registry)
 }
 

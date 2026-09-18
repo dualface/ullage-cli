@@ -2218,6 +2218,7 @@ dependencies = [
  "ullage-protocol",
  "ullage-provider-chatgpt",
  "ullage-provider-claude",
+ "ullage-provider-codex2api",
  "ullage-provider-cursor",
  "ullage-provider-devin",
  "ullage-provider-grok",
@@ -2337,6 +2338,21 @@ dependencies = [
  "ullage-auth",
  "ullage-core",
  "url",
+]
+
+[[package]]
+name = "ullage-provider-codex2api"
+version = "0.1.6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ullage-auth",
+ "ullage-core",
+ "zeroize",
 ]
 
 [[package]]

@@ -13,7 +13,7 @@ ullage-cli -----+--> ullage-protocol --> ullage-core --> ullage-auth
                             |                |
 ullage-daemon --------------+                |
 ullage-http -----> ullage-daemon             |
-ullage-cli --------------------------------> provider-claude/chatgpt/grok/cursor
+ullage-cli --------------------------------> provider-claude/chatgpt/grok/cursor/opencode/devin/codex2api
 ```
 
 An arrow points from a consumer to one of its dependencies. The compact diagram shows ownership

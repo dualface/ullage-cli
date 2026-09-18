@@ -381,7 +381,15 @@ fn production_composition_registers_all_providers() {
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
-        ["chatgpt", "claude", "cursor", "devin", "grok", "opencode"]
+        [
+            "chatgpt",
+            "claude",
+            "codex2api",
+            "cursor",
+            "devin",
+            "grok",
+            "opencode",
+        ]
     );
     assert!(
         registry
