@@ -51,3 +51,13 @@ ullage-provider-cursor = { path = "providers/ullage-provider-cursor" }
 ullage-provider-opencode = { path = "providers/ullage-provider-opencode" }
 ullage-provider-devin = { path = "providers/ullage-provider-devin" }
 ullage-provider-codex2api = { path = "providers/ullage-provider-codex2api" }
+
+# Keep build output small: debug info dominates target/ size.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+strip = "debuginfo"

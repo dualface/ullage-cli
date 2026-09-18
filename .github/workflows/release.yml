@@ -34,7 +34,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.1
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2

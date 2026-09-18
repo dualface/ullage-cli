@@ -246,7 +246,7 @@ impl DaemonEngine {
             .filter_map(|id| id.as_str().strip_prefix("account-")?.parse::<u64>().ok())
             .max()
             // Saturate at u64::MAX instead of wrapping back to account-1.
-            .map(|sequence| sequence.checked_add(1).unwrap_or(u64::MAX))
+            .map(|sequence| sequence.saturating_add(1))
             .unwrap_or(1)
             .max(persisted.next_account_sequence);
         let accounts = persisted
