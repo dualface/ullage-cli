@@ -97,7 +97,7 @@ impl ApiFailure {
 
 /// What a successful `ExchangePKCEAuthorizationCode` returns. Only `api_key`
 /// is required; the server may omit every other field.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExchangeResponse {
     pub api_key: String,
@@ -109,6 +109,25 @@ pub struct ExchangeResponse {
     pub devin_api_url: Option<String>,
     #[serde(default)]
     pub session_token: Option<String>,
+}
+
+// `api_key` and `session_token` are live credentials: like `ApiFailure`, the
+// Debug impl never prints them, matching the credential-masking convention
+// the other providers follow.
+impl fmt::Debug for ExchangeResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExchangeResponse")
+            .field("api_key", &"[REDACTED]")
+            .field("api_server_url", &self.api_server_url)
+            .field("devin_webapp_host", &self.devin_webapp_host)
+            .field("devin_api_url", &self.devin_api_url)
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 #[async_trait]

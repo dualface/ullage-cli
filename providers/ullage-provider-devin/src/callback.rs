@@ -35,8 +35,13 @@ pub struct LoopbackCallback {
 
 impl LoopbackCallback {
     /// Binds `127.0.0.1:0` and starts accepting. Requires a Tokio runtime;
-    /// callers without one get `Bind` and can fall back to the paste path.
+    /// callers without one get `BindError` and can fall back to the paste
+    /// path.
     pub fn bind(expected_state: &str, expires_at: DateTime<Utc>) -> Result<Self, BindError> {
+        // `tokio::spawn` would panic outside a runtime; check first so the
+        // caller sees a recoverable BindError instead.
+        tokio::runtime::Handle::try_current()
+            .map_err(|_| BindError(std::io::Error::other("no Tokio runtime")))?;
         let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         std_listener.set_nonblocking(true)?;
         let listener = tokio::net::TcpListener::from_std(std_listener)?;
@@ -61,14 +66,16 @@ impl LoopbackCallback {
         &self.redirect_uri
     }
 
-    /// The captured outcome, once. A request with a mismatched `state` never
-    /// lands here: it only earns the failure page and the listener keeps
-    /// waiting for the real redirect.
-    pub fn take(&self) -> Option<CallbackOutcome> {
+    /// The captured outcome, if one landed. It stays in the slot until the
+    /// receiver is dropped, so an exchange that fails transiently can retry
+    /// with the same authorization code on the next poll. A request with a
+    /// mismatched `state` never lands here: it only earns the failure page
+    /// and the listener keeps waiting for the real redirect.
+    pub fn peek(&self) -> Option<CallbackOutcome> {
         self.received
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
+            .clone()
     }
 }
 
@@ -315,7 +322,7 @@ mod tests {
         stream.read_to_end(&mut page).await.unwrap();
         assert!(String::from_utf8_lossy(&page).contains("Signed in"));
         for _ in 0..50 {
-            if listener.take().is_some() {
+            if listener.peek().is_some() {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -337,6 +344,6 @@ mod tests {
         let mut page = Vec::new();
         stream.read_to_end(&mut page).await.unwrap();
         assert!(String::from_utf8_lossy(&page).contains("400 Bad Request"));
-        assert!(listener.take().is_none());
+        assert!(listener.peek().is_none());
     }
 }

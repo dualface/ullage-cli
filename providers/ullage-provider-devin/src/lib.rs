@@ -50,7 +50,9 @@ static FLOW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub trait CallbackSource: Send + Sync {
     /// The loopback URI this receiver answers on.
     fn redirect_uri(&self) -> String;
-    fn take(&self) -> Option<CallbackOutcome>;
+    /// The captured redirect, if one landed. It stays available so a
+    /// transient exchange failure can retry with the same code.
+    fn peek(&self) -> Option<CallbackOutcome>;
 }
 
 impl CallbackSource for LoopbackCallback {
@@ -58,8 +60,8 @@ impl CallbackSource for LoopbackCallback {
         LoopbackCallback::redirect_uri(self).to_owned()
     }
 
-    fn take(&self) -> Option<CallbackOutcome> {
-        LoopbackCallback::take(self)
+    fn peek(&self) -> Option<CallbackOutcome> {
+        LoopbackCallback::peek(self)
     }
 }
 
@@ -652,7 +654,7 @@ impl Provider for DevinProvider {
                                 message: "Devin OAuth authorization code is missing".into(),
                             });
                         };
-                        match callback.take() {
+                        match callback.peek() {
                             Some(CallbackOutcome::Code(code)) => code,
                             Some(CallbackOutcome::Denied(_)) => {
                                 return Err(self

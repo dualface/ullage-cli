@@ -53,7 +53,7 @@ impl CallbackSource for SilentCallback {
         "http://127.0.0.1:1/callback".into()
     }
 
-    fn take(&self) -> Option<CallbackOutcome> {
+    fn peek(&self) -> Option<CallbackOutcome> {
         None
     }
 }
