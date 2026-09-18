@@ -1,3 +1,5 @@
 /.memsearch/
+/build/
 /target/
-build/
+/worktrees/
+
