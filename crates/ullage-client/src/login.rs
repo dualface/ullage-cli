@@ -280,6 +280,12 @@ impl Session<'_> {
         }
     }
 
+    /// `daemon_version` captured from the first valid response, or `None`
+    /// when no response has arrived yet.
+    fn reported_daemon_version(&self) -> Option<Option<String>> {
+        self.daemon_version.borrow().clone()
+    }
+
     fn untrusted() -> CallFailure {
         CallFailure::Transport {
             kind: "invalid_daemon_response",
@@ -316,7 +322,7 @@ pub(crate) fn interactive_login(
         diagnose,
         daemon_version: std::cell::RefCell::new(None),
     };
-    let mut output = match run(&session, prompt, provider_hint, method) {
+    match run(&session, prompt, provider_hint, method) {
         Ok(account) => render_result(
             ControlResult::Account(account),
             format,
@@ -346,13 +352,7 @@ pub(crate) fn interactive_login(
             }
             output
         }
-    };
-    if let Some(version) = session.daemon_version.into_inner() {
-        if let Some(notice) = crate::daemon_upgrade_notice(version.as_deref()) {
-            output.stderr.insert_str(0, &notice);
-        }
     }
-    output
 }
 
 fn run(
@@ -373,6 +373,15 @@ fn run(
             );
         }
         return Err(failure.at(LoginStage::Daemon));
+    }
+
+    // The daemon answered, so its build version is known now. Surface an old
+    // binary before the flow goes further: an outdated daemon is exactly why
+    // a provider the CLI knows can be missing from the list below.
+    if let Some(version) = session.reported_daemon_version() {
+        if let Some(notice) = crate::daemon_upgrade_notice(version.as_deref()) {
+            prompt.tell(&notice);
+        }
     }
 
     let provider = select_provider(session, prompt, provider_hint)?;

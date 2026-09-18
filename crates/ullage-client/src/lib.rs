@@ -368,7 +368,7 @@ pub fn execute_with(
         output.stderr = with_diagnostic(&output.stderr, &detail, cli.output);
     }
     if let Some(notice) = daemon_upgrade_notice(response.daemon_version.as_deref()) {
-        output.stderr.insert_str(0, &notice);
+        output.stderr.insert_str(0, &format!("{notice}\n"));
     }
     output
 }
@@ -407,6 +407,6 @@ pub(crate) fn daemon_upgrade_notice(daemon_version: Option<&str>) -> Option<Stri
     Some(format!(
         "warning: the running daemon ({daemon}) is older than this CLI ({cli_version}); \
          upgrades and new providers stay invisible until it is restarted\n  upgrade: \
-         ullage daemon install && ullage daemon stop && ullage daemon start\n"
+         ullage daemon install && ullage daemon stop && ullage daemon start"
     ))
 }
