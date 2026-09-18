@@ -24,9 +24,11 @@ pub enum CallbackOutcome {
 
 /// Receives one OAuth redirect on an ephemeral loopback port.
 ///
-/// `take` hands the captured outcome to whoever completes the flow; dropping
-/// the receiver aborts the accept task, so a superseded flow releases its
-/// port immediately.
+/// `peek` reports the captured outcome to whoever completes the flow; it
+/// stays in the slot until the receiver is dropped, so a transiently failed
+/// exchange can retry the same authorization code. Dropping the receiver
+/// aborts the accept task, so a superseded flow releases its port
+/// immediately.
 pub struct LoopbackCallback {
     redirect_uri: String,
     received: Arc<Mutex<Option<CallbackOutcome>>>,
