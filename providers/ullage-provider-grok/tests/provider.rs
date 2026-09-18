@@ -1951,6 +1951,85 @@ fn percent_window_survives_when_monthly_used_is_also_present() {
     assert_eq!(normalized.windows[0].measurements[0].used, 61.0);
 }
 
+/// A present-but-unusable percent key is a partial failure; only a fully
+/// absent key is read as the omitted proto3 zero value.
+#[test]
+fn credits_percent_field_present_but_invalid_stays_partial() {
+    let outcome = parse_billing(
+        json!({
+            "config": {
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "start": "2026-08-28T01:18:04.090314+00:00",
+                    "end": "2026-09-04T01:18:04.090314+00:00"
+                },
+                "creditUsagePercent": "not-a-number"
+            }
+        }),
+        None,
+        Utc::now(),
+    )
+    .unwrap();
+    let QueryOutcome::Partial { data, failures } = outcome else {
+        panic!("present but unusable creditUsagePercent must stay partial: {outcome:?}");
+    };
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.scope == "usage_percent"),
+        "{failures:?}"
+    );
+    assert_eq!(data.usage_percent, None);
+}
+
+/// An absent percent key still reports `current_period.type` when the credits
+/// period carries no usable type; the inferred 0% only fills the pool.
+#[test]
+fn credits_envelope_without_percent_and_untyped_period_reports_missing_type() {
+    let outcome = parse_billing(
+        json!({
+            "config": {
+                "currentPeriod": {
+                    "start": "2026-08-28T01:18:04.090314+00:00",
+                    "end": "2026-09-04T01:18:04.090314+00:00"
+                }
+            }
+        }),
+        None,
+        Utc::now(),
+    )
+    .unwrap();
+    let QueryOutcome::Partial { data, failures } = outcome else {
+        panic!("untyped currentPeriod must stay partial: {outcome:?}");
+    };
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.scope == "current_period.type"),
+        "{failures:?}"
+    );
+    assert!(
+        !failures
+            .iter()
+            .any(|failure| failure.scope == "usage_percent"),
+        "{failures:?}"
+    );
+    assert_eq!(data.usage_percent, Some(0.0));
+    let normalized = ullage_provider_grok::GrokProvider::new(MockTransport::default())
+        .normalize(data)
+        .unwrap();
+    assert_eq!(normalized.windows[0].window, UsageWindowKind::Weekly);
+    assert_eq!(normalized.windows[0].measurements[0].used, 0.0);
+    assert_eq!(
+        normalized.windows[0].resets_at,
+        Some(
+            DateTime::parse_from_rfc3339("2026-09-04T01:18:04.090314Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        )
+    );
+}
+
 #[test]
 fn unrecognized_period_type_falls_back_to_weekly_with_partial_failure() {
     let outcome = parse_billing(

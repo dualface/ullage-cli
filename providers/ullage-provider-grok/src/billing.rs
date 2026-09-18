@@ -307,9 +307,22 @@ pub fn parse_billing(
     let credits_schema =
         current_period_key_present || credit_usage_field_present || product_usage_field_present;
     let kind_missing = current_period.as_ref().is_none_or(|p| p.kind.is_none());
-    let will_emit_percent_window = usage_percent.is_some() || !products.is_empty();
+    let mut will_emit_percent_window = usage_percent.is_some() || !products.is_empty();
     if credits_schema && !will_emit_percent_window {
-        push_unique_failure(&mut failures, "usage_percent");
+        if usage_present {
+            // A percent field was present but unparseable: keep the failure
+            // recorded above instead of inferring zero usage.
+            push_unique_failure(&mut failures, "usage_percent");
+        } else {
+            // The credits response is protobuf JSON, which omits zero-valued
+            // scalar fields: a parseable envelope without any percent key
+            // means 0% used this period, not an incompatible response.
+            // Wrapper messages such as `{"val":0}` are still serialized,
+            // which is why onDemandCap appears while creditUsagePercent does
+            // not.
+            usage_percent = Some(0.0);
+            will_emit_percent_window = true;
+        }
     }
     if will_emit_percent_window && kind_missing && credits_schema {
         push_unique_failure(&mut failures, "current_period.type");
