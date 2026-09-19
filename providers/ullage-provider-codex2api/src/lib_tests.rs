@@ -396,7 +396,6 @@ fn gateway_free_text_is_sanitized_at_the_boundary() {
     assert_eq!(dto::account_label(&account).unwrap(), "name");
     let usage = Codex2apiUsage {
         account_label: None,
-        account_key: None,
         plan_type: Some("pro\u{1b}[2J".into()),
         subscription_expires_at: None,
         window_7d_kind: None,

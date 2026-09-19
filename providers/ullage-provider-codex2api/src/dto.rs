@@ -94,8 +94,6 @@ pub struct QuotaWindow {
 pub struct Codex2apiUsage {
     /// Display name of the matched upstream account (email preferred).
     pub account_label: Option<String>,
-    /// The gateway account id, kept for `auth_status` identity reporting.
-    pub account_key: Option<String>,
     pub plan_type: Option<String>,
     pub subscription_expires_at: Option<DateTime<Utc>>,
     /// `monthly` when the gateway marks the long window as a team month
@@ -251,7 +249,6 @@ mod tests {
         let expires_at = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
         let usage = Codex2apiUsage {
             account_label: Some("ops@example.com".into()),
-            account_key: Some("7".into()),
             plan_type: Some("team".into()),
             subscription_expires_at: Some(expires_at),
             window_7d_kind: Some("monthly".into()),
@@ -288,7 +285,6 @@ mod tests {
     fn normalize_reports_the_spark_window() {
         let usage = Codex2apiUsage {
             account_label: None,
-            account_key: None,
             plan_type: None,
             subscription_expires_at: None,
             window_7d_kind: None,

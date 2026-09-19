@@ -679,7 +679,6 @@ impl Provider for Codex2apiProvider {
         };
         let usage = Codex2apiUsage {
             account_label: dto::account_label(&account).or(session.account_label.clone()),
-            account_key: Some(account.id.to_string()),
             plan_type: account.plan_type.clone(),
             subscription_expires_at: dto::parse_gateway_time(
                 account.subscription_expires_at.as_deref(),

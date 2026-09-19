@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use ullage_core::{
     MeasurementUnit, ProviderId, ProviderResult, SubscriptionUsage, UsageMeasurement, UsageWindow,
-    UsageWindowKind,
+    UsageWindowKind, is_unsafe_identity_character,
 };
 
 /// The Connect-RPC JSON answer nests the plan state under
@@ -131,11 +131,20 @@ pub fn normalize(usage: DevinUsage) -> ProviderResult<SubscriptionUsage> {
         plan: status
             .plan_info
             .as_ref()
-            .and_then(|info| info.plan_name.clone()),
+            .and_then(|info| info.plan_name.as_deref())
+            .map(sanitize_vendor_text)
+            .filter(|plan| !plan.is_empty()),
         subscription_expires_at: status.plan_end,
         observed_at: usage.observed_at,
         windows,
     })
+}
+
+fn sanitize_vendor_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !is_unsafe_identity_character(*character))
+        .collect()
 }
 
 fn push_quota_window(
@@ -330,5 +339,21 @@ mod tests {
             normalized.windows[0].measurements[0].unit,
             MeasurementUnit::Credits
         );
+    }
+
+    #[test]
+    fn normalize_sanitizes_the_plan_name() {
+        let normalized = normalize(DevinUsage {
+            plan_status: PlanStatus {
+                plan_info: Some(PlanInfo {
+                    plan_name: Some("Pro\u{202e}\u{1b}".into()),
+                }),
+                ..PlanStatus::default()
+            },
+            observed_at: Utc::now(),
+        })
+        .unwrap();
+
+        assert_eq!(normalized.plan.as_deref(), Some("Pro"));
     }
 }
