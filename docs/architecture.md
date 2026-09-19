@@ -13,7 +13,8 @@ ullage-cli -----+--> ullage-protocol --> ullage-core --> ullage-auth
                             |                |
 ullage-daemon --------------+                |
 ullage-http -----> ullage-daemon             |
-ullage-cli --------------------------------> provider-claude/chatgpt/grok/cursor/opencode/devin/codex2api
+ullage-cli ----------------------------> provider-claude/chatgpt/grok/cursor
+          +----------------------------> provider-opencode/devin/codex2api/sub2api
 ```
 
 An arrow points from a consumer to one of its dependencies. The compact diagram shows ownership
@@ -28,7 +29,7 @@ direction rather than every composition-root edge; the complete direct workspace
 - `ullage-http`: `ullage-daemon` and `ullage-protocol`. It is an optional local or
   Tailscale HTTP transport over `ControlService::handle()` and does not change the control protocol.
 - `ullage-cli` (library name `ullage_app`): `ullage-auth`, `ullage-client`, `ullage-core`,
-  `ullage-daemon`, `ullage-http`, `ullage-protocol`, and all four provider crates. It is the
+  `ullage-daemon`, `ullage-http`, `ullage-protocol`, and all provider crates. It is the
   single production composition root and builds the `ullage` binary. This is the published
   crates.io package.
 - `ullage-client` (library name `ullage_cli`): `ullage-protocol`, plus `ullage-auth` on Windows

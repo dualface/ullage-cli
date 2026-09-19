@@ -153,7 +153,7 @@ fn complete_auth_resolves_an_id_reference_and_authenticates() {
         ready(provider.auth_status()).unwrap(),
         AuthState::Authenticated {
             account_label: Some("work".into()),
-            account_key: Some("http://127.0.0.1:55001#7".into()),
+            account_key: ullage_auth::account_identity("http://127.0.0.1:55001#7"),
             expires_at: None,
         }
     );
@@ -187,7 +187,7 @@ fn complete_auth_resolves_a_name_reference_with_spaces() {
         state,
         AuthState::Authenticated {
             account_label: Some("my work account".into()),
-            account_key: Some("http://127.0.0.1:55001#9".into()),
+            account_key: ullage_auth::account_identity("http://127.0.0.1:55001#9"),
             expires_at: None,
         }
     );
@@ -233,7 +233,7 @@ fn complete_auth_searches_later_pages_for_a_name() {
         state,
         AuthState::Authenticated {
             account_label: Some("work".into()),
-            account_key: Some("http://127.0.0.1:55001#7".into()),
+            account_key: ullage_auth::account_identity("http://127.0.0.1:55001#7"),
             expires_at: None,
         }
     );
@@ -281,7 +281,7 @@ fn complete_auth_continues_past_page_one_when_pages_is_absent() {
         state,
         AuthState::Authenticated {
             account_label: Some("work".into()),
-            account_key: Some("http://127.0.0.1:55001#7".into()),
+            account_key: ullage_auth::account_identity("http://127.0.0.1:55001#7"),
             expires_at: None,
         }
     );
@@ -497,10 +497,12 @@ fn the_account_key_binds_the_upstream_id_to_its_gateway() {
         upstream_id: 1,
         account_name: None,
     };
+    let key = session("https://a.example").account_key().unwrap();
     assert_eq!(
-        session("https://a.example").account_key(),
-        "https://a.example#1"
+        Some(key.clone()),
+        ullage_auth::account_identity("https://a.example#1")
     );
+    assert!(!key.contains("example"));
     assert_ne!(
         session("https://a.example").account_key(),
         session("https://b.example").account_key()

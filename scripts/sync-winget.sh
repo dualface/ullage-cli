@@ -212,7 +212,7 @@ PackageUrl: https://github.com/dualface/ullage-cli
 License: MIT
 LicenseUrl: https://github.com/dualface/ullage-cli/blob/main/LICENSE
 Copyright: Copyright (c) 2026 dualface
-ShortDescription: Local daemon and CLI for Claude, ChatGPT, Grok, and Cursor subscription usage
+ShortDescription: Local daemon and CLI for AI subscription usage
 Moniker: ullage
 Tags:
   - chatgpt

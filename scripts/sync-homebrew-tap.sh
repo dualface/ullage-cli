@@ -153,7 +153,7 @@ asset_url() {
 formula="$(
 	cat <<EOF
 class Ullage < Formula
-  desc "Local daemon and CLI for Claude, ChatGPT, Grok, and Cursor subscription usage"
+  desc "Local daemon and CLI for AI subscription usage"
   homepage "https://github.com/${REPO_SLUG}"
   version "${bare_version}"
   license "MIT"

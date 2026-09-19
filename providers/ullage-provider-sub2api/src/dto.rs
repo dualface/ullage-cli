@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ullage_core::{
     MeasurementUnit, ProviderId, ProviderResult, SubscriptionUsage, UsageMeasurement, UsageWindow,
-    UsageWindowKind,
+    UsageWindowKind, is_unsafe_identity_character,
 };
 
 /// One entry of the paged `GET /api/v1/admin/accounts` listing. Only the
@@ -232,6 +232,7 @@ pub fn normalize(usage: Sub2apiUsage) -> ProviderResult<SubscriptionUsage> {
     );
     if let Some(quota) = &info.antigravity_quota {
         for (model, entry) in quota {
+            let model = sanitized_or_fallback(model, "unknown-model");
             let mut measurements = Vec::new();
             if let Some(utilization) = entry.utilization {
                 measurements.push(UsageMeasurement {
@@ -247,7 +248,7 @@ pub fn normalize(usage: Sub2apiUsage) -> ProviderResult<SubscriptionUsage> {
             windows.push(UsageWindow {
                 window: UsageWindowKind::Other {
                     id: format!("antigravity_quota:{model}"),
-                    label: model.clone(),
+                    label: model,
                 },
                 resets_at: entry.reset_time.as_deref().and_then(parse_gateway_datetime),
                 measurements,
@@ -275,7 +276,9 @@ pub fn normalize(usage: Sub2apiUsage) -> ProviderResult<SubscriptionUsage> {
             .map(|credit| UsageMeasurement {
                 name: credit
                     .credit_type
-                    .clone()
+                    .as_deref()
+                    .map(sanitize_gateway_text)
+                    .filter(|name| !name.is_empty())
                     .unwrap_or_else(|| "credits".into()),
                 used: credit.amount.unwrap_or(0.0),
                 limit: None,
@@ -293,20 +296,46 @@ pub fn normalize(usage: Sub2apiUsage) -> ProviderResult<SubscriptionUsage> {
     }
     Ok(SubscriptionUsage {
         provider: ProviderId::new("sub2api"),
-        account_label: usage.account_label,
+        account_label: sanitize_optional_gateway_text(usage.account_label),
         plan: info
             .subscription_tier
-            .clone()
+            .as_deref()
+            .map(sanitize_gateway_text)
             .filter(|tier| !tier.is_empty())
             .or_else(|| {
                 info.subscription_tier_raw
-                    .clone()
+                    .as_deref()
+                    .map(sanitize_gateway_text)
                     .filter(|tier| !tier.is_empty())
             }),
         subscription_expires_at: None,
         observed_at: usage.observed_at,
         windows,
     })
+}
+
+/// Strips control and bidirectional characters from gateway-owned text before
+/// it enters shared DTOs, logs, or terminal output.
+pub fn sanitize_gateway_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !is_unsafe_identity_character(*character))
+        .collect()
+}
+
+pub fn sanitize_optional_gateway_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| sanitize_gateway_text(&text))
+        .filter(|text| !text.is_empty())
+}
+
+fn sanitized_or_fallback(value: &str, fallback: &str) -> String {
+    let sanitized = sanitize_gateway_text(value);
+    if sanitized.is_empty() {
+        fallback.into()
+    } else {
+        sanitized
+    }
 }
 
 fn other_window(id: &str, label: &str) -> UsageWindowKind {
@@ -663,5 +692,43 @@ mod tests {
         };
         let normalized = normalize(usage).unwrap();
         assert!(normalized.windows.is_empty());
+    }
+
+    #[test]
+    fn normalize_sanitizes_gateway_owned_text() {
+        let mut quota = BTreeMap::new();
+        quota.insert(
+            "model\u{202e}\u{1b}".into(),
+            AntigravityModelQuota {
+                utilization: Some(1.0),
+                reset_time: None,
+            },
+        );
+        let normalized = normalize(Sub2apiUsage {
+            account_label: Some("work\u{202e}\u{1b}".into()),
+            info: UsageInfo {
+                antigravity_quota: Some(quota),
+                subscription_tier: Some("PRO\u{202e}\u{1b}".into()),
+                ai_credits: vec![AiCredit {
+                    credit_type: Some("credit\u{202e}\u{1b}".into()),
+                    amount: Some(1.0),
+                    minimum_balance: None,
+                }],
+                ..UsageInfo::default()
+            },
+            observed_at: Utc::now(),
+        })
+        .unwrap();
+
+        assert_eq!(normalized.account_label.as_deref(), Some("work"));
+        assert_eq!(normalized.plan.as_deref(), Some("PRO"));
+        assert_eq!(
+            normalized.windows[0].window,
+            UsageWindowKind::Other {
+                id: "antigravity_quota:model".into(),
+                label: "model".into(),
+            }
+        );
+        assert_eq!(normalized.windows[1].measurements[0].name, "credit");
     }
 }

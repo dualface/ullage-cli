@@ -3,9 +3,10 @@
 Languages: [English](README.md) · [简体中文](README-CN.md)
 
 Ullage is a local daemon and CLI that inspects subscription usage for Claude,
-ChatGPT, Grok, and Cursor. A single `ullage` binary hosts the daemon and talks
-to it over a private local control socket or named pipe. Credentials stay in the
-platform credential store by default; configuration never contains secrets.
+ChatGPT, Grok, Cursor, OpenCode Go, Devin, codex2api, and sub2api. A single
+`ullage` binary hosts the daemon and talks to it over a private local control
+socket or named pipe. Credentials stay in the platform credential store by
+default; configuration never contains secrets.
 
 ## Install
 

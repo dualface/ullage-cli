@@ -2,7 +2,7 @@
 
 语言: [English](README.md) · [简体中文](README-CN.md)
 
-Ullage 是本地守护进程和 CLI，用来查看 Claude、ChatGPT、Grok 和 Cursor 的订阅用量。单个 `ullage` 二进制同时托管守护进程，并通过本机私有控制套接字或命名管道与之通信。凭据默认放在平台凭据库中；配置文件不含密钥。
+Ullage 是本地守护进程和 CLI，用来查看 Claude、ChatGPT、Grok、Cursor、OpenCode Go、Devin、codex2api 和 sub2api 的订阅用量。单个 `ullage` 二进制同时托管守护进程，并通过本机私有控制套接字或命名管道与之通信。凭据默认放在平台凭据库中；配置文件不含密钥。
 
 ## 安装
 

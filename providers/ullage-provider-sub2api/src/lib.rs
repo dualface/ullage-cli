@@ -25,6 +25,7 @@ use chrono::{DateTime, Duration, Utc};
 use ullage_auth::{
     AuthChallenge, AuthCompleteRequest, AuthInputRequest, AuthMethod, AuthStartRequest, AuthState,
     Credential, CredentialError, CredentialKey, CredentialStore, LogoutRequest, SecretValue,
+    account_identity,
 };
 use ullage_core::{
     Capability, Provider, ProviderDescriptor, ProviderError, ProviderId, ProviderResult,
@@ -66,8 +67,8 @@ impl GatewaySession {
     /// id 1 — so the key binds the id to the normalized gateway URL: the
     /// same upstream on the same gateway dedupes, the same numeric id on
     /// another gateway does not.
-    fn account_key(&self) -> String {
-        format!("{}#{}", self.base_url, self.upstream_id)
+    fn account_key(&self) -> Option<String> {
+        account_identity(&format!("{}#{}", self.base_url, self.upstream_id))
     }
 }
 
@@ -271,7 +272,7 @@ impl Sub2apiProvider {
         state.stored_credential_corrupt = false;
         let auth = AuthState::Authenticated {
             account_label: session.account_name.clone(),
-            account_key: Some(session.account_key()),
+            account_key: session.account_key(),
             expires_at: None,
         };
         state.session = Some(session);
@@ -285,8 +286,12 @@ impl Sub2apiProvider {
         &self,
         expected_generation: u64,
         expected_flow: Option<&str>,
-        error: ApiFailure,
+        mut error: ApiFailure,
     ) -> ProviderError {
+        error.message = dto::sanitize_gateway_text(&error.message);
+        if error.message.is_empty() {
+            error.message = "the sub2api gateway reported an error".into();
+        }
         let _persist_gate = self.credential_gate.lock().await;
         let mut state = match self.lock_state() {
             Ok(state) => state,
@@ -312,7 +317,6 @@ impl Sub2apiProvider {
             error.kind,
             ApiFailureKind::Authentication | ApiFailureKind::UpstreamAccountMissing
         ) {
-            let account_key = state.session.as_ref().map(GatewaySession::account_key);
             if expected_flow.is_some() {
                 // The failure belongs to the pending flow alone: dropping the
                 // live session behind it would downgrade a healthy sign-in.
@@ -324,10 +328,7 @@ impl Sub2apiProvider {
                 state.generation = state.generation.wrapping_add(1);
                 state.pending_flow = None;
                 state.session = None;
-                state.invalid_reason = Some(match account_key {
-                    Some(key) => format!("{} (account {key})", error.message),
-                    None => error.message.clone(),
-                });
+                state.invalid_reason = Some(error.message.clone());
             }
         }
         error.into_provider_error()
@@ -499,7 +500,7 @@ impl Provider for Sub2apiProvider {
                         base_url,
                         admin_key,
                         upstream_id: account.id,
-                        account_name: account.name,
+                        account_name: dto::sanitize_optional_gateway_text(account.name),
                     },
                     Err(error) => {
                         return Err(self
@@ -527,13 +528,13 @@ impl Provider for Sub2apiProvider {
         if let Some(reason) = &state.invalid_reason {
             return Ok(AuthState::Invalid {
                 reason: reason.clone(),
-                account_key: state.session.as_ref().map(GatewaySession::account_key),
+                account_key: state.session.as_ref().and_then(GatewaySession::account_key),
             });
         }
         if let Some(session) = &state.session {
             return Ok(AuthState::Authenticated {
                 account_label: session.account_name.clone(),
-                account_key: Some(session.account_key()),
+                account_key: session.account_key(),
                 expires_at: None,
             });
         }
@@ -637,11 +638,12 @@ impl Provider for Sub2apiProvider {
             .as_ref()
             .filter(|c| !c.is_empty())
             .map(|code| ullage_core::PartialFailure {
-                scope: code.clone(),
+                scope: sanitized_or_fallback(code, "upstream"),
                 message: data
                     .info
                     .error
-                    .clone()
+                    .as_deref()
+                    .map(dto::sanitize_gateway_text)
                     .filter(|text| !text.is_empty())
                     .unwrap_or_else(|| "the gateway reported an upstream error".into()),
             });
@@ -732,8 +734,17 @@ fn stored_session(credential: &Credential) -> ProviderResult<GatewaySession> {
         base_url,
         admin_key: Zeroizing::new(admin_key),
         upstream_id,
-        account_name,
+        account_name: dto::sanitize_optional_gateway_text(account_name),
     })
+}
+
+fn sanitized_or_fallback(value: &str, fallback: &str) -> String {
+    let sanitized = dto::sanitize_gateway_text(value);
+    if sanitized.is_empty() {
+        fallback.into()
+    } else {
+        sanitized
+    }
 }
 
 fn credential_string(credential: &Credential, field: &str) -> ProviderResult<String> {

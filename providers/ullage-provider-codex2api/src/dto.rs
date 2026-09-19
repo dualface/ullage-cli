@@ -152,7 +152,10 @@ fn push_window(windows: &mut Vec<UsageWindow>, kind: UsageWindowKind, window: &Q
             name: "billed".into(),
             used: billed,
             limit: None,
-            unit: MeasurementUnit::Currency { code: "USD".into() },
+            unit: MeasurementUnit::Other {
+                id: "usd".into(),
+                label: "USD".into(),
+            },
         });
     }
     windows.push(UsageWindow {
@@ -274,6 +277,10 @@ mod tests {
         assert_eq!(normalized.windows[0].resets_at, Some(resets_at));
         assert_eq!(normalized.windows[0].measurements[0].used, 12.5);
         assert_eq!(normalized.windows[0].measurements[1].name, "billed");
+        assert!(matches!(
+            normalized.windows[0].measurements[1].unit,
+            MeasurementUnit::Other { ref id, .. } if id == "usd"
+        ));
         assert_eq!(normalized.windows[1].window, UsageWindowKind::Monthly);
     }
 
