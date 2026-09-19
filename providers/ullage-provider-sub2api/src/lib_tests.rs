@@ -16,7 +16,7 @@ enum Call {
     Usage {
         id: i64,
         force: bool,
-        result: Result<UsageInfo, ApiFailure>,
+        result: Box<Result<UsageInfo, ApiFailure>>,
     },
 }
 
@@ -72,7 +72,7 @@ impl Sub2apiApi for StubApi {
             } => {
                 assert_eq!(account_id, id);
                 assert_eq!(force, f);
-                result
+                *result
             }
             _ => panic!("unexpected call order"),
         }
@@ -390,7 +390,7 @@ fn query_forces_live_usage() {
         Call::Usage {
             id: 7,
             force: true,
-            result: Ok(stub_usage()),
+            result: Box::new(Ok(stub_usage())),
         },
     ]));
     authenticate_by_id(&provider);
@@ -417,11 +417,11 @@ fn a_degraded_upstream_reports_a_partial_failure() {
         Call::Usage {
             id: 7,
             force: true,
-            result: Ok(UsageInfo {
+            result: Box::new(Ok(UsageInfo {
                 error_code: Some("unauthenticated".into()),
                 error: Some("upstream token expired".into()),
                 ..UsageInfo::default()
-            }),
+            })),
         },
     ]));
     authenticate_by_id(&provider);
@@ -448,7 +448,7 @@ fn a_deleted_upstream_account_invalidates_the_session() {
         Call::Usage {
             id: 7,
             force: true,
-            result: Err(ApiFailure::upstream_account_missing("gone")),
+            result: Box::new(Err(ApiFailure::upstream_account_missing("gone"))),
         },
     ]));
     authenticate_by_id(&provider);
@@ -472,7 +472,7 @@ fn a_rejected_key_during_query_invalidates_the_session() {
         Call::Usage {
             id: 7,
             force: true,
-            result: Err(ApiFailure::authentication("revoked")),
+            result: Box::new(Err(ApiFailure::authentication("revoked"))),
         },
     ]));
     authenticate_by_id(&provider);
