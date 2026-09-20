@@ -1,13 +1,17 @@
 //! Full-screen subscription usage view.
 //!
 //! The view shows the same readings as `show`, in the same words, but packed
-//! for a small screen: each subscription is headed by its provider instead of
-//! boxed, and a per-card column layout gives up its widest fields first so the
-//! identity, the reading, and the reset countdown survive on a phone.
+//! for a small screen: each subscription is a rounded box with its provider
+//! in the top border, and a per-card column layout gives up its widest fields
+//! first so the identity, the reading, and the reset countdown survive on a
+//! phone. `cards` owns what a card looks like; this file owns the terminal,
+//! the keys, and the scroll.
+
+mod cards;
 
 use std::io;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseEvent, MouseEventKind,
@@ -23,36 +27,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ullage_core::QueryOutcome;
-use ullage_core::summary::UsageSummary;
-use ullage_protocol::{
-    CONTROL_PROTOCOL_VERSION, ControlRequest, ControlResult, SnapshotPayload, SubscriptionUsage,
-};
+use ullage_protocol::{CONTROL_PROTOCOL_VERSION, ControlRequest, ControlResult, SnapshotPayload};
+use unicode_width::UnicodeWidthStr;
 
+use self::cards::{Card, card_lines, card_rects, cards as load_cards, clip, content_height};
 use crate::errors::{error_output, result_exit_code, sanitize_partial_failure_controls};
 use crate::render::{MetricFilterChoice, RenderView, render_result};
-use crate::table::{
-    BAR_RENDER_WIDTH, SECONDS_PER_DAY, Severity, SummaryCells, collect_summary_cells,
-    countdown_text, progress_bar, remaining_severity, reset_bar,
-};
 use crate::{
     ClientError, ColorMode, Command, ControlClient, ExitCode, OutputFormat, RunOutput,
-    daemon_upgrade_notice, next_request_id, response_matches_command, sanitize_cell,
-    to_control_command,
+    daemon_upgrade_notice, next_request_id, response_matches_command, to_control_command,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const PREFERRED_CARD_WIDTH: u16 = 42;
-const HORIZONTAL_GAP: u16 = 2;
-/// A blank row separates one band of cards from the next.
-const VERTICAL_GAP: u16 = 1;
-/// One space between the fields of a row. The table can afford two because it
-/// owns the whole terminal width; a card has to fit the full bar into a
-/// column of about forty cells.
-const FIELD_GAP: usize = 1;
-/// Two spaces between the names on a title line, which has no columns to keep.
-const TITLE_GAP: usize = 2;
-/// Cells of the bar that survives once the full bar no longer fits.
-const MINI_BAR_WIDTH: usize = 4;
 /// Rows a single wheel notch scrolls.
 const WHEEL_LINES: u16 = 3;
 
@@ -151,7 +136,7 @@ fn run_terminal(snapshots: &[SnapshotPayload]) -> io::Result<()> {
     loop {
         // The countdowns are rebuilt on every draw so a view left open does
         // not keep showing the wait measured when it was opened.
-        let cards = cards(snapshots, Utc::now());
+        let cards = load_cards(snapshots, Utc::now());
         terminal.draw(|frame| render(frame, &cards, &mut scroll))?;
         let action = match event::read()? {
             Event::Key(key) => key_action(key),
@@ -298,321 +283,6 @@ fn render_card(
     }
 }
 
-/// Renders a card as its title, its rows, and its notices, in that order.
-fn card_lines(card: &Card, width: u16) -> Vec<Line<'static>> {
-    let measured = RowLayout::measure(&card.rows);
-    let tier = measured.tier_for(width);
-    let layout = measured.stretched(tier, width);
-    let mut lines = vec![title_line(&card.title, width)];
-    lines.extend(
-        card.rows
-            .iter()
-            .map(|row| row_line(row, &layout, tier, width)),
-    );
-    lines.extend(card.notices.iter().map(|notice| {
-        Line::from(Span::styled(
-            clip(notice, usize::from(width)),
-            Style::default().fg(Color::Yellow),
-        ))
-    }));
-    lines
-}
-
-/// The provider carries the line; the plan and the account stay quiet beside
-/// it. Whitespace separates them, so no punctuation has to be picked that a
-/// terminal might render two cells wide.
-fn title_line(title: &CardTitle, width: u16) -> Line<'static> {
-    let width = usize::from(width);
-    let mut spans = Vec::new();
-    let mut used = 0;
-    let mut push = |text: &str, style: Style, spans: &mut Vec<Span<'static>>| {
-        if text.is_empty() || used >= width {
-            return;
-        }
-        if !spans.is_empty() {
-            let gap = TITLE_GAP.min(width - used);
-            spans.push(Span::raw(" ".repeat(gap)));
-            used += gap;
-        }
-        let text = clip(text, width - used);
-        used += UnicodeWidthStr::width(text.as_str());
-        spans.push(Span::styled(text, style));
-    };
-    let quiet = Style::default().add_modifier(Modifier::DIM);
-    push(
-        &title.provider,
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-        &mut spans,
-    );
-    push(title.plan.as_deref().unwrap_or(""), quiet, &mut spans);
-    push(&title.account, quiet, &mut spans);
-    Line::from(spans)
-}
-
-/// How much room each field of a card's rows needs, before any is dropped.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct RowLayout {
-    identity: usize,
-    verb: usize,
-    amount: usize,
-    /// The amount, or the verb for a row whose reading is a word such as
-    /// `used up`. Tiers that drop the verb column show this instead, so no
-    /// row ends up with no reading at all.
-    reading: usize,
-    suffix: usize,
-    resets: usize,
-    bar: usize,
-    /// The four-cell bar that replaces the full one on a narrow terminal.
-    mini: usize,
-}
-
-/// The fields a row keeps at a given width, widest variant first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Tier {
-    /// Identity, reading, reset countdown, full progress bar.
-    Full,
-    /// The full bar shrinks to four cells before anything else is dropped.
-    MiniBar,
-    /// The verb is prose; the number it introduces carries the meaning.
-    NoVerb,
-    /// Even the mini bar goes before the countdown does.
-    NoBar,
-    /// The countdown goes last, after everything but identity and reading.
-    NoReset,
-    /// Identity and reading only, both clipped to fit.
-    Minimal,
-}
-
-impl RowLayout {
-    fn measure(rows: &[CardRow]) -> Self {
-        Self {
-            identity: max_width(rows.iter().map(|row| row.identity.as_str())),
-            verb: max_width(rows.iter().map(|row| row.verb)),
-            amount: max_width(rows.iter().map(|row| row.amount.as_str())),
-            reading: max_width(rows.iter().map(reading)),
-            suffix: max_width(rows.iter().map(|row| row.suffix)),
-            resets: max_width(rows.iter().filter_map(|row| row.resets.as_deref())),
-            bar: if rows.iter().any(|row| row.ratio.is_some()) {
-                BAR_RENDER_WIDTH
-            } else {
-                0
-            },
-            mini: if rows.iter().any(|row| row.ratio.is_some()) {
-                MINI_BAR_WIDTH
-            } else {
-                0
-            },
-        }
-    }
-
-    /// Widens the identity column by the slack left over at `width`, so the
-    /// reading, the countdown, and the bar sit against the card's right edge
-    /// and line up across the rows of every card.
-    fn stretched(mut self, tier: Tier, width: u16) -> Self {
-        if tier == Tier::Minimal {
-            return self;
-        }
-        let slack = usize::from(width).saturating_sub(self.width_of(tier));
-        self.identity += slack;
-        self
-    }
-
-    /// The widest tier that fits `width`, or [`Tier::Minimal`] when none does.
-    fn tier_for(&self, width: u16) -> Tier {
-        let width = usize::from(width);
-        for tier in [
-            Tier::Full,
-            Tier::MiniBar,
-            Tier::NoVerb,
-            Tier::NoBar,
-            Tier::NoReset,
-        ] {
-            if self.width_of(tier) <= width {
-                return tier;
-            }
-        }
-        Tier::Minimal
-    }
-
-    fn width_of(&self, tier: Tier) -> usize {
-        let fields: &[usize] = match tier {
-            Tier::Full => &[
-                self.identity,
-                self.verb,
-                self.amount,
-                self.suffix,
-                self.resets,
-                self.bar,
-            ],
-            Tier::MiniBar => &[
-                self.identity,
-                self.verb,
-                self.amount,
-                self.suffix,
-                self.resets,
-                self.mini,
-            ],
-            Tier::NoVerb => &[
-                self.identity,
-                self.reading,
-                self.suffix,
-                self.resets,
-                self.mini,
-            ],
-            Tier::NoBar => &[self.identity, self.reading, self.suffix, self.resets],
-            Tier::NoReset => &[self.identity, self.reading, self.suffix],
-            Tier::Minimal => &[self.identity, self.reading],
-        };
-        let used: usize = fields.iter().filter(|field| **field > 0).sum();
-        let gaps = fields.iter().filter(|field| **field > 0).count();
-        used + FIELD_GAP * gaps.saturating_sub(1)
-    }
-}
-
-fn row_line(row: &CardRow, layout: &RowLayout, tier: Tier, width: u16) -> Line<'static> {
-    if tier == Tier::Minimal {
-        return minimal_line(row, width);
-    }
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    push_field(&mut spans, &row.identity, layout.identity, Style::default());
-    // Numbers read as a column only when they end on the same cell.
-    if matches!(tier, Tier::Full | Tier::MiniBar) {
-        push_field(&mut spans, row.verb, layout.verb, dim);
-        push_aligned(
-            &mut spans,
-            &row.amount,
-            layout.amount,
-            amount_style(row),
-            Align::Right,
-        );
-    } else {
-        push_aligned(
-            &mut spans,
-            reading(row),
-            layout.reading,
-            amount_style(row),
-            Align::Right,
-        );
-    }
-    push_field(&mut spans, row.suffix, layout.suffix, dim);
-    if tier != Tier::NoReset {
-        push_aligned(
-            &mut spans,
-            row.resets.as_deref().unwrap_or(""),
-            layout.resets,
-            dim,
-            Align::Right,
-        );
-    }
-    match tier {
-        Tier::Full => push_field(
-            &mut spans,
-            &row.ratio.map(progress_bar).unwrap_or_default(),
-            layout.bar,
-            amount_style(row),
-        ),
-        Tier::MiniBar | Tier::NoVerb => push_field(
-            &mut spans,
-            &row.ratio.map(mini_bar).unwrap_or_default(),
-            layout.mini,
-            amount_style(row),
-        ),
-        _ => {}
-    }
-    Line::from(spans)
-}
-
-/// The full bar's reading in four cells, filled from the right exactly as
-/// [`progress_bar`] fills its ten.
-fn mini_bar(remaining_ratio: f64) -> String {
-    let filled = (remaining_ratio.clamp(0.0, 1.0) * MINI_BAR_WIDTH as f64).round() as usize;
-    let filled = filled.min(MINI_BAR_WIDTH);
-    format!(
-        "{}{}",
-        "-".repeat(MINI_BAR_WIDTH - filled),
-        "#".repeat(filled)
-    )
-}
-
-/// What a row reads as when there is no room for the verb and the amount
-/// side by side: the amount, or the verb for `used up`, `unlimited`, and the
-/// other readings that are a word rather than a number.
-fn reading(row: &CardRow) -> &str {
-    if row.amount.is_empty() {
-        row.verb
-    } else {
-        row.amount.as_str()
-    }
-}
-
-/// The narrowest row keeps the identity and the reading, with the reading
-/// kept whole and the identity giving up the cells it needs.
-fn minimal_line(row: &CardRow, width: u16) -> Line<'static> {
-    let value = reading(row);
-    let width = usize::from(width);
-    let value = clip(value, width);
-    let room = width
-        .saturating_sub(UnicodeWidthStr::width(value.as_str()))
-        .saturating_sub(FIELD_GAP);
-    let identity = clip(&row.identity, room);
-    let mut spans = Vec::new();
-    if !identity.is_empty() {
-        spans.push(Span::raw(identity));
-        spans.push(Span::raw(" ".repeat(FIELD_GAP)));
-    }
-    spans.push(Span::styled(value, amount_style(row)));
-    Line::from(spans)
-}
-
-fn amount_style(row: &CardRow) -> Style {
-    match row.ratio.map(remaining_severity) {
-        Some(Severity::Critical) => Style::default().fg(Color::Red),
-        Some(Severity::Low) => Style::default().fg(Color::Yellow),
-        Some(Severity::Ample) => Style::default().fg(Color::Green),
-        None => Style::default(),
-    }
-}
-
-/// Appends one padded field and the gap that precedes it, skipping the field
-/// when the whole column is empty for this card.
-fn push_field(spans: &mut Vec<Span<'static>>, text: &str, width: usize, style: Style) {
-    push_aligned(spans, text, width, style, Align::Left);
-}
-
-/// Which edge of its column a field sits against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Align {
-    Left,
-    Right,
-}
-
-fn push_aligned(
-    spans: &mut Vec<Span<'static>>,
-    text: &str,
-    width: usize,
-    style: Style,
-    align: Align,
-) {
-    if width == 0 {
-        return;
-    }
-    if !spans.is_empty() {
-        spans.push(Span::raw(" ".repeat(FIELD_GAP)));
-    }
-    let text = clip(text, width);
-    let padding = width.saturating_sub(UnicodeWidthStr::width(text.as_str()));
-    if padding > 0 && align == Align::Right {
-        spans.push(Span::raw(" ".repeat(padding)));
-    }
-    spans.push(Span::styled(text, style));
-    if padding > 0 && align == Align::Left {
-        spans.push(Span::raw(" ".repeat(padding)));
-    }
-}
-
 /// The hints and the position, shortened as the terminal narrows.
 fn status_line(
     offset: u16,
@@ -642,182 +312,6 @@ fn status_line(
         clip(&text, width),
         Style::default().add_modifier(Modifier::DIM),
     ))
-}
-
-/// Cuts `text` to `width` display cells, never splitting a wide character.
-fn clip(text: &str, width: usize) -> String {
-    if UnicodeWidthStr::width(text) <= width {
-        return text.to_owned();
-    }
-    let mut used = 0;
-    text.chars()
-        .take_while(|character| {
-            let character_width = UnicodeWidthChar::width(*character).unwrap_or(0);
-            if used + character_width > width {
-                false
-            } else {
-                used += character_width;
-                true
-            }
-        })
-        .collect()
-}
-
-fn max_width<'a>(values: impl Iterator<Item = &'a str>) -> usize {
-    values.map(UnicodeWidthStr::width).max().unwrap_or(0)
-}
-
-#[derive(Debug)]
-struct Card {
-    title: CardTitle,
-    rows: Vec<CardRow>,
-    notices: Vec<String>,
-}
-
-impl Card {
-    /// One title line, the rows, and the notices. No border rows.
-    fn height(&self) -> u16 {
-        (self.rows.len() + self.notices.len() + 1)
-            .try_into()
-            .unwrap_or(u16::MAX)
-    }
-}
-
-/// The three names that identify a subscription, kept apart so each can be
-/// styled on its own.
-#[derive(Debug)]
-struct CardTitle {
-    provider: String,
-    plan: Option<String>,
-    account: String,
-}
-
-#[derive(Debug)]
-struct CardRow {
-    identity: String,
-    verb: &'static str,
-    amount: String,
-    suffix: &'static str,
-    resets: Option<String>,
-    ratio: Option<f64>,
-}
-
-fn cards(snapshots: &[SnapshotPayload], now: DateTime<Utc>) -> Vec<Card> {
-    snapshots
-        .iter()
-        .map(|snapshot| card(snapshot, now))
-        .collect()
-}
-
-fn card(snapshot: &SnapshotPayload, now: DateTime<Utc>) -> Card {
-    let usage = usage_data(&snapshot.usage);
-    let summary = MetricFilterChoice::default()
-        .for_saved(&snapshot.metrics)
-        .summarize(usage);
-    let mut notices = Vec::new();
-    if snapshot.stale {
-        notices.push("! stale snapshot".into());
-    }
-    if summary.limit_reached {
-        notices.push("! limit reached".into());
-    }
-    if let QueryOutcome::Partial { failures, .. } = &snapshot.usage {
-        notices.push(format!("! {} item(s) unavailable", failures.len()));
-    }
-    if summary.rows.is_empty() {
-        notices.push("! no summarized metrics".into());
-    }
-    Card {
-        title: card_title(usage, &snapshot.account_id),
-        rows: rows(&summary, now),
-        notices,
-    }
-}
-
-fn card_title(usage: &SubscriptionUsage, account_id: &str) -> CardTitle {
-    CardTitle {
-        provider: sanitize_cell(usage.provider.as_str()).to_owned(),
-        plan: usage
-            .plan
-            .as_deref()
-            .filter(|plan| !plan.trim().is_empty())
-            .map(|plan| sanitize_cell(plan).to_owned()),
-        account: sanitize_cell(account_id).to_owned(),
-    }
-}
-
-/// Reuses the table's cells, so the view names windows, metrics, and readings
-/// exactly as `show` does, and hides the same rows.
-fn rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<CardRow> {
-    collect_summary_cells(&summary.rows, now)
-        .into_iter()
-        .map(|cell| {
-            let SummaryCells {
-                identity,
-                verb,
-                amount,
-                suffix,
-                resets_in,
-                remaining_ratio,
-                ..
-            } = cell;
-            CardRow {
-                identity,
-                verb,
-                amount,
-                suffix,
-                resets: resets_in.map(reset_text),
-                ratio: remaining_ratio,
-            }
-        })
-        .collect()
-}
-
-/// How long until the window resets. A day or more reads as the table's star
-/// field, which shows the scale at a glance; under a day the exact wait is
-/// worth more than the scale, so it is spelled out.
-fn reset_text(seconds: i64) -> String {
-    if seconds >= SECONDS_PER_DAY {
-        reset_bar(seconds)
-    } else {
-        countdown_text(seconds)
-    }
-}
-
-fn usage_data(outcome: &QueryOutcome<SubscriptionUsage>) -> &SubscriptionUsage {
-    match outcome {
-        QueryOutcome::Complete { data } | QueryOutcome::Partial { data, .. } => data,
-    }
-}
-
-fn card_rects(width: u16, heights: &[u16]) -> Vec<Rect> {
-    if width == 0 || heights.is_empty() {
-        return Vec::new();
-    }
-    let columns = ((u32::from(width) + u32::from(HORIZONTAL_GAP))
-        / u32::from(PREFERRED_CARD_WIDTH + HORIZONTAL_GAP))
-    .max(1) as u16;
-    let gaps = HORIZONTAL_GAP.saturating_mul(columns.saturating_sub(1));
-    let available = width.saturating_sub(gaps);
-    let base_width = available / columns;
-    let extra = available % columns;
-    let mut rects = Vec::with_capacity(heights.len());
-    let mut y = 0u16;
-    for row in heights.chunks(columns as usize) {
-        let row_height = row.iter().copied().max().unwrap_or(0);
-        let mut x = 0u16;
-        for (column, height) in row.iter().enumerate() {
-            let card_width = base_width + u16::from((column as u16) < extra);
-            rects.push(Rect::new(x, y, card_width, *height));
-            x = x.saturating_add(card_width + HORIZONTAL_GAP);
-        }
-        y = y.saturating_add(row_height + VERTICAL_GAP);
-    }
-    rects
-}
-
-fn content_height(rects: &[Rect]) -> u16 {
-    rects.iter().map(|rect| rect.bottom()).max().unwrap_or(0)
 }
 
 trait TerminalControl {

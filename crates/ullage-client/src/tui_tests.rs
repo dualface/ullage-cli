@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::backend::TestBackend;
 use ullage_core::summary::{SummaryRow, SummaryValue, UsageSummary};
 
+use super::cards::*;
 use super::*;
 
 fn now() -> DateTime<Utc> {
@@ -128,12 +129,15 @@ fn disabled_rows_keep_the_off_suffix() {
 
 #[test]
 fn countdowns_cover_days_hours_minutes_and_expiry() {
-    // A day or more reads as the table's star field, so the view and `show`
-    // draw the same scale; under a day the exact wait is spelled out.
+    // Under a day the exact wait is spelled out; within a week each
+    // remaining day lights one of seven dots; beyond a week the day count
+    // sits centered between diamonds, still seven cells wide.
     let cases = [
-        (23 * 86_400, "* 23d *"),
-        (2 * 86_400, "-----**"),
-        (86_400, "------*"),
+        (23 * 86_400, "◆ 23d ◆"),
+        (8 * 86_400, "◆  8d ◆"),
+        (7 * 86_400, "●●●●●●●"),
+        (2 * 86_400, "○○○○○●●"),
+        (86_400, "○○○○○○●"),
         (86_400 - 1, "23h59m"),
         (3 * 3_600 + 300, "3h05m"),
         (12 * 60, "12m"),
@@ -142,35 +146,86 @@ fn countdowns_cover_days_hours_minutes_and_expiry() {
     ];
     for (seconds, expected) in cases {
         let rows = rows(&summary(vec![usage_row("5h", 91.0, seconds)]), now());
-        assert_eq!(rows[0].resets.as_deref(), Some(expected), "{seconds}s");
+        let resets = rows[0].resets.as_deref();
+        assert_eq!(resets, Some(expected), "{seconds}s");
+        if seconds >= 86_400 {
+            assert_eq!(
+                UnicodeWidthStr::width(expected),
+                7,
+                "{seconds}s: {expected}"
+            );
+        }
     }
 }
 
 #[test]
-fn a_card_costs_one_line_beyond_its_rows_and_notices() {
+fn a_card_costs_two_border_lines_beyond_its_rows_and_notices() {
     let card = Card {
         title: title(),
         rows: vec![row("5h", "remains", "91%", Some("3h05m"))],
         notices: vec!["! stale snapshot".into()],
     };
 
-    assert_eq!(card.height(), 3);
-    assert_eq!(card_lines(&card, 42).len(), 3);
+    assert_eq!(card.height(), 4);
+    assert_eq!(card_lines(&card, 42).len(), 4);
 }
 
 #[test]
-fn a_full_row_uses_every_column_of_the_card() {
+fn a_card_is_a_rounded_box_with_its_title_in_the_top_border() {
+    let card = card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]);
+
+    let lines = card_lines(&card, 42);
+    let top = line_text(&lines[0]);
+    let bottom = line_text(lines.last().unwrap());
+
+    assert!(top.starts_with("╭─ "), "{top}");
+    assert!(top.ends_with('╮'), "{top}");
+    assert!(top.contains("claude  max_20x  acct-1"), "{top}");
+    assert_eq!(UnicodeWidthStr::width(top.as_str()), 42, "{top}");
+    assert!(bottom.starts_with('╰'), "{bottom}");
+    assert!(bottom.ends_with('╯'), "{bottom}");
+    assert_eq!(UnicodeWidthStr::width(bottom.as_str()), 42, "{bottom}");
+
+    // The border is dim, including the cells around the embedded title and
+    // the verticals framing each row.
+    let dim = |span: &Span<'_>| span.style.add_modifier.contains(Modifier::DIM);
+    assert!(dim(&lines[0].spans[0]), "{:?}", lines[0].spans[0]);
+    assert!(dim(lines[0].spans.last().unwrap()));
+    assert_eq!(lines[1].spans[0].content, "│");
+    assert!(dim(&lines[1].spans[0]));
+    assert_eq!(lines[1].spans.last().unwrap().content, "│");
+    assert!(dim(lines[1].spans.last().unwrap()));
+}
+
+#[test]
+fn a_full_row_uses_every_column_inside_the_frame() {
     let card = card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]);
 
     let line = &card_lines(&card, 42)[1];
     let text = line_text(line);
 
-    // No border eats a column: the row spans the card and the bar ends on
-    // its last cell.
+    // The row spans the card between the verticals, and the ten-cell block
+    // bar ends just inside the right border.
     assert_eq!(UnicodeWidthStr::width(text.as_str()), 42, "{text}");
-    assert!(text.ends_with(']'), "{text}");
-    assert!(text.starts_with("5h "), "{text}");
-    assert!(text.contains("remains 91% 3h05m ["), "{text}");
+    assert!(text.starts_with("│ 5h "), "{text}");
+    assert!(text.ends_with("░█████████ │"), "{text}");
+    assert!(text.contains("remains 91% 3h05m "), "{text}");
+}
+
+#[test]
+fn a_42_column_card_still_shows_the_full_ten_cell_bar() {
+    let card = card_with_rows(vec![
+        row("5h", "remains", "91%", Some("3h05m")),
+        CardRow {
+            ratio: Some(0.07),
+            ..row("weekly", "remains", "7%", Some("○●●●●●●"))
+        },
+    ]);
+
+    let content = rendered(42, 8, std::slice::from_ref(&card));
+
+    assert!(content.contains("░█████████"), "{content}");
+    assert!(content.contains("░░░░░░░░░█"), "{content}");
 }
 
 #[test]
@@ -179,9 +234,9 @@ fn narrowing_shrinks_the_bar_then_drops_the_verb_the_bar_and_the_countdown() {
     let layout = RowLayout::measure(&card.rows);
 
     let tiers = [
-        (42, Tier::Full, "5h remains 91% 3h05m [-#########]"),
-        (29, Tier::MiniBar, "5h remains 91% 3h05m ####"),
-        (21, Tier::NoVerb, "5h 91% 3h05m ####"),
+        (42, Tier::Full, "5h remains 91% 3h05m ░█████████"),
+        (29, Tier::MiniBar, "5h remains 91% 3h05m ████"),
+        (21, Tier::NoVerb, "5h 91% 3h05m ████"),
         (16, Tier::NoBar, "5h 91% 3h05m"),
         (9, Tier::NoReset, "5h 91%"),
         (5, Tier::Minimal, "5 91%"),
@@ -216,23 +271,17 @@ fn the_narrowest_row_keeps_a_wordy_reading_when_there_is_no_amount() {
 
 #[test]
 fn the_title_names_the_provider_first_and_keeps_the_rest_quiet() {
-    let line = title_line(&title(), 42);
+    let spans = title_spans(&title(), 42);
+    let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
 
-    assert_eq!(line_text(&line), "claude  max_20x  acct-1");
+    assert_eq!(text, "claude  max_20x  acct-1");
     assert!(
-        line.spans[0].style.add_modifier.contains(Modifier::BOLD),
+        spans[0].style.add_modifier.contains(Modifier::BOLD),
         "{:?}",
-        line.spans[0].style
-    );
-    assert!(
-        !line
-            .spans
-            .iter()
-            .any(|span| span.style.add_modifier.contains(Modifier::REVERSED)),
-        "the title is no longer a reversed bar"
+        spans[0].style
     );
     // The quiet names are dim, and nothing is padded to the card width.
-    let last = line.spans.last().unwrap();
+    let last = spans.last().unwrap();
     assert!(last.style.add_modifier.contains(Modifier::DIM), "{last:?}");
 }
 
@@ -240,7 +289,7 @@ fn the_title_names_the_provider_first_and_keeps_the_rest_quiet() {
 fn readings_and_countdowns_end_on_the_same_column() {
     let card = card_with_rows(vec![
         row("5h", "remains", "91%", Some("3h05m")),
-        row("weekly", "remains", "7%", Some("-*****")),
+        row("weekly", "remains", "7%", Some("○●●●●●●")),
     ]);
 
     let lines = card_lines(&card, 42);
@@ -255,48 +304,50 @@ fn readings_and_countdowns_end_on_the_same_column() {
     );
     assert_eq!(
         first.find("3h05m").unwrap() + 5,
-        second.find("-*****").unwrap() + 6
+        second.find("○●●●●●●").unwrap() + 7
     );
 }
 
 #[test]
 fn the_mini_bar_fills_from_the_right_like_the_full_bar() {
-    assert_eq!(mini_bar(0.0), "----");
-    assert_eq!(mini_bar(0.25), "---#");
-    assert_eq!(mini_bar(0.5), "--##");
-    assert_eq!(mini_bar(1.0), "####");
-    assert_eq!(mini_bar(2.0), "####", "a ratio above one is clamped");
+    assert_eq!(block_bar(0.0, 4), "░░░░");
+    assert_eq!(block_bar(0.25, 4), "░░░█");
+    assert_eq!(block_bar(0.5, 4), "░░██");
+    assert_eq!(block_bar(1.0, 4), "████");
+    assert_eq!(block_bar(2.0, 4), "████", "a ratio above one is clamped");
 }
 
 #[test]
-fn the_full_bar_is_the_one_the_table_draws() {
-    let card = card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]);
-
-    let text = line_text(&card_lines(&card, 42)[1]);
-
-    assert!(text.ends_with(&progress_bar(0.91)), "{text}");
+fn the_full_bar_is_ten_block_cells_filled_by_the_remaining_ratio() {
+    assert_eq!(block_bar(0.0, 10), "░░░░░░░░░░");
+    assert_eq!(block_bar(0.25, 10), "░░░░░░░███");
+    assert_eq!(block_bar(0.5, 10), "░░░░░█████");
+    assert_eq!(block_bar(1.0, 10), "██████████");
 }
 
 #[test]
-fn every_rendered_cell_is_ascii() {
+fn every_card_line_is_exactly_the_card_width() {
     let card = Card {
         title: title(),
         rows: vec![
             row("5h", "remains", "91%", Some("3h05m")),
-            row("weekly", "used up", "", Some("* 23d *")),
+            row("weekly", "used up", "", Some("◆ 23d ◆")),
         ],
         notices: vec!["! stale snapshot".into()],
     };
 
-    // East Asian ambiguous glyphs (block elements, box drawing, the middle
-    // dot) are one cell wide to `unicode-width` and two in a CJK terminal, so
-    // the view stays inside ASCII.
-    for width in [90u16, 42, 28, 20, 12, 1] {
-        let content = rendered(width, 12, std::slice::from_ref(&card));
-        assert!(
-            content.is_ascii(),
-            "width {width} rendered a non-ASCII cell: {content}"
-        );
+    // The box glyphs are East Asian ambiguous, one cell to `unicode-width`:
+    // a line that is shorter or wider than the card means a border slipped
+    // out of alignment.
+    for width in [90u16, 42, 28, 20, 12, 6, 5, 3, 2, 1] {
+        for (index, line) in card_lines(&card, width).iter().enumerate() {
+            let text = line_text(line);
+            assert_eq!(
+                UnicodeWidthStr::width(text.as_str()),
+                usize::from(width),
+                "width {width} line {index}: {text}"
+            );
+        }
     }
 }
 
