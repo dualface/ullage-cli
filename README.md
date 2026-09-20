@@ -434,7 +434,7 @@ does plus the wait until each window resets:
 │ 5h      remains 91%   3h05m ░█████████ │
 │ weekly  used up     ○●●●●●● ░░░░░░░░░░ │
 │ fable   remains 25% ◆ 12d ◆ ░░░░░░░███ │
-╰──────────────────────────────────────────╯
+╰────────────────────────────────────────╯
 ```
 
 The bar is ten block cells (`█` filled, `░` empty) with no brackets, colored
