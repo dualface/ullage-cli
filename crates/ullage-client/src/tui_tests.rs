@@ -79,7 +79,7 @@ fn rendered(width: u16, height: u16, cards: &[Card]) -> String {
     let mut terminal = Terminal::new(backend).unwrap();
     let mut scroll = Scroll::default();
     terminal
-        .draw(|frame| render(frame, cards, &mut scroll))
+        .draw(|frame| render(frame, cards, &mut scroll, Layout::Columns))
         .unwrap();
     terminal.backend().to_string()
 }
@@ -110,6 +110,94 @@ fn rows_reuse_the_table_identity_reading_and_row_filter() {
     assert_eq!(rows[0].resets.as_deref(), Some("3h05m"));
 }
 
+/// A window whose metric the summary keeps, so the identity reads
+/// `<window>-<metric>` the way Cursor's monthly windows do.
+fn named_row(window: &str, metric: &str, percent: f64) -> SummaryRow {
+    SummaryRow {
+        window: window.into(),
+        metric: metric.into(),
+        value: SummaryValue::Remains(percent),
+        resets_at: None,
+        remaining_ratio: Some(percent / 100.0),
+        disabled: false,
+    }
+}
+
+#[test]
+fn a_prefix_every_row_repeats_is_dropped_with_its_separator() {
+    let rows = rows(
+        &summary(vec![
+            named_row("monthly", "auto", 91.0),
+            named_row("monthly", "Codex", 40.0),
+        ]),
+        now(),
+    );
+
+    let identities = rows
+        .iter()
+        .map(|row| row.identity.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(identities, ["auto", "Codex"]);
+}
+
+#[test]
+fn the_shared_prefix_stays_when_a_row_would_lose_its_whole_name() {
+    // `monthly` alone has nothing behind the prefix, so dropping it would
+    // leave that row nameless.
+    let mut rows = vec![
+        row("monthly-auto", "remains", "91%", None),
+        row("monthly", "remains", "40%", None),
+    ];
+
+    strip_shared_prefix(&mut rows);
+
+    let identities = rows
+        .iter()
+        .map(|row| row.identity.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(identities, ["monthly-auto", "monthly"]);
+}
+
+#[test]
+fn a_prefix_shared_through_several_segments_is_dropped_whole() {
+    let mut rows = vec![
+        row("monthly-on demand-auto", "remains", "91%", None),
+        row("monthly-on demand-api", "remains", "40%", None),
+    ];
+
+    strip_shared_prefix(&mut rows);
+
+    let identities = rows
+        .iter()
+        .map(|row| row.identity.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(identities, ["auto", "api"]);
+}
+
+#[test]
+fn a_single_row_card_keeps_its_full_name() {
+    let rows = rows(&summary(vec![named_row("monthly", "auto", 91.0)]), now());
+
+    assert_eq!(rows[0].identity, "monthly-auto");
+}
+
+#[test]
+fn rows_with_nothing_in_common_are_left_alone() {
+    let rows = rows(
+        &summary(vec![
+            usage_row("5h", 91.0, 3_600),
+            usage_row("weekly", 40.0, 3_600),
+        ]),
+        now(),
+    );
+
+    let identities = rows
+        .iter()
+        .map(|row| row.identity.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(identities, ["5h", "weekly"]);
+}
+
 #[test]
 fn disabled_rows_keep_the_off_suffix() {
     let rows = rows(
@@ -135,9 +223,9 @@ fn countdowns_cover_days_hours_minutes_and_expiry() {
     let cases = [
         (23 * 86_400, "◆ 23d ◆"),
         (8 * 86_400, "◆  8d ◆"),
-        (7 * 86_400, "●●●●●●●"),
-        (2 * 86_400, "○○○○○●●"),
-        (86_400, "○○○○○○●"),
+        (7 * 86_400, "•••••••"),
+        (2 * 86_400, "◦◦◦◦◦••"),
+        (86_400, "◦◦◦◦◦◦•"),
         (86_400 - 1, "23h59m"),
         (3 * 3_600 + 300, "3h05m"),
         (12 * 60, "12m"),
@@ -208,7 +296,7 @@ fn a_full_row_uses_every_column_inside_the_frame() {
     // bar ends just inside the right border.
     assert_eq!(UnicodeWidthStr::width(text.as_str()), 42, "{text}");
     assert!(text.starts_with("│ 5h "), "{text}");
-    assert!(text.ends_with("░█████████ │"), "{text}");
+    assert!(text.ends_with("┄━━━━━━━━━ │"), "{text}");
     assert!(text.contains("remains 91% 3h05m "), "{text}");
 }
 
@@ -218,14 +306,14 @@ fn a_42_column_card_still_shows_the_full_ten_cell_bar() {
         row("5h", "remains", "91%", Some("3h05m")),
         CardRow {
             ratio: Some(0.07),
-            ..row("weekly", "remains", "7%", Some("○●●●●●●"))
+            ..row("weekly", "remains", "7%", Some("◦••••••"))
         },
     ]);
 
     let content = rendered(42, 8, std::slice::from_ref(&card));
 
-    assert!(content.contains("░█████████"), "{content}");
-    assert!(content.contains("░░░░░░░░░█"), "{content}");
+    assert!(content.contains("┄━━━━━━━━━"), "{content}");
+    assert!(content.contains("┄┄┄┄┄┄┄┄┄━"), "{content}");
 }
 
 #[test]
@@ -234,9 +322,9 @@ fn narrowing_shrinks_the_bar_then_drops_the_verb_the_bar_and_the_countdown() {
     let layout = RowLayout::measure(&card.rows);
 
     let tiers = [
-        (42, Tier::Full, "5h remains 91% 3h05m ░█████████"),
-        (29, Tier::MiniBar, "5h remains 91% 3h05m ████"),
-        (21, Tier::NoVerb, "5h 91% 3h05m ████"),
+        (42, Tier::Full, "5h remains 91% 3h05m ┄━━━━━━━━━"),
+        (29, Tier::MiniBar, "5h remains 91% 3h05m ━━━━"),
+        (21, Tier::NoVerb, "5h 91% 3h05m ━━━━"),
         (16, Tier::NoBar, "5h 91% 3h05m"),
         (9, Tier::NoReset, "5h 91%"),
         (5, Tier::Minimal, "5 91%"),
@@ -289,7 +377,7 @@ fn the_title_names_the_provider_first_and_keeps_the_rest_quiet() {
 fn readings_and_countdowns_end_on_the_same_column() {
     let card = card_with_rows(vec![
         row("5h", "remains", "91%", Some("3h05m")),
-        row("weekly", "remains", "7%", Some("○●●●●●●")),
+        row("weekly", "remains", "7%", Some("◦••••••")),
     ]);
 
     let lines = card_lines(&card, 42);
@@ -304,25 +392,25 @@ fn readings_and_countdowns_end_on_the_same_column() {
     );
     assert_eq!(
         first.find("3h05m").unwrap() + 5,
-        second.find("○●●●●●●").unwrap() + 7
+        second.find("◦••••••").unwrap() + 7
     );
 }
 
 #[test]
 fn the_mini_bar_fills_from_the_right_like_the_full_bar() {
-    assert_eq!(block_bar(0.0, 4), "░░░░");
-    assert_eq!(block_bar(0.25, 4), "░░░█");
-    assert_eq!(block_bar(0.5, 4), "░░██");
-    assert_eq!(block_bar(1.0, 4), "████");
-    assert_eq!(block_bar(2.0, 4), "████", "a ratio above one is clamped");
+    assert_eq!(block_bar(0.0, 4), "┄┄┄┄");
+    assert_eq!(block_bar(0.25, 4), "┄┄┄━");
+    assert_eq!(block_bar(0.5, 4), "┄┄━━");
+    assert_eq!(block_bar(1.0, 4), "━━━━");
+    assert_eq!(block_bar(2.0, 4), "━━━━", "a ratio above one is clamped");
 }
 
 #[test]
 fn the_full_bar_is_ten_block_cells_filled_by_the_remaining_ratio() {
-    assert_eq!(block_bar(0.0, 10), "░░░░░░░░░░");
-    assert_eq!(block_bar(0.25, 10), "░░░░░░░███");
-    assert_eq!(block_bar(0.5, 10), "░░░░░█████");
-    assert_eq!(block_bar(1.0, 10), "██████████");
+    assert_eq!(block_bar(0.0, 10), "┄┄┄┄┄┄┄┄┄┄");
+    assert_eq!(block_bar(0.25, 10), "┄┄┄┄┄┄┄━━━");
+    assert_eq!(block_bar(0.5, 10), "┄┄┄┄┄━━━━━");
+    assert_eq!(block_bar(1.0, 10), "━━━━━━━━━━");
 }
 
 #[test]
@@ -431,20 +519,68 @@ fn keys_map_to_quitting_paging_and_line_scrolling() {
 
 #[test]
 fn the_status_line_shortens_with_the_terminal() {
+    let line = |width| line_text(&status_line(11, 10, 40, width, Layout::Columns));
+
     assert_eq!(
-        line_text(&status_line(11, 10, 40, 60)),
-        "q quit  wheel/jk scroll  PgUp/PgDn half page  12/40"
+        line(70),
+        "q quit  wheel/jk scroll  PgUp/PgDn half page  v one per row  12/40"
+    );
+    assert_eq!(line(45), "q quit  jk  PgUp/PgDn  v one per row  12/40");
+    assert_eq!(line(24), "q  jk  PgUp/Dn  v  12/40");
+    assert_eq!(line(12), "q  v  12/40");
+    assert_eq!(line(8), "q  12/40");
+    assert_eq!(
+        line_text(&status_line(0, 10, 4, 60, Layout::Columns)),
+        "q quit  v one per row"
+    );
+}
+
+#[test]
+fn the_layout_hint_names_what_the_key_switches_to() {
+    // The hint is what pressing `v` gives you, not what is on screen.
+    assert!(
+        line_text(&status_line(0, 10, 4, 60, Layout::Vertical)).contains("v columns"),
+        "{}",
+        line_text(&status_line(0, 10, 4, 60, Layout::Vertical))
+    );
+}
+
+#[test]
+fn v_toggles_the_layout_and_the_toggle_leaves_the_offset_alone() {
+    assert_eq!(
+        key_action(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+        Action::ToggleLayout
     );
     assert_eq!(
-        line_text(&status_line(11, 10, 40, 30)),
-        "q quit  jk  PgUp/PgDn  12/40"
+        key_action(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE)),
+        Action::ToggleLayout
     );
+    assert_eq!(Layout::Columns.toggled(), Layout::Vertical);
+    assert_eq!(Layout::Vertical.toggled(), Layout::Columns);
+
+    let mut scroll = Scroll {
+        offset: 7,
+        pending: Action::ToggleLayout,
+    };
+    scroll.apply(10, 40);
+    assert_eq!(scroll.offset, 7);
+}
+
+#[test]
+fn the_vertical_layout_puts_one_card_on_each_band() {
+    // The same three cards that fill two columns at this width.
+    // The cards keep their own width: a card stretched across a wide
+    // terminal would strand each row's reading at the far edge.
     assert_eq!(
-        line_text(&status_line(11, 10, 40, 21)),
-        "q  jk  PgUp/Dn  12/40"
+        card_rects(86, &[5, 4, 6], true),
+        [
+            Rect::new(0, 0, 42, 5),
+            Rect::new(0, 6, 42, 4),
+            Rect::new(0, 11, 42, 6)
+        ]
     );
-    assert_eq!(line_text(&status_line(11, 10, 40, 8)), "q  12/40");
-    assert_eq!(line_text(&status_line(0, 10, 4, 60)), "q quit");
+    // A terminal narrower than a card still gives the card everything.
+    assert_eq!(card_rects(30, &[4], true), [Rect::new(0, 0, 30, 4)]);
 }
 
 #[test]
@@ -475,7 +611,7 @@ fn tiny_screen_render_does_not_panic() {
 
 #[test]
 fn cards_flow_left_to_right_then_wrap() {
-    let rects = card_rects(86, &[5, 4, 6]);
+    let rects = card_rects(86, &[5, 4, 6], false);
     assert_eq!(rects[0], Rect::new(0, 0, 42, 5));
     assert_eq!(rects[1], Rect::new(44, 0, 42, 4));
     assert_eq!(
@@ -487,18 +623,18 @@ fn cards_flow_left_to_right_then_wrap() {
 
 #[test]
 fn one_cell_short_of_two_cards_wraps_to_one_column() {
-    let rects = card_rects(85, &[3, 3]);
+    let rects = card_rects(85, &[3, 3], false);
     assert_eq!(rects, [Rect::new(0, 0, 85, 3), Rect::new(0, 4, 85, 3)]);
 }
 
 #[test]
 fn narrow_screen_compresses_card_to_available_width() {
-    assert_eq!(card_rects(12, &[4]), [Rect::new(0, 0, 12, 4)]);
+    assert_eq!(card_rects(12, &[4], false), [Rect::new(0, 0, 12, 4)]);
 }
 
 #[test]
 fn content_height_is_the_lowest_card_bottom() {
-    assert_eq!(content_height(&card_rects(86, &[5, 4, 6])), 12);
+    assert_eq!(content_height(&card_rects(86, &[5, 4, 6], false)), 12);
     assert_eq!(content_height(&[]), 0);
 }
 

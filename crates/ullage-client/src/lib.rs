@@ -31,7 +31,7 @@ mod summary_render_tests;
 
 pub use cli::{
     AccountCommand, AuthCommand, AuthMethodArg, Cli, ColorMode, Command, DaemonCommand,
-    DeviceCommand, OutputFormat, ProbeArgs, ProviderCommand, ShowArgs,
+    DeviceCommand, OutputFormat, ProbeArgs, ProviderCommand, ShowArgs, TuiArgs,
 };
 pub use transport::{SystemClient, control_endpoint_from_environment};
 pub use tui::run_tui;
@@ -136,13 +136,17 @@ where
     run_from_with(arguments, client, &mut prompt::TerminalPrompt::new())
 }
 
-/// Returns whether a valid invocation selects the interactive TUI entrypoint.
-pub fn is_tui_command<I, T>(arguments: I) -> bool
+/// The TUI's arguments when a valid invocation selects that entrypoint, and
+/// `None` for every other command.
+pub fn tui_invocation<I, T>(arguments: I) -> Option<TuiArgs>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    Cli::try_parse_from(arguments).is_ok_and(|cli| matches!(cli.command, Command::Tui))
+    match Cli::try_parse_from(arguments).ok()?.command {
+        Command::Tui(args) => Some(args),
+        _ => None,
+    }
 }
 
 pub fn run_from_with<I, T>(

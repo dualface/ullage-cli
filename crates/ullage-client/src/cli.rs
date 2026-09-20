@@ -161,8 +161,8 @@ pub enum Command {
     // declared once; doc comments here would duplicate them and drift.
     Probe(ProbeArgs),
     Show(ShowArgs),
-    /// View every stored subscription in a full-screen terminal interface.
-    Tui,
+    // `about` lives on `TuiArgs`, like `ProbeArgs` and `ShowArgs`.
+    Tui(TuiArgs),
     /// Pair, inspect, and revoke HTTP API devices.
     #[command(arg_required_else_help = true, after_help = DEVICE_AFTER_HELP)]
     Device {
@@ -415,6 +415,17 @@ pub struct ProbeArgs {
     /// Start the probe and return immediately without waiting for usage.
     #[arg(long = "no-wait", action = clap::ArgAction::SetFalse, default_value_t = true)]
     pub wait: bool,
+}
+
+#[derive(Clone, Debug, Default, Args)]
+#[command(about = "View every stored subscription in a full-screen terminal interface.")]
+pub struct TuiArgs {
+    /// Put one subscription on each row instead of filling the width.
+    ///
+    /// The `v` key switches layouts while the view is open and remembers the
+    /// choice; this flag only forces the layout for one run.
+    #[arg(long)]
+    pub vertical: bool,
 }
 
 #[derive(Debug, Args)]

@@ -109,7 +109,8 @@ Default paths:
 | Windows  | `%APPDATA%\Ullage\config.json`                                          | `%LOCALAPPDATA%\Ullage\state.json`; paired devices in `devices.json` beside that file                                        | `\\.\pipe\ullage-<user-scope>`         |
 
 Overrides: `ULLAGE_CONFIG_FILE`, `ULLAGE_STATE_FILE`, `ULLAGE_CONTROL_SOCKET`
-(Unix), `ULLAGE_CONTROL_PIPE` (Windows).
+(Unix), `ULLAGE_CONTROL_PIPE` (Windows), `ULLAGE_TUI_STATE_FILE` (the TUI's
+remembered layout, `tui.json` beside the state file by default).
 
 Optional file-credential directory, used only when `credentials.file_fallback`
 is true and the native store is unavailable: Linux
@@ -419,6 +420,7 @@ ullage show <account-id> --metric usage
 ullage show --all
 ullage show --all --no-metric-filter
 ullage tui
+ullage tui --vertical
 ```
 
 `probe` queries the provider and persists a snapshot. `show` reads persisted
@@ -431,27 +433,36 @@ does plus the wait until each window resets:
 
 ```console
 ╭─ claude  max_20x  personal ────────────╮
-│ 5h      remains 91%   3h05m ░█████████ │
-│ weekly  used up     ○●●●●●● ░░░░░░░░░░ │
-│ fable   remains 25% ◆ 12d ◆ ░░░░░░░███ │
+│ 5h      remains 91%   3h05m ┄━━━━━━━━━ │
+│ weekly  used up     ◦•••••• ┄┄┄┄┄┄┄┄┄┄ │
+│ fable   remains 25% ◆ 12d ◆ ┄┄┄┄┄┄┄━━━ │
 ╰────────────────────────────────────────╯
 ```
 
-The bar is ten block cells (`█` filled, `░` empty) with no brackets, colored
-by how much is left: red at or under 10%, yellow at or under 25%, green
-otherwise. The countdown has three forms: under a day the exact wait is
-spelled out (`3h05m`, `12m`, `<1m`); within a week each remaining day lights
-one of seven dots (`○○○○○●●`); beyond a week the day count sits centered
-between two diamonds (`◆ 23d ◆`), still seven cells wide.
+A window whose name every row of a box repeats loses it: Cursor reports all
+of its windows as `monthly-…`, so the box shows `auto` and `Codex`. The name
+stays whenever dropping it would leave a row with nothing of its own.
 
-Boxes flow from left to right and wrap onto new rows. As the terminal narrows,
-every row of a box gives up its widest field first: the ten-cell bar shrinks
-to four cells (`░░██`), then the verb goes, then the small bar, then the
-countdown, leaving the window and its reading. The countdown outlives the bar
-on purpose, so a phone-sized terminal still says when the quota comes back.
-The frame, blocks, dots, and diamonds are East Asian ambiguous glyphs — one
-cell wide to this program, but a terminal set to a CJK locale may render them
-two cells wide and misalign the box.
+The bar is ten cells (`━` left, `┄` spent) with no brackets, colored by how
+much is left: red at or under 10%, yellow at or under 25%, green otherwise.
+The countdown has three forms: under a day the exact wait is spelled out
+(`3h05m`, `12m`, `<1m`); within a week each remaining day lights one of seven
+dots (`◦◦◦◦◦••`); beyond a week the day count sits centered between two
+diamonds (`◆ 23d ◆`), still seven cells wide.
+
+Boxes flow from left to right and wrap onto new rows. `v` switches to one box
+per row and back, and the choice is remembered for the next run; `--vertical`
+forces one box per row for a single run without changing what is saved. The
+setting lives in `tui.json` beside the state file, and losing that file only
+costs the remembered layout.
+
+As the terminal narrows, every row of a box gives up its widest field first:
+the ten-cell bar shrinks to four cells (`┄┄━━`), then the verb goes, then the
+small bar, then the countdown, leaving the window and its reading. The
+countdown outlives the bar on purpose, so a phone-sized terminal still says
+when the quota comes back. The frame, rules, dots, and diamonds are East Asian
+ambiguous glyphs — one cell wide to this program, but a terminal set to a CJK
+locale may render them two cells wide and misalign the box.
 
 The view does not refresh its snapshots, but it does scroll: the mouse wheel
 moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`

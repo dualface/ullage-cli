@@ -77,7 +77,7 @@ fn spec_for(command: &Command) -> &'static CommandSpec {
         },
         Command::Probe(_) => &PROBE,
         Command::Show(_) => &SHOW,
-        Command::Tui => &TUI,
+        Command::Tui(_) => &TUI,
     }
 }
 

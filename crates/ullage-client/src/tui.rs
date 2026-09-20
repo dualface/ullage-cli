@@ -8,6 +8,7 @@
 //! the keys, and the scroll.
 
 mod cards;
+mod preferences;
 
 use std::io;
 
@@ -31,10 +32,11 @@ use ullage_protocol::{CONTROL_PROTOCOL_VERSION, ControlRequest, ControlResult, S
 use unicode_width::UnicodeWidthStr;
 
 use self::cards::{Card, card_lines, card_rects, cards as load_cards, clip, content_height};
+use self::preferences::{Layout, Preferences};
 use crate::errors::{error_output, result_exit_code, sanitize_partial_failure_controls};
 use crate::render::{MetricFilterChoice, RenderView, render_result};
 use crate::{
-    ClientError, ColorMode, Command, ControlClient, ExitCode, OutputFormat, RunOutput,
+    ClientError, ColorMode, Command, ControlClient, ExitCode, OutputFormat, RunOutput, TuiArgs,
     daemon_upgrade_notice, next_request_id, response_matches_command, to_control_command,
 };
 
@@ -42,8 +44,8 @@ use crate::{
 const WHEEL_LINES: u16 = 3;
 
 /// Loads all snapshots, then owns the terminal until the user exits.
-pub fn run_tui(client: &dyn ControlClient) -> RunOutput {
-    let command = Command::Tui;
+pub fn run_tui(client: &dyn ControlClient, args: &TuiArgs) -> RunOutput {
+    let command = Command::Tui(args.clone());
     let request_id = next_request_id();
     let request = ControlRequest::new(&request_id, to_control_command(&command));
     let mut response = match client.send(&request) {
@@ -104,7 +106,7 @@ pub fn run_tui(client: &dyn ControlClient) -> RunOutput {
         }
     };
 
-    match run_terminal(&snapshots) {
+    match run_terminal(&snapshots, args.vertical) {
         Ok(()) => RunOutput {
             stdout: String::new(),
             stderr: upgrade_notice,
@@ -127,7 +129,14 @@ fn snapshots_exit_code(snapshots: &[SnapshotPayload]) -> ExitCode {
     }
 }
 
-fn run_terminal(snapshots: &[SnapshotPayload]) -> io::Result<()> {
+fn run_terminal(snapshots: &[SnapshotPayload], forced_vertical: bool) -> io::Result<()> {
+    // `--vertical` forces this run without overwriting what was saved; the
+    // `v` key is the only thing that changes the stored layout.
+    let mut layout = if forced_vertical {
+        Layout::Vertical
+    } else {
+        preferences::load().layout
+    };
     let _session = TerminalSession::enter(CrosstermControl)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -137,16 +146,23 @@ fn run_terminal(snapshots: &[SnapshotPayload]) -> io::Result<()> {
         // The countdowns are rebuilt on every draw so a view left open does
         // not keep showing the wait measured when it was opened.
         let cards = load_cards(snapshots, Utc::now());
-        terminal.draw(|frame| render(frame, &cards, &mut scroll))?;
+        terminal.draw(|frame| render(frame, &cards, &mut scroll, layout))?;
         let action = match event::read()? {
             Event::Key(key) => key_action(key),
             Event::Mouse(mouse) => mouse_action(mouse),
             _ => Action::Ignore,
         };
-        if action == Action::Quit {
-            return Ok(());
+        match action {
+            Action::Quit => return Ok(()),
+            Action::ToggleLayout => {
+                layout = layout.toggled();
+                preferences::save(Preferences { layout });
+                // The bands are laid out afresh, so the old offset would
+                // point somewhere unrelated.
+                scroll = Scroll::default();
+            }
+            action => scroll.pending = action,
         }
-        scroll.pending = action;
     }
 }
 
@@ -160,6 +176,8 @@ enum Action {
     HalfDown,
     Top,
     Bottom,
+    /// Switch between wrapping columns and one card per band.
+    ToggleLayout,
     #[default]
     Ignore,
 }
@@ -180,6 +198,7 @@ fn key_action(key: KeyEvent) -> Action {
         KeyCode::Down | KeyCode::Char('j') => Action::Down(1),
         KeyCode::PageUp => Action::HalfUp,
         KeyCode::PageDown | KeyCode::Char(' ') => Action::HalfDown,
+        KeyCode::Char('v' | 'V') => Action::ToggleLayout,
         KeyCode::Home | KeyCode::Char('g') => Action::Top,
         KeyCode::End | KeyCode::Char('G') => Action::Bottom,
         _ => Action::Ignore,
@@ -216,13 +235,13 @@ impl Scroll {
             Action::HalfDown => self.offset.saturating_add(half),
             Action::Top => 0,
             Action::Bottom => max_offset,
-            Action::Quit | Action::Ignore => self.offset,
+            Action::Quit | Action::ToggleLayout | Action::Ignore => self.offset,
         }
         .min(max_offset);
     }
 }
 
-fn render(frame: &mut ratatui::Frame<'_>, cards: &[Card], scroll: &mut Scroll) {
+fn render(frame: &mut ratatui::Frame<'_>, cards: &[Card], scroll: &mut Scroll, layout: Layout) {
     let area = frame.area();
     if area.height == 0 || area.width == 0 {
         return;
@@ -243,7 +262,7 @@ fn render(frame: &mut ratatui::Frame<'_>, cards: &[Card], scroll: &mut Scroll) {
         ),
     };
     let heights = cards.iter().map(Card::height).collect::<Vec<_>>();
-    let rects = card_rects(area.width, &heights);
+    let rects = card_rects(area.width, &heights, layout.is_vertical());
     let content = content_height(&rects);
     scroll.apply(viewport.height, content);
     for (card, rect) in cards.iter().zip(rects) {
@@ -256,6 +275,7 @@ fn render(frame: &mut ratatui::Frame<'_>, cards: &[Card], scroll: &mut Scroll) {
                 viewport.height,
                 content,
                 status.width,
+                layout,
             )),
             status,
         );
@@ -289,19 +309,31 @@ fn status_line(
     viewport_height: u16,
     content_height: u16,
     width: u16,
+    layout: Layout,
 ) -> Line<'static> {
     let scrollable = content_height > viewport_height;
     let position = format!("{}/{}", offset.saturating_add(1), content_height);
+    // The key says what pressing it gives you, not what you are looking at.
+    let layout_hint = if layout.is_vertical() {
+        "v columns"
+    } else {
+        "v one per row"
+    };
     let candidates = if scrollable {
         vec![
-            format!("q quit  wheel/jk scroll  PgUp/PgDn half page  {position}"),
-            format!("q quit  jk  PgUp/PgDn  {position}"),
-            format!("q  jk  PgUp/Dn  {position}"),
+            format!("q quit  wheel/jk scroll  PgUp/PgDn half page  {layout_hint}  {position}"),
+            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {position}"),
+            format!("q  jk  PgUp/Dn  v  {position}"),
+            format!("q  v  {position}"),
             format!("q  {position}"),
             "q".to_owned(),
         ]
     } else {
-        vec!["q quit".to_owned(), "q".to_owned()]
+        vec![
+            format!("q quit  {layout_hint}"),
+            "q  v".to_owned(),
+            "q".to_owned(),
+        ]
     };
     let width = usize::from(width);
     let text = candidates

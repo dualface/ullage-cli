@@ -38,6 +38,9 @@ const BAR_WIDTH: usize = 10;
 const MINI_BAR_WIDTH: usize = 4;
 /// Cells of the reset countdown's dot and diamond fields.
 const RESET_FIELD_WIDTH: usize = 7;
+/// The dot of a day still to wait, and of a day already counted off.
+const DAY_LEFT: char = '•';
+const DAY_EMPTY: char = '◦';
 
 /// Renders a card as a rounded box: the title sits in the top border, the
 /// rows and the notices are framed by dim verticals, and a bottom border
@@ -355,12 +358,20 @@ pub(crate) fn row_line(row: &CardRow, layout: &RowLayout, tier: Tier, width: u16
     Line::from(spans)
 }
 
-/// The remaining ratio as `░` and `█` cells, filled from the right exactly
-/// as the table's bar fills its brackets.
+/// The cell of a bar that is still quota, and the cell that is spent.
+const BAR_FILLED: char = '━';
+const BAR_EMPTY: char = '┄';
+
+/// The remaining ratio as a heavy-and-dashed rule, filled from the right
+/// exactly as the table's bar fills its brackets.
 pub(crate) fn block_bar(remaining_ratio: f64, cells: usize) -> String {
     let filled = (remaining_ratio.clamp(0.0, 1.0) * cells as f64).round() as usize;
     let filled = filled.min(cells);
-    format!("{}{}", "░".repeat(cells - filled), "█".repeat(filled))
+    format!(
+        "{}{}",
+        BAR_EMPTY.to_string().repeat(cells - filled),
+        BAR_FILLED.to_string().repeat(filled)
+    )
 }
 
 /// What a row reads as when there is no room for the verb and the amount
@@ -544,6 +555,12 @@ fn card_title(usage: &SubscriptionUsage, account_id: &str) -> CardTitle {
 /// Reuses the table's cells, so the view names windows, metrics, and readings
 /// exactly as `show` does, and hides the same rows.
 pub(crate) fn rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<CardRow> {
+    let mut rows = summary_rows(summary, now);
+    strip_shared_prefix(&mut rows);
+    rows
+}
+
+fn summary_rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<CardRow> {
     collect_summary_cells(&summary.rows, now)
         .into_iter()
         .map(|cell| {
@@ -568,9 +585,49 @@ pub(crate) fn rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<CardRow> {
         .collect()
 }
 
+/// The characters that join a window to a metric in a row's name.
+const NAME_SEPARATORS: [char; 3] = ['-', '_', ' '];
+
+/// Drops a leading name every row of the card repeats, with the separator
+/// behind it: Cursor calls all of its windows `monthly-...`, and the word
+/// says nothing once it is on every row. A card keeps the name when a row
+/// would be left with nothing of its own, and a single-row card keeps it
+/// too, because there is no repetition to remove.
+pub(crate) fn strip_shared_prefix(rows: &mut [CardRow]) {
+    while let Some(prefix) = shared_prefix(rows) {
+        for row in rows.iter_mut() {
+            row.identity = row.identity[prefix..]
+                .trim_start_matches(NAME_SEPARATORS)
+                .to_owned();
+        }
+    }
+}
+
+/// The length of the leading segment every row shares, when dropping it
+/// leaves each row a name.
+fn shared_prefix(rows: &[CardRow]) -> Option<usize> {
+    if rows.len() < 2 {
+        return None;
+    }
+    let first = rows.first()?.identity.as_str();
+    let prefix = first.find(NAME_SEPARATORS)?;
+    if prefix == 0 {
+        return None;
+    }
+    rows.iter()
+        .all(|row| {
+            row.identity.get(..prefix) == Some(&first[..prefix])
+                && !row.identity[prefix..]
+                    .trim_start_matches(NAME_SEPARATORS)
+                    .is_empty()
+                && row.identity[prefix..].starts_with(NAME_SEPARATORS)
+        })
+        .then_some(prefix)
+}
+
 /// How long until the window resets. Under a day the exact wait is worth
 /// more than the scale, so it is spelled out (`3h05m`, `12m`, `<1m`); within
-/// a week each remaining day lights one of seven dots (`○○○○○●●`); beyond a
+/// a week each remaining day lights one of seven dots (`◦◦◦◦◦••`); beyond a
 /// week the day count sits centered between two diamonds (`◆ 23d ◆`).
 fn reset_text(seconds: i64) -> String {
     let seconds = seconds.max(0);
@@ -582,8 +639,8 @@ fn reset_text(seconds: i64) -> String {
         let days = days as usize;
         return format!(
             "{}{}",
-            "○".repeat(RESET_FIELD_WIDTH - days),
-            "●".repeat(days)
+            DAY_EMPTY.to_string().repeat(RESET_FIELD_WIDTH - days),
+            DAY_LEFT.to_string().repeat(days)
         );
     }
     countdown_text(seconds)
@@ -607,9 +664,23 @@ fn usage_data(outcome: &QueryOutcome<SubscriptionUsage>) -> &SubscriptionUsage {
     }
 }
 
-pub(crate) fn card_rects(width: u16, heights: &[u16]) -> Vec<Rect> {
+pub(crate) fn card_rects(width: u16, heights: &[u16], vertical: bool) -> Vec<Rect> {
     if width == 0 || heights.is_empty() {
         return Vec::new();
+    }
+    // One card per band keeps the card's own width: stretching it across a
+    // wide terminal would leave a row's reading stranded at the far edge.
+    if vertical {
+        let card_width = width.min(PREFERRED_CARD_WIDTH);
+        let mut y = 0u16;
+        return heights
+            .iter()
+            .map(|height| {
+                let rect = Rect::new(0, y, card_width, *height);
+                y = y.saturating_add(height + VERTICAL_GAP);
+                rect
+            })
+            .collect();
     }
     let columns = ((u32::from(width) + u32::from(HORIZONTAL_GAP))
         / u32::from(PREFERRED_CARD_WIDTH + HORIZONTAL_GAP))

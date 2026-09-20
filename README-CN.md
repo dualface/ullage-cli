@@ -88,7 +88,7 @@ Balance        credits 0
 | macOS   | `~/Library/Application Support/Ullage/config.json`                      | `~/Library/Application Support/Ullage/state.json`；已配对设备在该文件旁的 `devices.json`                         | `$TMPDIR/ullage-<uid>/control.sock`    |
 | Windows | `%APPDATA%\Ullage\config.json`                                          | `%LOCALAPPDATA%\Ullage\state.json`；已配对设备在该文件旁的 `devices.json`                                        | `\\.\pipe\ullage-<user-scope>`         |
 
-覆盖项：`ULLAGE_CONFIG_FILE`、`ULLAGE_STATE_FILE`、`ULLAGE_CONTROL_SOCKET`（Unix）、`ULLAGE_CONTROL_PIPE`（Windows）。
+覆盖项：`ULLAGE_CONFIG_FILE`、`ULLAGE_STATE_FILE`、`ULLAGE_CONTROL_SOCKET`（Unix）、`ULLAGE_CONTROL_PIPE`（Windows）、`ULLAGE_TUI_STATE_FILE`（TUI 记住的排列方式，默认是状态文件旁边的 `tui.json`）。
 
 可选的文件凭据目录，仅在 `credentials.file_fallback` 为 true 且原生存储不可用时使用：Linux 为 `$XDG_DATA_HOME/ullage/credentials` 或 `~/.local/share/ullage/credentials`；macOS 为 `~/Library/Application Support/Ullage/credentials`；Windows 为 `%LOCALAPPDATA%\Ullage\credentials`。
 
@@ -325,6 +325,7 @@ ullage show <account-id> --metric usage
 ullage show --all
 ullage show --all --no-metric-filter
 ullage tui
+ullage tui --vertical
 ```
 
 `probe` 查询提供方并持久化快照。`show` 读取已持久化的快照，不调用提供方。
@@ -333,15 +334,19 @@ ullage tui
 
 ```console
 ╭─ claude  max_20x  personal ────────────╮
-│ 5h      remains 91%   3h05m ░█████████ │
-│ weekly  used up     ○●●●●●● ░░░░░░░░░░ │
-│ fable   remains 25% ◆ 12d ◆ ░░░░░░░███ │
+│ 5h      remains 91%   3h05m ┄━━━━━━━━━ │
+│ weekly  used up     ◦•••••• ┄┄┄┄┄┄┄┄┄┄ │
+│ fable   remains 25% ◆ 12d ◆ ┄┄┄┄┄┄┄━━━ │
 ╰────────────────────────────────────────╯
 ```
 
-进度条是十格块字形（`█` 填充、`░` 空），没有方括号，颜色按剩余比例：不足 10% 红、不足 25% 黄、其余绿。倒计时分三档：一天以内写出精确等待时间（`3h05m`、`12m`、`<1m`）；一周以内每剩一天点亮七格点阵中的一点（`○○○○○●●`）；超过一周把天数居中放在菱形之间（`◆ 23d ◆`），同样是七格宽。
+一个方框里所有行都重复的窗口名会被去掉：Cursor 把每个窗口都报成 `monthly-…`，框里就只显示 `auto`、`Codex`。若去掉后某一行什么都不剩，则整框保留原名。
 
-方框从左到右排列，空间不足时换行。终端变窄时，框里的每一行按最宽的字段先让位：十格进度条先缩成四格（`░░██`），再丢动词，再丢小进度条，最后才丢重置倒计时，留下窗口与它的读数。倒计时比进度条活得久是刻意的，这样手机大小的终端仍能看到配额什么时候回来。框线、方块、圆点和菱形都是东亚歧义宽度字符——本程序里算一列，但设为 CJK locale 的终端可能按两列渲染，导致方框错位。
+进度条是十格线条（`━` 为剩余、`┄` 为已用），没有方括号，颜色按剩余比例：不足 10% 红、不足 25% 黄、其余绿。倒计时分三档：一天以内写出精确等待时间（`3h05m`、`12m`、`<1m`）；一周以内每剩一天点亮七格点阵中的一点（`◦◦◦◦◦••`）；超过一周把天数居中放在菱形之间（`◆ 23d ◆`），同样是七格宽。
+
+方框从左到右排列，空间不足时换行。按 `v` 切换成每行只放一个方框，再按一次换回来，这个选择会记住供下次启动使用；`--vertical` 只强制本次运行每行一个方框，不改变已保存的设置。设置存在状态文件旁边的 `tui.json`，丢了也只是丢掉记住的排列方式。
+
+终端变窄时，框里的每一行按最宽的字段先让位：十格进度条先缩成四格（`┄┄━━`），再丢动词，再丢小进度条，最后才丢重置倒计时，留下窗口与它的读数。倒计时比进度条活得久是刻意的，这样手机大小的终端仍能看到配额什么时候回来。框线、线条、圆点和菱形都是东亚歧义宽度字符——本程序里算一列，但设为 CJK locale 的终端可能按两列渲染，导致方框错位。
 
 该视图不自动刷新快照，但可以滚动：鼠标滚轮每次三行，`PgUp` 与 `PgDn` 各翻半屏，`Up`/`Down`（或 `k`、`j`）一行，`Home`/`End` 跳到两端。最后一行给出按键与当前位置。按 `q`、`Q`、`Esc` 或 `Ctrl+C` 退出；退出时会还原终端，包括鼠标捕获。
 

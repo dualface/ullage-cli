@@ -31,10 +31,9 @@ fn main() {
     }
     let client = ullage_app::ProductionClient::from_environment();
     let arguments = std::env::args_os().collect::<Vec<_>>();
-    let output = if ullage_cli::is_tui_command(arguments.clone()) {
-        ullage_cli::run_tui(&client)
-    } else {
-        run_from(arguments, &client)
+    let output = match ullage_cli::tui_invocation(arguments.clone()) {
+        Some(args) => ullage_cli::run_tui(&client, &args),
+        None => run_from(arguments, &client),
     };
     std::process::exit(print_output(output));
 }

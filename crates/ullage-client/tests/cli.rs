@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use chrono::{TimeZone, Utc};
 use ullage_cli::{
-    ClientError, ControlClient, ExitCode, OutputFormat, is_tui_command, run_from, run_from_with,
+    ClientError, ControlClient, ExitCode, OutputFormat, run_from, run_from_with, tui_invocation,
 };
 use ullage_protocol::{
     Account, AccountError, AccountId, AccountStatusPayload, AuthChallenge, AuthMethod,
@@ -18,8 +18,17 @@ use common::*;
 
 #[test]
 fn tui_selects_the_interactive_entrypoint_and_requests_all_snapshots() {
-    assert!(is_tui_command(["ullage", "tui"]));
-    assert!(!is_tui_command(["ullage", "tui", "unexpected"]));
+    assert_eq!(
+        tui_invocation(["ullage", "tui"]).map(|args| args.vertical),
+        Some(false)
+    );
+    assert_eq!(
+        tui_invocation(["ullage", "tui", "--vertical"]).map(|args| args.vertical),
+        Some(true),
+        "--vertical forces one card per row for this run"
+    );
+    assert!(tui_invocation(["ullage", "tui", "unexpected"]).is_none());
+    assert!(tui_invocation(["ullage", "show", "--all"]).is_none());
 
     let client = MockClient::new(snapshot_result);
     let output = run_from(["ullage", "tui"], &client);
