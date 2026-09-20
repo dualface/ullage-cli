@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::backend::TestBackend;
 use ullage_core::summary::{SummaryRow, SummaryValue, UsageSummary};
-use ullage_protocol::{ProviderId, SubscriptionUsage};
+use ullage_protocol::{ControlResponse, ProviderId, SubscriptionUsage};
 
 use super::cards::*;
 use super::*;
@@ -80,7 +81,7 @@ fn rendered(width: u16, height: u16, cards: &[Card]) -> String {
     let mut terminal = Terminal::new(backend).unwrap();
     let mut scroll = Scroll::default();
     terminal
-        .draw(|frame| render(frame, cards, &mut scroll, Layout::Columns))
+        .draw(|frame| render(frame, cards, &mut scroll, Layout::Columns, Duration::ZERO))
         .unwrap();
     terminal.backend().to_string()
 }
@@ -218,6 +219,76 @@ fn snapshot(provider: &str, account_id: &str) -> SnapshotPayload {
         last_error_at: None,
         metrics: Vec::new(),
     }
+}
+
+/// Answers every request the way the daemon would, or refuses.
+struct StubDaemon {
+    answer: fn(&ControlRequest) -> Result<ControlResponse, ClientError>,
+}
+
+impl ControlClient for StubDaemon {
+    fn send(&self, request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+        (self.answer)(request)
+    }
+}
+
+fn snapshots_response(request: &ControlRequest) -> Result<ControlResponse, ClientError> {
+    Ok(ControlResponse {
+        version: CONTROL_PROTOCOL_VERSION,
+        request_id: request.request_id.clone(),
+        result: ControlResult::Snapshots(vec![snapshot("claude", "personal")]),
+        diagnostic: None,
+        daemon_version: None,
+    })
+}
+
+#[test]
+fn a_refresh_reads_every_snapshot_again() {
+    let client = StubDaemon {
+        answer: snapshots_response,
+    };
+
+    let snapshots = fetch_snapshots(&client).unwrap();
+
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].account_id, "personal");
+}
+
+#[test]
+fn a_refusal_or_a_mismatched_answer_leaves_the_readings_alone() {
+    // The caller keeps the snapshots it has when the refresh gives back
+    // `None`, so every one of these is a view that simply does not change.
+    let unavailable = StubDaemon {
+        answer: |_| Err(ClientError::DaemonUnavailable),
+    };
+    assert!(fetch_snapshots(&unavailable).is_none());
+
+    let wrong_version = StubDaemon {
+        answer: |request| {
+            let mut response = snapshots_response(request)?;
+            response.version = CONTROL_PROTOCOL_VERSION.wrapping_add(1);
+            Ok(response)
+        },
+    };
+    assert!(fetch_snapshots(&wrong_version).is_none());
+
+    let wrong_request = StubDaemon {
+        answer: |request| {
+            let mut response = snapshots_response(request)?;
+            response.request_id = "someone else's".into();
+            Ok(response)
+        },
+    };
+    assert!(fetch_snapshots(&wrong_request).is_none());
+
+    let wrong_result = StubDaemon {
+        answer: |request| {
+            let mut response = snapshots_response(request)?;
+            response.result = ControlResult::Providers(Vec::new());
+            Ok(response)
+        },
+    };
+    assert!(fetch_snapshots(&wrong_result).is_none());
 }
 
 #[test]
@@ -530,6 +601,21 @@ fn a_shrinking_viewport_pulls_the_offset_back() {
 }
 
 #[test]
+fn the_status_line_dates_the_readings() {
+    // A refresh that fails changes nothing on screen, so the growing age is
+    // how a stalled refresh shows itself.
+    let updated = |age| updated_text(Duration::from_secs(age));
+
+    assert_eq!(updated(0), "updated just now");
+    assert_eq!(updated(59), "updated just now");
+    assert_eq!(updated(60), "updated 1m ago");
+    assert_eq!(updated(120), "updated 2m ago");
+    assert_eq!(updated(59 * 60), "updated 59m ago");
+    assert_eq!(updated(60 * 60), "updated 1h00m ago");
+    assert_eq!(updated(150 * 60), "updated 2h30m ago");
+}
+
+#[test]
 fn the_wheel_scrolls_three_rows_and_other_mouse_events_do_nothing() {
     let wheel = |kind| {
         mouse_action(MouseEvent {
@@ -570,18 +656,35 @@ fn keys_map_to_quitting_paging_and_line_scrolling() {
 
 #[test]
 fn the_status_line_shortens_with_the_terminal() {
-    let line = |width| line_text(&status_line(11, 10, 40, width, Layout::Columns));
+    let line = |width| {
+        line_text(&status_line(
+            11,
+            10,
+            40,
+            width,
+            Layout::Columns,
+            Duration::ZERO,
+        ))
+    };
 
     assert_eq!(
-        line(70),
-        "q quit  wheel/jk scroll  PgUp/PgDn half page  v one per row  12/40"
+        line(90),
+        "q quit  wheel/jk scroll  PgUp/PgDn half page  v one per row  updated just now  12/40"
+    );
+    assert_eq!(
+        line(62),
+        "q quit  jk  PgUp/PgDn  v one per row  updated just now  12/40"
     );
     assert_eq!(line(45), "q quit  jk  PgUp/PgDn  v one per row  12/40");
     assert_eq!(line(24), "q  jk  PgUp/Dn  v  12/40");
     assert_eq!(line(12), "q  v  12/40");
     assert_eq!(line(8), "q  12/40");
     assert_eq!(
-        line_text(&status_line(0, 10, 4, 60, Layout::Columns)),
+        line_text(&status_line(0, 10, 4, 60, Layout::Columns, Duration::ZERO)),
+        "q quit  v one per row  updated just now"
+    );
+    assert_eq!(
+        line_text(&status_line(0, 10, 4, 30, Layout::Columns, Duration::ZERO)),
         "q quit  v one per row"
     );
 }
@@ -590,9 +693,10 @@ fn the_status_line_shortens_with_the_terminal() {
 fn the_layout_hint_names_what_the_key_switches_to() {
     // The hint is what pressing `v` gives you, not what is on screen.
     assert!(
-        line_text(&status_line(0, 10, 4, 60, Layout::Vertical)).contains("v columns"),
+        line_text(&status_line(0, 10, 4, 60, Layout::Vertical, Duration::ZERO))
+            .contains("v columns"),
         "{}",
-        line_text(&status_line(0, 10, 4, 60, Layout::Vertical))
+        line_text(&status_line(0, 10, 4, 60, Layout::Vertical, Duration::ZERO))
     );
 }
 
@@ -625,9 +729,9 @@ fn the_vertical_layout_puts_one_card_on_each_band() {
     assert_eq!(
         card_rects(86, &[5, 4, 6], true),
         [
-            Rect::new(0, 0, 42, 5),
-            Rect::new(0, 6, 42, 4),
-            Rect::new(0, 11, 42, 6)
+            Rect::new(22, 0, 42, 5),
+            Rect::new(22, 6, 42, 4),
+            Rect::new(22, 11, 42, 6)
         ]
     );
     // A terminal narrower than a card still gives the card everything.
@@ -674,8 +778,10 @@ fn cards_flow_left_to_right_then_wrap() {
 
 #[test]
 fn one_cell_short_of_two_cards_wraps_to_one_column() {
+    // One card per band keeps the card's width and sits centered, rather
+    // than stretching across a terminal that is nearly wide enough for two.
     let rects = card_rects(85, &[3, 3], false);
-    assert_eq!(rects, [Rect::new(0, 0, 85, 3), Rect::new(0, 4, 85, 3)]);
+    assert_eq!(rects, [Rect::new(21, 0, 42, 3), Rect::new(21, 4, 42, 3)]);
 }
 
 #[test]

@@ -11,6 +11,7 @@ mod cards;
 mod preferences;
 
 use std::io;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use crossterm::event::{
@@ -42,6 +43,10 @@ use crate::{
 
 /// Rows a single wheel notch scrolls.
 const WHEEL_LINES: u16 = 3;
+/// How often the view asks the daemon for the snapshots again. The daemon
+/// probes each account every five minutes, so this catches every round
+/// without polling it for nothing.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
 /// Loads all snapshots, then owns the terminal until the user exits.
 pub fn run_tui(client: &dyn ControlClient, args: &TuiArgs) -> RunOutput {
@@ -106,13 +111,37 @@ pub fn run_tui(client: &dyn ControlClient, args: &TuiArgs) -> RunOutput {
         }
     };
 
-    match run_terminal(&snapshots, args.vertical) {
-        Ok(()) => RunOutput {
+    match run_terminal(client, snapshots, args.vertical) {
+        // The exit code describes the last snapshots the view held, not the
+        // ones it opened with.
+        Ok(snapshots) => RunOutput {
             stdout: String::new(),
             stderr: upgrade_notice,
             code: snapshots_exit_code(&snapshots),
         },
         Err(_) => error_output(ExitCode::Failure, "tui_failed", OutputFormat::Table),
+    }
+}
+
+/// Asks the daemon for every snapshot again, or `None` when the answer is
+/// unusable. A refresh that fails changes nothing on screen: the view keeps
+/// the readings it has and tries again at the next interval.
+fn fetch_snapshots(client: &dyn ControlClient) -> Option<Vec<SnapshotPayload>> {
+    let command = Command::Tui(TuiArgs::default());
+    let request_id = next_request_id();
+    let request = ControlRequest::new(&request_id, to_control_command(&command));
+    let mut response = client.send(&request).ok()?;
+    sanitize_partial_failure_controls(&mut response.result);
+    if response.version != CONTROL_PROTOCOL_VERSION
+        || response.request_id != request_id
+        || response.diagnostic.is_some()
+        || !response_matches_command(&command, &response.result)
+    {
+        return None;
+    }
+    match response.result {
+        ControlResult::Snapshots(snapshots) => Some(snapshots),
+        _ => None,
     }
 }
 
@@ -129,7 +158,11 @@ fn snapshots_exit_code(snapshots: &[SnapshotPayload]) -> ExitCode {
     }
 }
 
-fn run_terminal(snapshots: &[SnapshotPayload], forced_vertical: bool) -> io::Result<()> {
+fn run_terminal(
+    client: &dyn ControlClient,
+    mut snapshots: Vec<SnapshotPayload>,
+    forced_vertical: bool,
+) -> io::Result<Vec<SnapshotPayload>> {
     // `--vertical` forces this run without overwriting what was saved; the
     // `v` key is the only thing that changes the stored layout.
     let mut layout = if forced_vertical {
@@ -142,18 +175,32 @@ fn run_terminal(snapshots: &[SnapshotPayload], forced_vertical: bool) -> io::Res
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let mut scroll = Scroll::default();
+    let mut loaded_at = Utc::now();
+    let mut next_refresh = Instant::now() + REFRESH_INTERVAL;
     loop {
         // The countdowns are rebuilt on every draw so a view left open does
         // not keep showing the wait measured when it was opened.
-        let cards = load_cards(snapshots, Utc::now());
-        terminal.draw(|frame| render(frame, &cards, &mut scroll, layout))?;
+        let now = Utc::now();
+        let cards = load_cards(&snapshots, now);
+        let age = (now - loaded_at).to_std().unwrap_or_default();
+        terminal.draw(|frame| render(frame, &cards, &mut scroll, layout, age))?;
+        // The wait doubles as the refresh timer: an idle view still redraws
+        // every interval, so the countdowns keep moving on their own.
+        if !event::poll(next_refresh.saturating_duration_since(Instant::now()))? {
+            if let Some(fresh) = fetch_snapshots(client) {
+                snapshots = fresh;
+                loaded_at = Utc::now();
+            }
+            next_refresh = Instant::now() + REFRESH_INTERVAL;
+            continue;
+        }
         let action = match event::read()? {
             Event::Key(key) => key_action(key),
             Event::Mouse(mouse) => mouse_action(mouse),
             _ => Action::Ignore,
         };
         match action {
-            Action::Quit => return Ok(()),
+            Action::Quit => return Ok(snapshots),
             Action::ToggleLayout => {
                 layout = layout.toggled();
                 preferences::save(Preferences { layout });
@@ -241,7 +288,13 @@ impl Scroll {
     }
 }
 
-fn render(frame: &mut ratatui::Frame<'_>, cards: &[Card], scroll: &mut Scroll, layout: Layout) {
+fn render(
+    frame: &mut ratatui::Frame<'_>,
+    cards: &[Card],
+    scroll: &mut Scroll,
+    layout: Layout,
+    age: Duration,
+) {
     let area = frame.area();
     if area.height == 0 || area.width == 0 {
         return;
@@ -276,6 +329,7 @@ fn render(frame: &mut ratatui::Frame<'_>, cards: &[Card], scroll: &mut Scroll, l
                 content,
                 status.width,
                 layout,
+                age,
             )),
             status,
         );
@@ -310,9 +364,13 @@ fn status_line(
     content_height: u16,
     width: u16,
     layout: Layout,
+    age: Duration,
 ) -> Line<'static> {
     let scrollable = content_height > viewport_height;
     let position = format!("{}/{}", offset.saturating_add(1), content_height);
+    // How old the readings are, which is also how a failed refresh shows:
+    // the age keeps growing past the interval.
+    let updated = updated_text(age);
     // The key says what pressing it gives you, not what you are looking at.
     let layout_hint = if layout.is_vertical() {
         "v columns"
@@ -321,7 +379,10 @@ fn status_line(
     };
     let candidates = if scrollable {
         vec![
-            format!("q quit  wheel/jk scroll  PgUp/PgDn half page  {layout_hint}  {position}"),
+            format!(
+                "q quit  wheel/jk scroll  PgUp/PgDn half page  {layout_hint}  {updated}  {position}"
+            ),
+            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {updated}  {position}"),
             format!("q quit  jk  PgUp/PgDn  {layout_hint}  {position}"),
             format!("q  jk  PgUp/Dn  v  {position}"),
             format!("q  v  {position}"),
@@ -330,6 +391,7 @@ fn status_line(
         ]
     } else {
         vec![
+            format!("q quit  {layout_hint}  {updated}"),
             format!("q quit  {layout_hint}"),
             "q  v".to_owned(),
             "q".to_owned(),
@@ -344,6 +406,19 @@ fn status_line(
         clip(&text, width),
         Style::default().add_modifier(Modifier::DIM),
     ))
+}
+
+/// `updated 2m ago`, in the same words the table uses for a snapshot's age.
+fn updated_text(age: Duration) -> String {
+    let seconds = age.as_secs();
+    if seconds < 60 {
+        return "updated just now".to_owned();
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("updated {minutes}m ago");
+    }
+    format!("updated {}h{:02}m ago", minutes / 60, minutes % 60)
 }
 
 trait TerminalControl {

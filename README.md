@@ -451,11 +451,12 @@ dots (`◦◦◦◦◦••`); beyond a week the day count sits centered betwee
 diamonds (`◆ 23d ◆`), still seven cells wide.
 
 Boxes are ordered by provider, then by account, ignoring case. They flow from
-left to right and wrap onto new rows. `v` switches to one box per row and
-back, and the choice is remembered for the next run; `--vertical`
-forces one box per row for a single run without changing what is saved. The
-setting lives in `tui.json` beside the state file, and losing that file only
-costs the remembered layout.
+left to right and wrap onto new rows; a row holding a single box keeps the
+box's own width and centers it rather than stretching it across the terminal.
+`v` switches to one box per row and back, and the choice is remembered for the
+next run; `--vertical` forces one box per row for a single run without
+changing what is saved. The setting lives in `tui.json` beside the state file,
+and losing that file only costs the remembered layout.
 
 As the terminal narrows, every row of a box gives up its widest field first:
 the ten-cell bar shrinks to four cells (`┄┄━━`), then the verb goes, then the
@@ -465,8 +466,13 @@ when the quota comes back. The frame, rules, dots, and diamonds are East Asian
 ambiguous glyphs — one cell wide to this program, but a terminal set to a CJK
 locale may render them two cells wide and misalign the box.
 
-The view does not refresh its snapshots, but it does scroll: the mouse wheel
-moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`
+The view reads the snapshots again every two minutes, which catches each of
+the daemon's five-minute probe rounds without polling it for nothing. The
+status line dates what is on screen (`updated 1m ago`), so a refresh the
+daemon cannot answer shows as an age that keeps growing; the readings stay
+put and the next interval tries again.
+
+The view also scrolls: the mouse wheel moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`
 and `j`) move one row, and `Home`/`End` jump to the ends. The last row shows
 the keys and the position. Press `q`, `Q`, `Esc`, or `Ctrl+C` to exit; the
 terminal, including mouse capture, is restored on the way out.

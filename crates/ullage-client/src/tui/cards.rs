@@ -685,23 +685,15 @@ pub(crate) fn card_rects(width: u16, heights: &[u16], vertical: bool) -> Vec<Rec
     if width == 0 || heights.is_empty() {
         return Vec::new();
     }
-    // One card per band keeps the card's own width: stretching it across a
-    // wide terminal would leave a row's reading stranded at the far edge.
-    if vertical {
-        let card_width = width.min(PREFERRED_CARD_WIDTH);
-        let mut y = 0u16;
-        return heights
-            .iter()
-            .map(|height| {
-                let rect = Rect::new(0, y, card_width, *height);
-                y = y.saturating_add(height + VERTICAL_GAP);
-                rect
-            })
-            .collect();
-    }
     let columns = ((u32::from(width) + u32::from(HORIZONTAL_GAP))
         / u32::from(PREFERRED_CARD_WIDTH + HORIZONTAL_GAP))
     .max(1) as u16;
+    // A band holding one card keeps the card's own width and centers it:
+    // stretched across the terminal, the row's reading would be stranded at
+    // the far edge, and pinned left it would sit under a lopsided margin.
+    if vertical || columns == 1 {
+        return stacked_rects(width, heights);
+    }
     let gaps = HORIZONTAL_GAP.saturating_mul(columns.saturating_sub(1));
     let available = width.saturating_sub(gaps);
     let base_width = available / columns;
@@ -719,6 +711,21 @@ pub(crate) fn card_rects(width: u16, heights: &[u16], vertical: bool) -> Vec<Rec
         y = y.saturating_add(row_height + VERTICAL_GAP);
     }
     rects
+}
+
+/// One card per band, each at the card's own width and centered.
+fn stacked_rects(width: u16, heights: &[u16]) -> Vec<Rect> {
+    let card_width = width.min(PREFERRED_CARD_WIDTH);
+    let x = (width - card_width) / 2;
+    let mut y = 0u16;
+    heights
+        .iter()
+        .map(|height| {
+            let rect = Rect::new(x, y, card_width, *height);
+            y = y.saturating_add(height + VERTICAL_GAP);
+            rect
+        })
+        .collect()
 }
 
 pub(crate) fn content_height(rects: &[Rect]) -> u16 {
