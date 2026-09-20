@@ -425,11 +425,28 @@ ullage tui
 snapshots and does not call the provider.
 
 `tui` reads all persisted snapshots into an alternate-screen view. Each
-subscription has its own block. Blocks flow from left to right and wrap onto
-new rows; on terminals narrower than the preferred block width, the block
-shrinks to the available width and keeps a percentage when the progress bar no
-longer fits. Press `q`, `Q`, or `Esc` to exit. The view does not refresh or
-scroll; content below the viewport is clipped.
+subscription is a block headed by one highlighted line, with no border around
+it, and the rows read exactly as `show` does plus the wait until each window
+resets:
+
+```console
+claude/max_20x  personal
+5h           remains 91% 3h05m [-#########]
+weekly       used up     6d21h [----------]
+fable        remains 25% 6d21h [-------###]
+```
+
+Blocks flow from left to right and wrap onto new rows. As the terminal
+narrows, every row of a block drops its widest field first: the progress bar,
+then the verb, then the reset countdown, leaving the window and its reading.
+The countdown outlives the bar on purpose, so a phone-sized terminal still
+says when the quota comes back.
+
+The view does not refresh its snapshots, but it does scroll: the mouse wheel
+moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`
+and `j`) move one row, and `Home`/`End` jump to the ends. The last row shows
+the keys and the position. Press `q`, `Q`, `Esc`, or `Ctrl+C` to exit; the
+terminal, including mouse capture, is restored on the way out.
 
 `--metric <display-name>` keeps only the summary rows whose display name matches
 exactly, ignoring case and the window a row belongs to; repeat the flag to keep

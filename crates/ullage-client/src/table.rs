@@ -344,7 +344,9 @@ pub fn render_summary_rows_aligned(
     render_summary_cells(&collect_summary_cells(rows, now), layout, palette)
 }
 
-fn collect_summary_cells(rows: &[SummaryRow], now: DateTime<Utc>) -> Vec<SummaryCells> {
+/// Measures the summary cells of `rows`, the shared source of both the table
+/// and the full-screen view.
+pub(crate) fn collect_summary_cells(rows: &[SummaryRow], now: DateTime<Utc>) -> Vec<SummaryCells> {
     let rows: Vec<&SummaryRow> = rows.iter().filter(|row| !hidden_in_table(row)).collect();
     let named_windows: HashSet<String> = rows
         .iter()
@@ -429,13 +431,16 @@ fn format_reading(
 }
 
 /// The pre-alignment text of one summary row.
-struct SummaryCells {
-    identity: String,
-    verb: &'static str,
-    amount: String,
-    suffix: &'static str,
+pub(crate) struct SummaryCells {
+    pub(crate) identity: String,
+    pub(crate) verb: &'static str,
+    pub(crate) amount: String,
+    pub(crate) suffix: &'static str,
+    /// The table's fixed-width countdown field.
     resets: String,
-    remaining_ratio: Option<f64>,
+    /// Seconds until the reset, for callers that format the wait themselves.
+    pub(crate) resets_in: Option<i64>,
+    pub(crate) remaining_ratio: Option<f64>,
 }
 
 fn summary_cells(
@@ -455,6 +460,9 @@ fn summary_cells(
             .resets_at
             .map(|resets_at| reset_bar((resets_at - now).num_seconds()))
             .unwrap_or_default(),
+        resets_in: row
+            .resets_at
+            .map(|resets_at| (resets_at - now).num_seconds()),
         remaining_ratio: row.remaining_ratio,
     }
 }
@@ -626,6 +634,14 @@ fn bordered_field(text: &str, border: char) -> String {
     )
 }
 
+/// Spells out the wait until a reset, e.g. `2d04h`, `3h05m`, `12m`, `<1m`.
+///
+/// A reset that has already passed reads as `<1m`: the snapshot is older than
+/// the reset, so the next window has begun and no wait is left.
+pub(crate) fn countdown_text(seconds: i64) -> String {
+    duration_text(seconds.max(0))
+}
+
 fn duration_text(seconds: i64) -> String {
     let minutes = seconds / 60;
     let hours = minutes / 60;
@@ -641,7 +657,7 @@ fn duration_text(seconds: i64) -> String {
     }
 }
 
-fn progress_bar(remaining_ratio: f64) -> String {
+pub(crate) fn progress_bar(remaining_ratio: f64) -> String {
     let filled = (remaining_ratio.clamp(0.0, 1.0) * BAR_WIDTH as f64).round() as usize;
     let filled = filled.min(BAR_WIDTH);
     let mut bar = String::with_capacity(BAR_RENDER_WIDTH);
@@ -652,13 +668,29 @@ fn progress_bar(remaining_ratio: f64) -> String {
     bar
 }
 
-fn bar_style(remaining_ratio: f64) -> Style {
+/// How alarming a remaining quota is, shared by every view that colors one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Severity {
+    Ample,
+    Low,
+    Critical,
+}
+
+pub(crate) fn remaining_severity(remaining_ratio: f64) -> Severity {
     if remaining_ratio <= CRITICAL_REMAINING {
-        Style::Error
+        Severity::Critical
     } else if remaining_ratio <= LOW_REMAINING {
-        Style::Warning
+        Severity::Low
     } else {
-        Style::Plain
+        Severity::Ample
+    }
+}
+
+fn bar_style(remaining_ratio: f64) -> Style {
+    match remaining_severity(remaining_ratio) {
+        Severity::Critical => Style::Error,
+        Severity::Low => Style::Warning,
+        Severity::Ample => Style::Plain,
     }
 }
 
