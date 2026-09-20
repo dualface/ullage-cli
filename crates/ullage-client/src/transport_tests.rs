@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
+use std::sync::Mutex;
 
 use ullage_protocol::{AccountId, CredentialBackendId, ProviderId};
 
@@ -657,135 +658,144 @@ fn run_daemon_reports_a_daemon_that_never_frees_the_endpoint() {
     std::fs::remove_dir(directory).unwrap();
 }
 
-#[test]
-fn daemon_stop_fails_while_a_non_service_daemon_still_answers() {
-    // `service::stop` must see "not installed": point the systemd unit
-    // directory at an empty temp config root.
-    let config_root = std::env::temp_dir().join(format!(
-        "ullage-cli-stop-config-{}-{}",
+/// Service calls the two tests below would otherwise make for real.
+///
+/// These tests drive `manage_service`, whose first step always asks the
+/// platform service manager to stop the daemon. With the real ops that is
+/// `systemctl --user stop ullage.service`, which would stop the developer's
+/// own daemon, so they record the calls instead of making them.
+static SERVICE_STUB_CALLS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+fn stub_service_installed() -> Result<bool, String> {
+    SERVICE_STUB_CALLS.lock().unwrap().push("installed");
+    Ok(false)
+}
+
+/// `false` means the service manager stopped nothing, which is what sends
+/// the client on to the probe that these tests are about.
+fn stub_service_stop() -> Result<bool, String> {
+    SERVICE_STUB_CALLS.lock().unwrap().push("stop");
+    Ok(false)
+}
+
+fn stub_service_manage(action: ServiceAction) -> Result<(), String> {
+    SERVICE_STUB_CALLS.lock().unwrap().push(match action {
+        ServiceAction::Install => "install",
+        ServiceAction::Start => "start",
+        ServiceAction::Stop => "stop",
+        ServiceAction::Uninstall => "uninstall",
+    });
+    Ok(())
+}
+
+const SERVICE_STUB_OPS: ServiceOps = ServiceOps {
+    installed: stub_service_installed,
+    stop: stub_service_stop,
+    manage: stub_service_manage,
+};
+
+/// Serializes the two tests, which share one recording, and clears it.
+fn recording_service_ops() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    SERVICE_STUB_CALLS.lock().unwrap().clear();
+    guard
+}
+
+fn service_calls() -> Vec<&'static str> {
+    SERVICE_STUB_CALLS.lock().unwrap().clone()
+}
+
+/// Binds a private control socket that answers `daemon status` like a
+/// `daemon run` instance the service manager does not own.
+fn foreign_daemon(name: &str) -> (PathBuf, PathBuf) {
+    let directory = std::env::temp_dir().join(format!(
+        "ullage-cli-{name}-{}-{}",
         std::process::id(),
         REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&config_root).unwrap();
-    unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", &config_root);
-    }
-    let result = std::panic::catch_unwind(|| {
-        let directory = std::env::temp_dir().join(format!(
-            "ullage-cli-stop-live-{}-{}",
-            std::process::id(),
-            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        let socket_path = directory.join("control.sock");
-        let listener = UnixListener::bind(&socket_path).unwrap();
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let server = std::thread::spawn(move || {
-            while let Ok((mut stream, _)) = listener.accept() {
-                let mut encoded = String::new();
-                BufReader::new(&mut stream).read_line(&mut encoded).unwrap();
-                let request: ControlRequest = serde_json::from_str(&encoded).unwrap();
-                let response = ControlResponse {
-                    version: CONTROL_PROTOCOL_VERSION,
-                    request_id: request.request_id,
-                    result: ControlResult::DaemonStatus(DaemonStatusPayload {
-                        shutting_down: false,
-                        accounts: Vec::new(),
-                        credential_backend: CredentialBackendId::native(),
-                    }),
-                    diagnostic: None,
-                    daemon_version: None,
-                };
-                serde_json::to_writer(&mut stream, &response).unwrap();
-                stream.write_all(b"\n").unwrap();
+    std::fs::create_dir(&directory).unwrap();
+    let socket_path = directory.join("control.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let mut encoded = String::new();
+            if BufReader::new(&mut stream).read_line(&mut encoded).is_err() {
+                continue;
             }
-        });
-        let client = SystemClient {
-            endpoint: Some(socket_path.clone()),
-        };
-        let error = client.manage_service(ServiceAction::Stop).unwrap_err();
-        assert!(matches!(error, ClientError::DaemonStillRunning));
-
-        // Once nothing answers, stop succeeds again.
-        drop(server);
-        std::fs::remove_file(&socket_path).unwrap();
-        client.manage_service(ServiceAction::Stop).unwrap();
-        std::fs::remove_dir(directory).unwrap();
+            let Ok(request) = serde_json::from_str::<ControlRequest>(&encoded) else {
+                continue;
+            };
+            let response = ControlResponse {
+                version: CONTROL_PROTOCOL_VERSION,
+                request_id: request.request_id,
+                result: ControlResult::DaemonStatus(DaemonStatusPayload {
+                    shutting_down: false,
+                    accounts: Vec::new(),
+                    credential_backend: CredentialBackendId::native(),
+                }),
+                diagnostic: None,
+                daemon_version: None,
+            };
+            if serde_json::to_writer(&mut stream, &response).is_err()
+                || stream.write_all(b"\n").is_err()
+            {
+                continue;
+            }
+        }
     });
-    unsafe {
-        std::env::remove_var("XDG_CONFIG_HOME");
-    }
-    std::fs::remove_dir_all(config_root).unwrap();
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+    (directory, socket_path)
+}
+
+#[test]
+fn daemon_stop_fails_while_a_non_service_daemon_still_answers() {
+    let _guard = recording_service_ops();
+    let (directory, socket_path) = foreign_daemon("stop-live");
+    let client = SystemClient {
+        endpoint: Some(socket_path.clone()),
+    };
+
+    let error = client
+        .manage_service_with(ServiceAction::Stop, SERVICE_STUB_OPS)
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ClientError::DaemonStillRunning),
+        "{error:?}"
+    );
+    assert_eq!(service_calls(), ["stop"]);
+
+    // Once nothing answers, stop succeeds again.
+    std::fs::remove_file(&socket_path).unwrap();
+    client
+        .manage_service_with(ServiceAction::Stop, SERVICE_STUB_OPS)
+        .unwrap();
+    assert_eq!(service_calls(), ["stop", "stop"]);
+    std::fs::remove_dir(directory).unwrap();
 }
 
 #[test]
 fn daemon_install_fails_while_a_non_service_daemon_still_answers() {
-    // `service::stop` must see "not installed": point the systemd unit
-    // directory at an empty temp config root.
-    let config_root = std::env::temp_dir().join(format!(
-        "ullage-cli-install-config-{}-{}",
-        std::process::id(),
-        REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&config_root).unwrap();
-    unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", &config_root);
-    }
-    let result = std::panic::catch_unwind(|| {
-        let directory = std::env::temp_dir().join(format!(
-            "ullage-cli-install-live-{}-{}",
-            std::process::id(),
-            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        let socket_path = directory.join("control.sock");
-        let listener = UnixListener::bind(&socket_path).unwrap();
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let server = std::thread::spawn(move || {
-            while let Ok((mut stream, _)) = listener.accept() {
-                let mut encoded = String::new();
-                BufReader::new(&mut stream).read_line(&mut encoded).unwrap();
-                let request: ControlRequest = serde_json::from_str(&encoded).unwrap();
-                let response = ControlResponse {
-                    version: CONTROL_PROTOCOL_VERSION,
-                    request_id: request.request_id,
-                    result: ControlResult::DaemonStatus(DaemonStatusPayload {
-                        shutting_down: false,
-                        accounts: Vec::new(),
-                        credential_backend: CredentialBackendId::native(),
-                    }),
-                    diagnostic: None,
-                    daemon_version: None,
-                };
-                serde_json::to_writer(&mut stream, &response).unwrap();
-                stream.write_all(b"\n").unwrap();
-            }
-        });
-        let client = SystemClient {
-            endpoint: Some(socket_path.clone()),
-        };
-        let error = client.manage_service(ServiceAction::Install).unwrap_err();
-        assert!(matches!(error, ClientError::DaemonStillRunning));
+    let _guard = recording_service_ops();
+    let (directory, socket_path) = foreign_daemon("install-live");
+    let client = SystemClient {
+        endpoint: Some(socket_path.clone()),
+    };
 
-        // The foreign daemon blocks install before any manifest is written:
-        // the stop guard runs ahead of `service::manage(Install)`.
-        #[cfg(target_os = "linux")]
-        assert!(!config_root.join("systemd/user/ullage.service").exists());
+    let error = client
+        .manage_service_with(ServiceAction::Install, SERVICE_STUB_OPS)
+        .unwrap_err();
 
-        drop(server);
-        std::fs::remove_file(&socket_path).unwrap();
-        std::fs::remove_dir(directory).unwrap();
-    });
-    unsafe {
-        std::env::remove_var("XDG_CONFIG_HOME");
-    }
-    std::fs::remove_dir_all(config_root).unwrap();
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+    assert!(
+        matches!(error, ClientError::DaemonStillRunning),
+        "{error:?}"
+    );
+    // The foreign daemon blocks install before any manifest is written: the
+    // stop guard runs ahead of the service manager's install.
+    assert_eq!(service_calls(), ["stop"]);
+    std::fs::remove_file(&socket_path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
 }
 
 #[test]
