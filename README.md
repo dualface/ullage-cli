@@ -418,10 +418,18 @@ ullage show <account-id>
 ullage show <account-id> --metric usage
 ullage show --all
 ullage show --all --no-metric-filter
+ullage tui
 ```
 
 `probe` queries the provider and persists a snapshot. `show` reads persisted
 snapshots and does not call the provider.
+
+`tui` reads all persisted snapshots into an alternate-screen view. Each
+subscription has its own block. Blocks flow from left to right and wrap onto
+new rows; on terminals narrower than the preferred block width, the block
+shrinks to the available width and keeps a percentage when the progress bar no
+longer fits. Press `q`, `Q`, or `Esc` to exit. The view does not refresh or
+scroll; content below the viewport is clipped.
 
 `--metric <display-name>` keeps only the summary rows whose display name matches
 exactly, ignoring case and the window a row belongs to; repeat the flag to keep

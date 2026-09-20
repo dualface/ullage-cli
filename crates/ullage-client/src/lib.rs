@@ -23,6 +23,7 @@ mod render;
 mod service;
 mod table;
 mod transport;
+mod tui;
 mod validate;
 
 #[cfg(test)]
@@ -33,6 +34,7 @@ pub use cli::{
     DeviceCommand, OutputFormat, ProbeArgs, ProviderCommand, ShowArgs,
 };
 pub use transport::{SystemClient, control_endpoint_from_environment};
+pub use tui::run_tui;
 
 pub(crate) use errors::{
     control_error_kind, error_hint, error_hint_for_control, error_output_with_options,
@@ -132,6 +134,15 @@ where
     T: Into<OsString> + Clone,
 {
     run_from_with(arguments, client, &mut prompt::TerminalPrompt::new())
+}
+
+/// Returns whether a valid invocation selects the interactive TUI entrypoint.
+pub fn is_tui_command<I, T>(arguments: I) -> bool
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    Cli::try_parse_from(arguments).is_ok_and(|cli| matches!(cli.command, Command::Tui))
 }
 
 pub fn run_from_with<I, T>(

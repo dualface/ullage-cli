@@ -1,7 +1,9 @@
 use std::sync::Mutex;
 
 use chrono::{TimeZone, Utc};
-use ullage_cli::{ClientError, ControlClient, ExitCode, OutputFormat, run_from, run_from_with};
+use ullage_cli::{
+    ClientError, ControlClient, ExitCode, OutputFormat, is_tui_command, run_from, run_from_with,
+};
 use ullage_protocol::{
     Account, AccountError, AccountId, AccountStatusPayload, AuthChallenge, AuthMethod,
     CONTROL_PROTOCOL_VERSION, ControlCommand, ControlError, ControlRequest, ControlResponse,
@@ -13,6 +15,20 @@ use ullage_protocol::{
 
 mod common;
 use common::*;
+
+#[test]
+fn tui_selects_the_interactive_entrypoint_and_requests_all_snapshots() {
+    assert!(is_tui_command(["ullage", "tui"]));
+    assert!(!is_tui_command(["ullage", "tui", "unexpected"]));
+
+    let client = MockClient::new(snapshot_result);
+    let output = run_from(["ullage", "tui"], &client);
+    assert_eq!(output.code, ExitCode::Success, "{}", output.stderr);
+    assert_eq!(
+        *client.requests.lock().unwrap(),
+        [ControlCommand::Show { account_id: None }]
+    );
+}
 
 #[test]
 fn maps_the_complete_command_surface_to_control_requests() {
@@ -1206,6 +1222,7 @@ fn every_free_text_argument_rejects_control_characters() {
         (&["auth", "logout"], &["claude", "--account", "claude-a"]),
         (&["probe"], &["claude-a"]),
         (&["show"], &["claude-a"]),
+        (&["tui"], &[]),
         (&["device", "pair"], &[]),
         (&["device", "list"], &[]),
         (&["device", "revoke"], &["dev-1"]),

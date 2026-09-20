@@ -148,6 +148,9 @@ values and provider refresh errors are redacted from `Debug` and `Display` outpu
   containing control or bidirectional characters; `InvalidAccountMetrics` is the stable error.
   The one-shot `metric=` query on `/v1/usage` and `ullage show --metric` stay keep lists, applying
   the same names in the opposite direction.
+- The CLI `tui` command reuses the protocol's all-account `Show` request and the core summary
+  projection. Its alternate-screen lifecycle and responsive block layout stay in the client
+  process; the daemon protocol and persisted snapshot format are unchanged.
 
 ## Runtime configuration
 

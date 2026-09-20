@@ -77,6 +77,7 @@ fn spec_for(command: &Command) -> &'static CommandSpec {
         },
         Command::Probe(_) => &PROBE,
         Command::Show(_) => &SHOW,
+        Command::Tui => &TUI,
     }
 }
 
@@ -768,6 +769,16 @@ static SHOW: CommandSpec = CommandSpec {
         }
         _ => false,
     },
+};
+
+static TUI: CommandSpec = CommandSpec {
+    unsafe_param: |_| None,
+    control: |_| ControlCommand::Show { account_id: None },
+    response: |_, result| match result {
+        ControlResult::Snapshots(snapshots) => snapshots_are_unique(snapshots),
+        _ => false,
+    },
+    error: |_, _| false,
 };
 
 /// The payload checks a `DaemonStatus` reply must pass to be trusted, shared

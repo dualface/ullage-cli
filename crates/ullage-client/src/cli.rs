@@ -29,6 +29,7 @@ const CLI_AFTER_HELP: &str = "Examples:
   ullage daemon start
   ullage auth login
   ullage show --all
+  ullage tui
   ullage device pair";
 const DEVICE_AFTER_HELP: &str = "Examples:
   ullage device pair
@@ -160,6 +161,8 @@ pub enum Command {
     // declared once; doc comments here would duplicate them and drift.
     Probe(ProbeArgs),
     Show(ShowArgs),
+    /// View every stored subscription in a full-screen terminal interface.
+    Tui,
     /// Pair, inspect, and revoke HTTP API devices.
     #[command(arg_required_else_help = true, after_help = DEVICE_AFTER_HELP)]
     Device {

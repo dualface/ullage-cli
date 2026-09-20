@@ -45,6 +45,7 @@ fn help_covers_exit_codes_examples_and_value_names() {
     );
     assert_after_help(&command, &["probe"], "ullage probe claude-work");
     assert_after_help(&command, &["show"], "ullage show --all");
+    assert!(command.find_subcommand("tui").is_some());
     assert_after_help(&command, &["device"], "ullage device revoke <DEVICE_ID>");
     assert_after_help(&command, &["daemon", "install"], "ullage daemon status");
 

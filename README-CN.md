@@ -324,9 +324,12 @@ ullage show <account-id>
 ullage show <account-id> --metric usage
 ullage show --all
 ullage show --all --no-metric-filter
+ullage tui
 ```
 
 `probe` 查询提供方并持久化快照。`show` 读取已持久化的快照，不调用提供方。
+
+`tui` 将全部已持久化快照读入 alternate screen 视图。每个订阅一个区块，区块从左到右排列，空间不足时换行。终端窄于首选区块宽度时，区块缩至可用宽度；进度条放不下时仍保留百分比。按 `q`、`Q` 或 `Esc` 退出。该视图不自动刷新，也不滚动；视口下方内容会被裁剪。
 
 `--metric <display-name>` 只保留显示名精确匹配的摘要行，忽略大小写和该行所属窗口；重复该标志则保留多个名字的并集。`--no-metric-filter` 本次调用忽略账户已存储的过滤器。两个标志都不给时，可读摘要会隐藏各账户已存储 `account.metrics` 列表点名的行：`show --all` 遵循每个账户自己的列表，`probe` 应用它所查询账户的已存储列表。非法度量名以退出码 `64` 结束，且不联系守护进程。两个标志只影响可读摘要：`--raw` 和 JSON 输出保留全部测量。
 
