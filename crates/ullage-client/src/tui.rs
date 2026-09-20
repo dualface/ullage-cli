@@ -1,9 +1,9 @@
 //! Full-screen subscription usage view.
 //!
 //! The view shows the same readings as `show`, in the same words, but packed
-//! for a small screen: one highlighted title line per subscription instead of
-//! a box, and a per-card column layout that drops its widest fields first so
-//! the identity, the reading, and the reset countdown survive on a phone.
+//! for a small screen: each subscription is headed by its provider instead of
+//! boxed, and a per-card column layout gives up its widest fields first so the
+//! identity, the reading, and the reset countdown survive on a phone.
 
 use std::io;
 

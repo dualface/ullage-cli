@@ -174,7 +174,7 @@ fn a_full_row_uses_every_column_of_the_card() {
 }
 
 #[test]
-fn narrowing_drops_the_bar_then_the_verb_then_the_countdown() {
+fn narrowing_shrinks_the_bar_then_drops_the_verb_the_bar_and_the_countdown() {
     let card = card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]);
     let layout = RowLayout::measure(&card.rows);
 
