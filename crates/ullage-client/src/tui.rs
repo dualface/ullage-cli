@@ -31,7 +31,8 @@ use ullage_protocol::{
 use crate::errors::{error_output, result_exit_code, sanitize_partial_failure_controls};
 use crate::render::{MetricFilterChoice, RenderView, render_result};
 use crate::table::{
-    Severity, SummaryCells, collect_summary_cells, countdown_text, progress_bar, remaining_severity,
+    BAR_RENDER_WIDTH, Severity, SummaryCells, collect_summary_cells, countdown_text, progress_bar,
+    remaining_severity,
 };
 use crate::{
     ClientError, ColorMode, Command, ControlClient, ExitCode, OutputFormat, RunOutput,
@@ -46,8 +47,6 @@ const HORIZONTAL_GAP: u16 = 2;
 const VERTICAL_GAP: u16 = 0;
 /// One space between the fields of a row, half of what the table uses.
 const FIELD_GAP: usize = 1;
-/// Rendered width of the progress bar, brackets included.
-const BAR_WIDTH: usize = 12;
 /// Rows a single wheel notch scrolls.
 const WHEEL_LINES: u16 = 3;
 
@@ -368,7 +367,7 @@ impl RowLayout {
             suffix: max_width(rows.iter().map(|row| row.suffix)),
             resets: max_width(rows.iter().filter_map(|row| row.resets.as_deref())),
             bar: if rows.iter().any(|row| row.ratio.is_some()) {
-                BAR_WIDTH
+                BAR_RENDER_WIDTH
             } else {
                 0
             },

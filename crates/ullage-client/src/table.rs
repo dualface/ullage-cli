@@ -25,7 +25,7 @@ const BAR_WIDTH: usize = 10;
 const BAR_FILLED: char = '#';
 const BAR_EMPTY: char = '-';
 /// Rendered width of `[` + bar + `]`.
-const BAR_RENDER_WIDTH: usize = BAR_WIDTH + 2;
+pub(crate) const BAR_RENDER_WIDTH: usize = BAR_WIDTH + 2;
 /// Width of the reset countdown field, in characters.
 const RESET_BAR_WIDTH: usize = 7;
 const SECONDS_PER_HOUR: i64 = 60 * 60;
