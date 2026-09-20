@@ -762,3 +762,7 @@ fn stacked_rects(width: u16, heights: &[u16], preferred_width: u16) -> Vec<Rect>
 pub(crate) fn content_height(rects: &[Rect]) -> u16 {
     rects.iter().map(|rect| rect.bottom()).max().unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "cards_tests.rs"]
+mod tests;
