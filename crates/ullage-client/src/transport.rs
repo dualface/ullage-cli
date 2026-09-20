@@ -102,9 +102,8 @@ pub fn control_endpoint_from_environment() -> Option<PathBuf> {
         })
 }
 
-/// The platform service-manager entry points bundled behind function
-/// pointers so tests can drive the install/start/stop orchestration without a
-/// real systemd, launchd, or Task Scheduler underneath.
+/// Platform service-manager entry points behind fn pointers so tests can
+/// drive the install/stop/start orchestration without a real service manager.
 #[derive(Clone, Copy)]
 struct ServiceOps {
     installed: fn() -> Result<bool, String>,
@@ -182,11 +181,11 @@ impl SystemClient {
         ops: ServiceOps,
     ) -> Result<(), ClientError> {
         match action {
-            // Install is reinstall-then-start: stop whatever daemon currently
-            // answers (an installed service or a foreign `daemon run`), refresh
-            // the service manifest, then start and wait for readiness. The
-            // unconditional stop also covers a pending Windows install marker,
-            // which `service::installed` would refuse to classify.
+            // Install is reinstall-then-start: stop whatever daemon answers
+            // (installed service or foreign `daemon run`), refresh the service
+            // manifest, then start and wait for readiness. The unconditional
+            // stop also covers a pending Windows install marker, which
+            // `service::installed` would refuse to classify.
             ServiceAction::Install => {
                 self.stop_service_daemon(ops)?;
                 (ops.manage)(ServiceAction::Install).map_err(|_| ClientError::DaemonProcess)?;
@@ -993,6 +992,9 @@ fn validate_unix_peer(stream: &std::os::unix::net::UnixStream) -> Result<(), Cli
     }
     Ok(())
 }
+#[cfg(all(test, unix))]
+#[path = "transport_install_tests.rs"]
+mod install_tests;
 #[cfg(all(test, unix))]
 #[path = "transport_tests.rs"]
 mod tests;
