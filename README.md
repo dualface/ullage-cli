@@ -476,7 +476,9 @@ The view reads the snapshots again every two minutes, which catches each of
 the daemon's five-minute probe rounds without polling it for nothing. The
 status line dates what is on screen (`updated 1m ago`), so a refresh the
 daemon cannot answer shows as an age that keeps growing; the readings stay
-put and the next interval tries again.
+put and the next interval tries again. The status line sits under the boxes:
+centered beneath a centered box, and at the left edge when the boxes fill the
+width.
 
 The view also scrolls: the mouse wheel moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`
 and `j`) move one row, and `Home`/`End` jump to the ends. The last row shows

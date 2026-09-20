@@ -56,11 +56,15 @@ fn step(scroll: &mut Scroll, action: Action, viewport_height: u16, content_heigh
 }
 
 fn rendered(width: u16, height: u16, cards: &[Card]) -> String {
+    rendered_with(width, height, cards, Layout::Columns)
+}
+
+fn rendered_with(width: u16, height: u16, cards: &[Card], layout: Layout) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     let mut scroll = Scroll::default();
     terminal
-        .draw(|frame| render(frame, cards, &mut scroll, Layout::Columns, Duration::ZERO))
+        .draw(|frame| render(frame, cards, &mut scroll, layout, Duration::ZERO))
         .unwrap();
     terminal.backend().to_string()
 }
@@ -347,6 +351,50 @@ fn v_toggles_the_layout_and_the_toggle_leaves_the_offset_alone() {
     };
     scroll.apply(10, 40);
     assert_eq!(scroll.offset, 7);
+}
+
+/// The column the last row's text starts in, and the text itself.
+fn status_row(width: u16, layout: Layout, cards: &[Card]) -> (u16, String) {
+    let backend = TestBackend::new(width, 9);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut scroll = Scroll::default();
+    terminal
+        .draw(|frame| render(frame, cards, &mut scroll, layout, Duration::ZERO))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let row = (0..width)
+        .map(|x| buffer[(x, 8)].symbol().to_owned())
+        .collect::<String>();
+    let start = row.chars().take_while(|cell| *cell == ' ').count();
+    (start as u16, row.trim().to_owned())
+}
+
+#[test]
+fn the_hints_sit_under_the_cards() {
+    let cards = vec![card_with_rows(vec![row(
+        "5h",
+        "remains",
+        "91%",
+        Some("3h05m"),
+    )])];
+
+    // A centered card centers them: the margins on either side of the text
+    // match within a cell.
+    let (start, text) = status_row(60, Layout::Columns, &cards);
+    let end = 60 - start - text.chars().count() as u16;
+    assert!(start.abs_diff(end) <= 1, "{start} vs {end}: {text}");
+
+    // Cards that fill the width keep the hints at the left edge.
+    let wide = vec![
+        card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]),
+        card_with_rows(vec![row("weekly", "remains", "40%", Some("3h05m"))]),
+    ];
+    assert_eq!(status_row(120, Layout::Columns, &wide).0, 0);
+
+    // One card per row is a centered card too, however wide the terminal.
+    let (start, text) = status_row(120, Layout::Vertical, &cards);
+    let end = 120 - start - text.chars().count() as u16;
+    assert!(start.abs_diff(end) <= 1, "{start} vs {end}: {text}");
 }
 
 #[test]

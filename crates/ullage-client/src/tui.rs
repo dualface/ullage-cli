@@ -329,23 +329,47 @@ fn render(
         preferred_card_width(&columns),
     );
     let content = content_height(&rects);
+    let span = occupied_span(&rects);
     scroll.apply(viewport.height, content);
     for (card, rect) in cards.iter().zip(rects) {
         render_card(frame, card, rect, viewport, scroll.offset, &columns);
     }
     if let Some(status) = status {
+        // The hints sit under the cards: centered under a centered card,
+        // and at the left edge when the cards fill the width.
+        let line = status_line(
+            scroll.offset,
+            viewport.height,
+            content,
+            span.width,
+            layout,
+            age,
+        );
+        let text_width = u16::try_from(line_width(&line)).unwrap_or(span.width);
+        let x = match span.x {
+            0 => 0,
+            left => left + (span.width.saturating_sub(text_width)) / 2,
+        };
         frame.render_widget(
-            Paragraph::new(status_line(
-                scroll.offset,
-                viewport.height,
-                content,
-                status.width,
-                layout,
-                age,
-            )),
-            status,
+            Paragraph::new(line),
+            Rect::new(x, status.y, status.right().saturating_sub(x), 1),
         );
     }
+}
+
+/// The columns the cards actually occupy, which is the whole width when they
+/// fill it and the centered band when a single card holds each row.
+fn occupied_span(rects: &[Rect]) -> Rect {
+    let left = rects.iter().map(|rect| rect.x).min().unwrap_or(0);
+    let right = rects.iter().map(|rect| rect.right()).max().unwrap_or(0);
+    Rect::new(left, 0, right.saturating_sub(left), 1)
+}
+
+fn line_width(line: &Line<'_>) -> usize {
+    line.spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum()
 }
 
 /// Draws the lines of one card that the scrolled viewport still shows.
