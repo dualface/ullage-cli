@@ -368,7 +368,7 @@ pub(crate) fn error_hint_for_control(error: &ControlError) -> Option<String> {
 pub(crate) fn error_hint(kind: &str) -> Option<&'static str> {
     match kind {
         "daemon_unavailable" => Some(
-            "start the daemon with `ullage daemon install` then `ullage daemon start`, or run \
+            "start the daemon with `ullage daemon install`, or run \
              `ullage daemon run` in another terminal",
         ),
         "provider_registry_error" => Some(

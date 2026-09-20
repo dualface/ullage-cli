@@ -407,6 +407,6 @@ pub(crate) fn daemon_upgrade_notice(daemon_version: Option<&str>) -> Option<Stri
     Some(format!(
         "warning: the running daemon ({daemon}) is older than this CLI ({cli_version}); \
          upgrades and new providers stay invisible until it is restarted\n  upgrade: \
-         ullage daemon install && ullage daemon stop && ullage daemon start"
+         ullage daemon install"
     ))
 }

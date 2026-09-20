@@ -206,7 +206,7 @@ account, snapshot, and probe payloads. Version 9 added device pairing and revoca
 The response envelope also carries an optional `daemon_version`, the daemon's build version. It is
 additive like `diagnostic`, so it does not move the protocol version: daemons built before the field
 existed omit it and a newer CLI reads that absence as "older than me", then prints an upgrade hint on
-stderr pointing at `ullage daemon install` plus a service restart.
+stderr pointing at `ullage daemon install`, which reinstalls and restarts the service.
 
 Snapshot payloads carry a `stale` flag with failure semantics, not age
 semantics: the daemon sets it when a refresh fails after a successful write
@@ -282,9 +282,11 @@ through an SSH tunnel onto the loopback listener.
 `ullage daemon install/start/stop/status/uninstall` manages the daemon in the current user's
 session. `status` reports live daemon details when its authenticated local control endpoint is
 reachable, otherwise it distinguishes an installed-but-stopped service from a service that is not
-installed. Installation never creates a system-wide service and uninstallation first confirms the
-daemon has stopped, then removes only the startup entry; configuration, credentials, snapshots,
-and logs remain intact.
+installed. `install` first stops any daemon that still answers the control endpoint (an installed
+service or a foreign `daemon run`), then writes the startup entry and starts the daemon, so it
+acts as a reinstall-and-restart. Installation never creates a system-wide service and
+uninstallation first confirms the daemon has stopped, then removes only the startup entry;
+configuration, credentials, snapshots, and logs remain intact.
 
 - Linux installs a private `ullage.service` under `$XDG_CONFIG_HOME/systemd/user` (or
   `~/.config/systemd/user`), enables it for the user's `default.target`, and delegates lifecycle

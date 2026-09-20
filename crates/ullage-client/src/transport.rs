@@ -157,40 +157,50 @@ impl SystemClient {
     }
 
     fn manage_service(&self, action: ServiceAction) -> Result<(), ClientError> {
-        if action == ServiceAction::Start {
-            if !service::installed().map_err(|_| ClientError::DaemonProcess)? {
-                return Err(ClientError::DaemonProcess);
-            }
-            if self.wait_for_endpoint(std::time::Instant::now() + Duration::from_secs(5))? {
-                return Ok(());
-            }
-        }
-        if matches!(action, ServiceAction::Stop | ServiceAction::Uninstall) {
-            let stop_issued = service::stop().map_err(|_| ClientError::DaemonProcess)?;
-            if stop_issued {
-                self.wait_for_service_stopped()?;
-            } else {
-                // The service stop removed nothing: a `daemon run` instance it
-                // does not manage may still answer. Success is only honest
-                // when the control endpoint is actually gone.
-                match self.daemon_readiness(Duration::from_millis(250))? {
-                    DaemonReadiness::Unavailable => {}
-                    DaemonReadiness::Ready | DaemonReadiness::NotReady => {
-                        return Err(ClientError::DaemonStillRunning);
-                    }
-                }
-            }
-            if action == ServiceAction::Stop {
-                return Ok(());
-            }
-            return service::manage(ServiceAction::Uninstall)
-                .map_err(|_| ClientError::DaemonProcess);
-        }
-        service::manage(action).map_err(|_| ClientError::DaemonProcess)?;
         match action {
-            ServiceAction::Start => self.wait_for_service_ready(),
-            ServiceAction::Install => Ok(()),
-            ServiceAction::Stop | ServiceAction::Uninstall => unreachable!(),
+            // Install is reinstall-then-start: stop whatever daemon currently
+            // answers (an installed service or a foreign `daemon run`), refresh
+            // the service manifest, then start and wait for readiness. The
+            // unconditional stop also covers a pending Windows install marker,
+            // which `service::installed` would refuse to classify.
+            ServiceAction::Install => {
+                self.stop_service_daemon()?;
+                service::manage(ServiceAction::Install).map_err(|_| ClientError::DaemonProcess)?;
+                self.start_service()
+            }
+            ServiceAction::Start => self.start_service(),
+            ServiceAction::Stop => self.stop_service_daemon(),
+            ServiceAction::Uninstall => {
+                self.stop_service_daemon()?;
+                service::manage(ServiceAction::Uninstall).map_err(|_| ClientError::DaemonProcess)
+            }
+        }
+    }
+
+    fn start_service(&self) -> Result<(), ClientError> {
+        if !service::installed().map_err(|_| ClientError::DaemonProcess)? {
+            return Err(ClientError::DaemonProcess);
+        }
+        if self.wait_for_endpoint(std::time::Instant::now() + Duration::from_secs(5))? {
+            return Ok(());
+        }
+        service::manage(ServiceAction::Start).map_err(|_| ClientError::DaemonProcess)?;
+        self.wait_for_service_ready()
+    }
+
+    fn stop_service_daemon(&self) -> Result<(), ClientError> {
+        let stop_issued = service::stop().map_err(|_| ClientError::DaemonProcess)?;
+        if stop_issued {
+            return self.wait_for_service_stopped();
+        }
+        // The service stop removed nothing: a `daemon run` instance it
+        // does not manage may still answer. Success is only honest
+        // when the control endpoint is actually gone.
+        match self.daemon_readiness(Duration::from_millis(250))? {
+            DaemonReadiness::Unavailable => Ok(()),
+            DaemonReadiness::Ready | DaemonReadiness::NotReady => {
+                Err(ClientError::DaemonStillRunning)
+            }
         }
     }
 

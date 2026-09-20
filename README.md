@@ -351,7 +351,9 @@ pins the current Cellar keg path. `winget install Dualface.Ullage` does
 the same pair from the Inno installer `[Run]` entries so the current-user
 scheduled task pins `%LOCALAPPDATA%\Ullage\ullage.exe`.
 
-`install` / `uninstall` manage the startup entry only. Configuration,
+`install` registers the startup entry and starts the daemon; when the service
+is already installed it stops the running daemon and rewrites the entry first.
+`uninstall` stops the daemon and removes only the startup entry. Configuration,
 credentials, snapshots, and logs remain. `status` reports a live daemon when
 the authenticated local endpoint is reachable; otherwise it distinguishes
 installed-but-stopped from not-installed. Live table output includes

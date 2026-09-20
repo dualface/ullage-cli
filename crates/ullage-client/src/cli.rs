@@ -36,7 +36,6 @@ const DEVICE_AFTER_HELP: &str = "Examples:
   ullage device revoke <DEVICE_ID>";
 const DAEMON_INSTALL_AFTER_HELP: &str = "Examples:
   ullage daemon install
-  ullage daemon start
   ullage daemon status";
 const AUTH_LOGIN_AFTER_HELP: &str = "Examples:
   ullage auth login
@@ -185,11 +184,12 @@ pub enum DeviceCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DaemonCommand {
-    /// Register a user-level service that starts the daemon at login.
+    /// Register a user-level service that starts the daemon at login, then start it.
     ///
-    /// Writes a current-user startup entry only. It does not start the daemon;
-    /// run `daemon start` afterwards. `uninstall` removes that entry and leaves
-    /// configuration, credentials, and snapshots in place.
+    /// Writes a current-user startup entry and starts the daemon. When the
+    /// service is already installed, the running daemon is stopped and the
+    /// entry is rewritten before starting. `uninstall` removes that entry and
+    /// leaves configuration, credentials, and snapshots in place.
     #[command(after_help = DAEMON_INSTALL_AFTER_HELP)]
     Install,
     /// Start the installed user-level daemon service.

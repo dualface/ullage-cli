@@ -722,6 +722,73 @@ fn daemon_stop_fails_while_a_non_service_daemon_still_answers() {
 }
 
 #[test]
+fn daemon_install_fails_while_a_non_service_daemon_still_answers() {
+    // `service::stop` must see "not installed": point the systemd unit
+    // directory at an empty temp config root.
+    let config_root = std::env::temp_dir().join(format!(
+        "ullage-cli-install-config-{}-{}",
+        std::process::id(),
+        REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&config_root).unwrap();
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", &config_root);
+    }
+    let result = std::panic::catch_unwind(|| {
+        let directory = std::env::temp_dir().join(format!(
+            "ullage-cli-install-live-{}-{}",
+            std::process::id(),
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let socket_path = directory.join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut encoded = String::new();
+                BufReader::new(&mut stream).read_line(&mut encoded).unwrap();
+                let request: ControlRequest = serde_json::from_str(&encoded).unwrap();
+                let response = ControlResponse {
+                    version: CONTROL_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    result: ControlResult::DaemonStatus(DaemonStatusPayload {
+                        shutting_down: false,
+                        accounts: Vec::new(),
+                        credential_backend: CredentialBackendId::native(),
+                    }),
+                    diagnostic: None,
+                    daemon_version: None,
+                };
+                serde_json::to_writer(&mut stream, &response).unwrap();
+                stream.write_all(b"\n").unwrap();
+            }
+        });
+        let client = SystemClient {
+            endpoint: Some(socket_path.clone()),
+        };
+        let error = client.manage_service(ServiceAction::Install).unwrap_err();
+        assert!(matches!(error, ClientError::DaemonStillRunning));
+
+        // The foreign daemon blocks install before any manifest is written:
+        // the stop guard runs ahead of `service::manage(Install)`.
+        #[cfg(target_os = "linux")]
+        assert!(!config_root.join("systemd/user/ullage.service").exists());
+
+        drop(server);
+        std::fs::remove_file(&socket_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    });
+    unsafe {
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+    std::fs::remove_dir_all(config_root).unwrap();
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn daemon_error_log_sweep_removes_only_stale_files() {
     let directory = std::env::temp_dir().join(format!(
         "ullage-cli-log-sweep-{}-{}",
