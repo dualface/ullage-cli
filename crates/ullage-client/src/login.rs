@@ -368,7 +368,7 @@ fn run(
         if failure.kind() == "daemon_unavailable" {
             prompt.tell("The Ullage daemon is not running.");
             prompt.tell(
-                "Start it with `ullage daemon install` then `ullage daemon start`, or run \
+                "Start it with `ullage daemon install`, or run \
                  `ullage daemon run` in another terminal.",
             );
         }

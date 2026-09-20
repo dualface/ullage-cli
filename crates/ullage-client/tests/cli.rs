@@ -2510,7 +2510,7 @@ fn interactive_login_explains_a_stopped_daemon() {
         "{:?}",
         prompt.transcript()
     );
-    assert!(prompt.said("ullage daemon start"));
+    assert!(prompt.said("ullage daemon install"));
     assert!(output.stderr.contains("stage: daemon"), "{}", output.stderr);
     assert!(
         output.stderr.contains("hint: start the daemon"),

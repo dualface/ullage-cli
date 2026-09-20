@@ -102,6 +102,22 @@ pub fn control_endpoint_from_environment() -> Option<PathBuf> {
         })
 }
 
+/// The platform service-manager entry points bundled behind function
+/// pointers so tests can drive the install/start/stop orchestration without a
+/// real systemd, launchd, or Task Scheduler underneath.
+#[derive(Clone, Copy)]
+struct ServiceOps {
+    installed: fn() -> Result<bool, String>,
+    stop: fn() -> Result<bool, String>,
+    manage: fn(ServiceAction) -> Result<(), String>,
+}
+
+const REAL_SERVICE_OPS: ServiceOps = ServiceOps {
+    installed: service::installed,
+    stop: service::stop,
+    manage: service::manage,
+};
+
 impl SystemClient {
     pub fn from_environment() -> Self {
         #[cfg(unix)]
@@ -157,6 +173,14 @@ impl SystemClient {
     }
 
     fn manage_service(&self, action: ServiceAction) -> Result<(), ClientError> {
+        self.manage_service_with(action, REAL_SERVICE_OPS)
+    }
+
+    fn manage_service_with(
+        &self,
+        action: ServiceAction,
+        ops: ServiceOps,
+    ) -> Result<(), ClientError> {
         match action {
             // Install is reinstall-then-start: stop whatever daemon currently
             // answers (an installed service or a foreign `daemon run`), refresh
@@ -164,32 +188,32 @@ impl SystemClient {
             // unconditional stop also covers a pending Windows install marker,
             // which `service::installed` would refuse to classify.
             ServiceAction::Install => {
-                self.stop_service_daemon()?;
-                service::manage(ServiceAction::Install).map_err(|_| ClientError::DaemonProcess)?;
-                self.start_service()
+                self.stop_service_daemon(ops)?;
+                (ops.manage)(ServiceAction::Install).map_err(|_| ClientError::DaemonProcess)?;
+                self.start_service(ops)
             }
-            ServiceAction::Start => self.start_service(),
-            ServiceAction::Stop => self.stop_service_daemon(),
+            ServiceAction::Start => self.start_service(ops),
+            ServiceAction::Stop => self.stop_service_daemon(ops),
             ServiceAction::Uninstall => {
-                self.stop_service_daemon()?;
-                service::manage(ServiceAction::Uninstall).map_err(|_| ClientError::DaemonProcess)
+                self.stop_service_daemon(ops)?;
+                (ops.manage)(ServiceAction::Uninstall).map_err(|_| ClientError::DaemonProcess)
             }
         }
     }
 
-    fn start_service(&self) -> Result<(), ClientError> {
-        if !service::installed().map_err(|_| ClientError::DaemonProcess)? {
+    fn start_service(&self, ops: ServiceOps) -> Result<(), ClientError> {
+        if !(ops.installed)().map_err(|_| ClientError::DaemonProcess)? {
             return Err(ClientError::DaemonProcess);
         }
         if self.wait_for_endpoint(std::time::Instant::now() + Duration::from_secs(5))? {
             return Ok(());
         }
-        service::manage(ServiceAction::Start).map_err(|_| ClientError::DaemonProcess)?;
+        (ops.manage)(ServiceAction::Start).map_err(|_| ClientError::DaemonProcess)?;
         self.wait_for_service_ready()
     }
 
-    fn stop_service_daemon(&self) -> Result<(), ClientError> {
-        let stop_issued = service::stop().map_err(|_| ClientError::DaemonProcess)?;
+    fn stop_service_daemon(&self, ops: ServiceOps) -> Result<(), ClientError> {
+        let stop_issued = (ops.stop)().map_err(|_| ClientError::DaemonProcess)?;
         if stop_issued {
             return self.wait_for_service_stopped();
         }

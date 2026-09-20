@@ -12,8 +12,8 @@ const CLI_LONG_ABOUT: &str =
     "Ullage inspects subscription usage for Claude, ChatGPT, Grok, and Cursor.
 
 Most commands talk to a per-user local daemon over a private control socket on \
-Unix or a named pipe on Windows. Install the user-level service once, start it, \
-then run the remaining commands. Later logins start the service automatically.
+Unix or a named pipe on Windows. Install the user-level service once (it starts \
+the daemon), then run the remaining commands. Later logins start the service automatically.
 
 Exit codes:
   0   success

@@ -190,7 +190,7 @@ class Ullage < Formula
     ohai "Installing and starting the Ullage user daemon"
     quiet_system bin/"ullage", "daemon", "stop"
     unless quiet_system bin/"ullage", "daemon", "install"
-      opoo "Could not install the user daemon. Run: ullage daemon install && ullage daemon start"
+      opoo "Could not install the user daemon. Run: ullage daemon install"
       return
     end
     return if quiet_system bin/"ullage", "daemon", "start"
@@ -204,7 +204,6 @@ class Ullage < Formula
       After an upgrade they pin the new Cellar keg path. If that step was
       skipped, run:
         ullage daemon install
-        ullage daemon start
     EOS
   end
 

@@ -281,7 +281,7 @@ ullage daemon uninstall
 
 `brew install` 和 `brew upgrade` 会自行执行 `ullage daemon install` 和 `ullage daemon start`，把 LaunchAgent（或 systemd 用户单元）钉到当前 Cellar keg 路径。`winget install Dualface.Ullage` 通过 Inno 安装包的 `[Run]` 条目做同样的事，把当前用户的计划任务钉到 `%LOCALAPPDATA%\Ullage\ullage.exe`。
 
-`install` / `uninstall` 只管理启动项。配置、凭据、快照和日志会留下。`status` 在已认证的本机端点可达时报告守护进程在线；否则区分已安装但已停止，与未安装。在线表格输出包含 `CREDENTIAL_BACKEND`（`linux_secret_service`、`macos_keychain`、`windows_credential_manager`、`file_fallback` 或 `other_platform`）。JSON 在 `payload.credential_backend` 上使用相同标识符。
+`install` 注册启动项并启动守护进程；若服务已安装，会先停止运行中的守护进程并重写启动项。`uninstall` 停止守护进程后只删除启动项。配置、凭据、快照和日志会留下。`status` 在已认证的本机端点可达时报告守护进程在线；否则区分已安装但已停止，与未安装。在线表格输出包含 `CREDENTIAL_BACKEND`（`linux_secret_service`、`macos_keychain`、`windows_credential_manager`、`file_fallback` 或 `other_platform`）。JSON 在 `payload.credential_backend` 上使用相同标识符。
 
 Linux 使用 systemd 用户单元，macOS 使用 LaunchAgent，Windows 使用当前用户的任务计划程序任务。平台路径和权限细节见 `docs/architecture.md`。
 
