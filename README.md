@@ -425,22 +425,28 @@ ullage tui
 snapshots and does not call the provider.
 
 `tui` reads all persisted snapshots into an alternate-screen view. Each
-subscription is a block headed by one highlighted line, with no border around
-it, and the rows read exactly as `show` does plus the wait until each window
-resets:
+subscription is a block headed by its provider, with no border around it and a
+blank row between bands, and the rows read exactly as `show` does plus the wait
+until each window resets:
 
 ```console
-claude/max_20x  personal
-5h           remains 91% 3h05m [-#########]
-weekly       used up     6d21h [----------]
-fable        remains 25% 6d21h [-------###]
+claude  max_20x  personal
+5h        remains 91%   3h05m [-#########]
+weekly    used up     -****** [----------]
+fable     remains 25% -****** [-------###]
 ```
 
-Blocks flow from left to right and wrap onto new rows. As the terminal
-narrows, every row of a block drops its widest field first: the progress bar,
-then the verb, then the reset countdown, leaving the window and its reading.
-The countdown outlives the bar on purpose, so a phone-sized terminal still
-says when the quota comes back.
+The countdown uses the same field as `show`: a day or more reads as the star
+scale (`-******`, `* 23d *`), and under a day the exact wait is spelled out
+(`3h05m`, `12m`, `<1m`).
+
+Blocks flow from left to right and wrap onto new rows. As the terminal narrows,
+every row of a block gives up its widest field first: the ten-cell bar shrinks
+to four cells (`-###`), then the verb goes, then the small bar, then the
+countdown, leaving the window and its reading. The countdown outlives the bar
+on purpose, so a phone-sized terminal still says when the quota comes back.
+Every cell the view draws is ASCII, because block and box-drawing glyphs are
+one cell wide to this program and two in a terminal set to a CJK locale.
 
 The view does not refresh its snapshots, but it does scroll: the mouse wheel
 moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`

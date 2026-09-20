@@ -31,8 +31,8 @@ use ullage_protocol::{
 use crate::errors::{error_output, result_exit_code, sanitize_partial_failure_controls};
 use crate::render::{MetricFilterChoice, RenderView, render_result};
 use crate::table::{
-    BAR_RENDER_WIDTH, Severity, SummaryCells, collect_summary_cells, countdown_text, progress_bar,
-    remaining_severity,
+    BAR_RENDER_WIDTH, SECONDS_PER_DAY, Severity, SummaryCells, collect_summary_cells,
+    countdown_text, progress_bar, remaining_severity, reset_bar,
 };
 use crate::{
     ClientError, ColorMode, Command, ControlClient, ExitCode, OutputFormat, RunOutput,
@@ -43,10 +43,16 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const PREFERRED_CARD_WIDTH: u16 = 42;
 const HORIZONTAL_GAP: u16 = 2;
-/// Cards need no blank row between them: the reversed title line separates them.
-const VERTICAL_GAP: u16 = 0;
-/// One space between the fields of a row, half of what the table uses.
+/// A blank row separates one band of cards from the next.
+const VERTICAL_GAP: u16 = 1;
+/// One space between the fields of a row. The table can afford two because it
+/// owns the whole terminal width; a card has to fit the full bar into a
+/// column of about forty cells.
 const FIELD_GAP: usize = 1;
+/// Two spaces between the names on a title line, which has no columns to keep.
+const TITLE_GAP: usize = 2;
+/// Cells of the bar that survives once the full bar no longer fits.
+const MINI_BAR_WIDTH: usize = 4;
 /// Rows a single wheel notch scrolls.
 const WHEEL_LINES: u16 = 3;
 
@@ -312,19 +318,37 @@ fn card_lines(card: &Card, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// The title is reversed across the full card width, so it reads as the edge
-/// of the card that the removed border used to draw.
-fn title_line(title: &str, width: u16) -> Line<'static> {
+/// The provider carries the line; the plan and the account stay quiet beside
+/// it. Whitespace separates them, so no punctuation has to be picked that a
+/// terminal might render two cells wide.
+fn title_line(title: &CardTitle, width: u16) -> Line<'static> {
     let width = usize::from(width);
-    let mut text = clip(title, width);
-    let padding = width.saturating_sub(UnicodeWidthStr::width(text.as_str()));
-    text.push_str(&" ".repeat(padding));
-    Line::from(Span::styled(
-        text,
+    let mut spans = Vec::new();
+    let mut used = 0;
+    let mut push = |text: &str, style: Style, spans: &mut Vec<Span<'static>>| {
+        if text.is_empty() || used >= width {
+            return;
+        }
+        if !spans.is_empty() {
+            let gap = TITLE_GAP.min(width - used);
+            spans.push(Span::raw(" ".repeat(gap)));
+            used += gap;
+        }
+        let text = clip(text, width - used);
+        used += UnicodeWidthStr::width(text.as_str());
+        spans.push(Span::styled(text, style));
+    };
+    let quiet = Style::default().add_modifier(Modifier::DIM);
+    push(
+        &title.provider,
         Style::default()
-            .add_modifier(Modifier::REVERSED)
+            .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
-    ))
+        &mut spans,
+    );
+    push(title.plan.as_deref().unwrap_or(""), quiet, &mut spans);
+    push(&title.account, quiet, &mut spans);
+    Line::from(spans)
 }
 
 /// How much room each field of a card's rows needs, before any is dropped.
@@ -340,17 +364,21 @@ struct RowLayout {
     suffix: usize,
     resets: usize,
     bar: usize,
+    /// The four-cell bar that replaces the full one on a narrow terminal.
+    mini: usize,
 }
 
 /// The fields a row keeps at a given width, widest variant first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tier {
-    /// Identity, reading, reset countdown, progress bar.
+    /// Identity, reading, reset countdown, full progress bar.
     Full,
-    /// The bar is the widest field and the only one a percentage repeats.
-    NoBar,
+    /// The full bar shrinks to four cells before anything else is dropped.
+    MiniBar,
     /// The verb is prose; the number it introduces carries the meaning.
     NoVerb,
+    /// Even the mini bar goes before the countdown does.
+    NoBar,
     /// The countdown goes last, after everything but identity and reading.
     NoReset,
     /// Identity and reading only, both clipped to fit.
@@ -368,6 +396,11 @@ impl RowLayout {
             resets: max_width(rows.iter().filter_map(|row| row.resets.as_deref())),
             bar: if rows.iter().any(|row| row.ratio.is_some()) {
                 BAR_RENDER_WIDTH
+            } else {
+                0
+            },
+            mini: if rows.iter().any(|row| row.ratio.is_some()) {
+                MINI_BAR_WIDTH
             } else {
                 0
             },
@@ -389,7 +422,13 @@ impl RowLayout {
     /// The widest tier that fits `width`, or [`Tier::Minimal`] when none does.
     fn tier_for(&self, width: u16) -> Tier {
         let width = usize::from(width);
-        for tier in [Tier::Full, Tier::NoBar, Tier::NoVerb, Tier::NoReset] {
+        for tier in [
+            Tier::Full,
+            Tier::MiniBar,
+            Tier::NoVerb,
+            Tier::NoBar,
+            Tier::NoReset,
+        ] {
             if self.width_of(tier) <= width {
                 return tier;
             }
@@ -407,14 +446,22 @@ impl RowLayout {
                 self.resets,
                 self.bar,
             ],
-            Tier::NoBar => &[
+            Tier::MiniBar => &[
                 self.identity,
                 self.verb,
                 self.amount,
                 self.suffix,
                 self.resets,
+                self.mini,
             ],
-            Tier::NoVerb => &[self.identity, self.reading, self.suffix, self.resets],
+            Tier::NoVerb => &[
+                self.identity,
+                self.reading,
+                self.suffix,
+                self.resets,
+                self.mini,
+            ],
+            Tier::NoBar => &[self.identity, self.reading, self.suffix, self.resets],
             Tier::NoReset => &[self.identity, self.reading, self.suffix],
             Tier::Minimal => &[self.identity, self.reading],
         };
@@ -431,26 +478,63 @@ fn row_line(row: &CardRow, layout: &RowLayout, tier: Tier, width: u16) -> Line<'
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut spans: Vec<Span<'static>> = Vec::new();
     push_field(&mut spans, &row.identity, layout.identity, Style::default());
-    if matches!(tier, Tier::Full | Tier::NoBar) {
+    // Numbers read as a column only when they end on the same cell.
+    if matches!(tier, Tier::Full | Tier::MiniBar) {
         push_field(&mut spans, row.verb, layout.verb, dim);
-        push_field(&mut spans, &row.amount, layout.amount, amount_style(row));
+        push_aligned(
+            &mut spans,
+            &row.amount,
+            layout.amount,
+            amount_style(row),
+            Align::Right,
+        );
     } else {
-        push_field(&mut spans, reading(row), layout.reading, amount_style(row));
+        push_aligned(
+            &mut spans,
+            reading(row),
+            layout.reading,
+            amount_style(row),
+            Align::Right,
+        );
     }
     push_field(&mut spans, row.suffix, layout.suffix, dim);
-    if matches!(tier, Tier::Full | Tier::NoBar | Tier::NoVerb) {
-        push_field(
+    if tier != Tier::NoReset {
+        push_aligned(
             &mut spans,
             row.resets.as_deref().unwrap_or(""),
             layout.resets,
             dim,
+            Align::Right,
         );
     }
-    if tier == Tier::Full && layout.bar > 0 {
-        let bar = row.ratio.map(progress_bar).unwrap_or_default();
-        push_field(&mut spans, &bar, layout.bar, amount_style(row));
+    match tier {
+        Tier::Full => push_field(
+            &mut spans,
+            &row.ratio.map(progress_bar).unwrap_or_default(),
+            layout.bar,
+            amount_style(row),
+        ),
+        Tier::MiniBar | Tier::NoVerb => push_field(
+            &mut spans,
+            &row.ratio.map(mini_bar).unwrap_or_default(),
+            layout.mini,
+            amount_style(row),
+        ),
+        _ => {}
     }
     Line::from(spans)
+}
+
+/// The full bar's reading in four cells, filled from the right exactly as
+/// [`progress_bar`] fills its ten.
+fn mini_bar(remaining_ratio: f64) -> String {
+    let filled = (remaining_ratio.clamp(0.0, 1.0) * MINI_BAR_WIDTH as f64).round() as usize;
+    let filled = filled.min(MINI_BAR_WIDTH);
+    format!(
+        "{}{}",
+        "-".repeat(MINI_BAR_WIDTH - filled),
+        "#".repeat(filled)
+    )
 }
 
 /// What a row reads as when there is no room for the verb and the amount
@@ -495,6 +579,23 @@ fn amount_style(row: &CardRow) -> Style {
 /// Appends one padded field and the gap that precedes it, skipping the field
 /// when the whole column is empty for this card.
 fn push_field(spans: &mut Vec<Span<'static>>, text: &str, width: usize, style: Style) {
+    push_aligned(spans, text, width, style, Align::Left);
+}
+
+/// Which edge of its column a field sits against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Align {
+    Left,
+    Right,
+}
+
+fn push_aligned(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    width: usize,
+    style: Style,
+    align: Align,
+) {
     if width == 0 {
         return;
     }
@@ -503,8 +604,11 @@ fn push_field(spans: &mut Vec<Span<'static>>, text: &str, width: usize, style: S
     }
     let text = clip(text, width);
     let padding = width.saturating_sub(UnicodeWidthStr::width(text.as_str()));
+    if padding > 0 && align == Align::Right {
+        spans.push(Span::raw(" ".repeat(padding)));
+    }
     spans.push(Span::styled(text, style));
-    if padding > 0 {
+    if padding > 0 && align == Align::Left {
         spans.push(Span::raw(" ".repeat(padding)));
     }
 }
@@ -565,7 +669,7 @@ fn max_width<'a>(values: impl Iterator<Item = &'a str>) -> usize {
 
 #[derive(Debug)]
 struct Card {
-    title: String,
+    title: CardTitle,
     rows: Vec<CardRow>,
     notices: Vec<String>,
 }
@@ -577,6 +681,15 @@ impl Card {
             .try_into()
             .unwrap_or(u16::MAX)
     }
+}
+
+/// The three names that identify a subscription, kept apart so each can be
+/// styled on its own.
+#[derive(Debug)]
+struct CardTitle {
+    provider: String,
+    plan: Option<String>,
+    account: String,
 }
 
 #[derive(Debug)]
@@ -621,15 +734,16 @@ fn card(snapshot: &SnapshotPayload, now: DateTime<Utc>) -> Card {
     }
 }
 
-fn card_title(usage: &SubscriptionUsage, account_id: &str) -> String {
-    let mut title = sanitize_cell(usage.provider.as_str()).to_owned();
-    if let Some(plan) = usage.plan.as_deref().filter(|plan| !plan.trim().is_empty()) {
-        title.push('/');
-        title.push_str(sanitize_cell(plan));
+fn card_title(usage: &SubscriptionUsage, account_id: &str) -> CardTitle {
+    CardTitle {
+        provider: sanitize_cell(usage.provider.as_str()).to_owned(),
+        plan: usage
+            .plan
+            .as_deref()
+            .filter(|plan| !plan.trim().is_empty())
+            .map(|plan| sanitize_cell(plan).to_owned()),
+        account: sanitize_cell(account_id).to_owned(),
     }
-    title.push_str("  ");
-    title.push_str(sanitize_cell(account_id));
-    title
 }
 
 /// Reuses the table's cells, so the view names windows, metrics, and readings
@@ -652,11 +766,22 @@ fn rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<CardRow> {
                 verb,
                 amount,
                 suffix,
-                resets: resets_in.map(countdown_text),
+                resets: resets_in.map(reset_text),
                 ratio: remaining_ratio,
             }
         })
         .collect()
+}
+
+/// How long until the window resets. A day or more reads as the table's star
+/// field, which shows the scale at a glance; under a day the exact wait is
+/// worth more than the scale, so it is spelled out.
+fn reset_text(seconds: i64) -> String {
+    if seconds >= SECONDS_PER_DAY {
+        reset_bar(seconds)
+    } else {
+        countdown_text(seconds)
+    }
 }
 
 fn usage_data(outcome: &QueryOutcome<SubscriptionUsage>) -> &SubscriptionUsage {

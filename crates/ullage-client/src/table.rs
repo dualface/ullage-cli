@@ -29,7 +29,7 @@ pub(crate) const BAR_RENDER_WIDTH: usize = BAR_WIDTH + 2;
 /// Width of the reset countdown field, in characters.
 const RESET_BAR_WIDTH: usize = 7;
 const SECONDS_PER_HOUR: i64 = 60 * 60;
-const SECONDS_PER_DAY: i64 = 24 * SECONDS_PER_HOUR;
+pub(crate) const SECONDS_PER_DAY: i64 = 24 * SECONDS_PER_HOUR;
 /// Remaining quota at or below which the bar turns red, then yellow.
 const CRITICAL_REMAINING: f64 = 0.10;
 const LOW_REMAINING: f64 = 0.25;
@@ -609,7 +609,7 @@ pub fn relative_past(moment: DateTime<Utc>, now: DateTime<Utc>) -> String {
 /// field still reads as a countdown; under a day the exact hour count sits
 /// between dashes (`-  3h -`). A past reset reads as zero hours. The width
 /// never changes, so the reset column stays aligned.
-fn reset_bar(seconds: i64) -> String {
+pub(crate) fn reset_bar(seconds: i64) -> String {
     let seconds = seconds.max(0);
     let days = seconds / SECONDS_PER_DAY;
     if days > RESET_BAR_WIDTH as i64 {

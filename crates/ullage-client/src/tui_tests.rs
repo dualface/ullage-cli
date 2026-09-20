@@ -43,9 +43,17 @@ fn row(identity: &str, verb: &'static str, amount: &str, resets: Option<&str>) -
     }
 }
 
+fn title() -> CardTitle {
+    CardTitle {
+        provider: "claude".into(),
+        plan: Some("max_20x".into()),
+        account: "acct-1".into(),
+    }
+}
+
 fn card_with_rows(rows: Vec<CardRow>) -> Card {
     Card {
-        title: "claude/max_20x  acct-1".into(),
+        title: title(),
         rows,
         notices: Vec::new(),
     }
@@ -120,8 +128,13 @@ fn disabled_rows_keep_the_off_suffix() {
 
 #[test]
 fn countdowns_cover_days_hours_minutes_and_expiry() {
+    // A day or more reads as the table's star field, so the view and `show`
+    // draw the same scale; under a day the exact wait is spelled out.
     let cases = [
-        (2 * 86_400 + 4 * 3_600, "2d04h"),
+        (23 * 86_400, "* 23d *"),
+        (2 * 86_400, "-----**"),
+        (86_400, "------*"),
+        (86_400 - 1, "23h59m"),
         (3 * 3_600 + 300, "3h05m"),
         (12 * 60, "12m"),
         (30, "<1m"),
@@ -136,7 +149,7 @@ fn countdowns_cover_days_hours_minutes_and_expiry() {
 #[test]
 fn a_card_costs_one_line_beyond_its_rows_and_notices() {
     let card = Card {
-        title: "claude/max_20x  acct-1".into(),
+        title: title(),
         rows: vec![row("5h", "remains", "91%", Some("3h05m"))],
         notices: vec!["! stale snapshot".into()],
     };
@@ -167,8 +180,9 @@ fn narrowing_drops_the_bar_then_the_verb_then_the_countdown() {
 
     let tiers = [
         (42, Tier::Full, "5h remains 91% 3h05m [-#########]"),
-        (24, Tier::NoBar, "5h remains 91% 3h05m"),
-        (16, Tier::NoVerb, "5h 91% 3h05m"),
+        (29, Tier::MiniBar, "5h remains 91% 3h05m ####"),
+        (21, Tier::NoVerb, "5h 91% 3h05m ####"),
+        (16, Tier::NoBar, "5h 91% 3h05m"),
         (9, Tier::NoReset, "5h 91%"),
         (5, Tier::Minimal, "5 91%"),
     ];
@@ -198,6 +212,92 @@ fn the_narrowest_row_keeps_a_wordy_reading_when_there_is_no_amount() {
     let text = line_text(&row_line(&used_up, &layout, Tier::Minimal, 12));
 
     assert_eq!(text, "week used up");
+}
+
+#[test]
+fn the_title_names_the_provider_first_and_keeps_the_rest_quiet() {
+    let line = title_line(&title(), 42);
+
+    assert_eq!(line_text(&line), "claude  max_20x  acct-1");
+    assert!(
+        line.spans[0].style.add_modifier.contains(Modifier::BOLD),
+        "{:?}",
+        line.spans[0].style
+    );
+    assert!(
+        !line
+            .spans
+            .iter()
+            .any(|span| span.style.add_modifier.contains(Modifier::REVERSED)),
+        "the title is no longer a reversed bar"
+    );
+    // The quiet names are dim, and nothing is padded to the card width.
+    let last = line.spans.last().unwrap();
+    assert!(last.style.add_modifier.contains(Modifier::DIM), "{last:?}");
+}
+
+#[test]
+fn readings_and_countdowns_end_on_the_same_column() {
+    let card = card_with_rows(vec![
+        row("5h", "remains", "91%", Some("3h05m")),
+        row("weekly", "remains", "7%", Some("-*****")),
+    ]);
+
+    let lines = card_lines(&card, 42);
+    let first = line_text(&lines[1]);
+    let second = line_text(&lines[2]);
+
+    // Right-aligned columns: the percentages and the countdowns line up even
+    // though `91%` is one cell wider than `7%`.
+    assert_eq!(
+        first.find("91%").unwrap() + 3,
+        second.find("7%").unwrap() + 2
+    );
+    assert_eq!(
+        first.find("3h05m").unwrap() + 5,
+        second.find("-*****").unwrap() + 6
+    );
+}
+
+#[test]
+fn the_mini_bar_fills_from_the_right_like_the_full_bar() {
+    assert_eq!(mini_bar(0.0), "----");
+    assert_eq!(mini_bar(0.25), "---#");
+    assert_eq!(mini_bar(0.5), "--##");
+    assert_eq!(mini_bar(1.0), "####");
+    assert_eq!(mini_bar(2.0), "####", "a ratio above one is clamped");
+}
+
+#[test]
+fn the_full_bar_is_the_one_the_table_draws() {
+    let card = card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]);
+
+    let text = line_text(&card_lines(&card, 42)[1]);
+
+    assert!(text.ends_with(&progress_bar(0.91)), "{text}");
+}
+
+#[test]
+fn every_rendered_cell_is_ascii() {
+    let card = Card {
+        title: title(),
+        rows: vec![
+            row("5h", "remains", "91%", Some("3h05m")),
+            row("weekly", "used up", "", Some("* 23d *")),
+        ],
+        notices: vec!["! stale snapshot".into()],
+    };
+
+    // East Asian ambiguous glyphs (block elements, box drawing, the middle
+    // dot) are one cell wide to `unicode-width` and two in a CJK terminal, so
+    // the view stays inside ASCII.
+    for width in [90u16, 42, 28, 20, 12, 1] {
+        let content = rendered(width, 12, std::slice::from_ref(&card));
+        assert!(
+            content.is_ascii(),
+            "width {width} rendered a non-ASCII cell: {content}"
+        );
+    }
 }
 
 #[test]
@@ -329,15 +429,15 @@ fn cards_flow_left_to_right_then_wrap() {
     assert_eq!(rects[1], Rect::new(44, 0, 42, 4));
     assert_eq!(
         rects[2],
-        Rect::new(0, 5, 42, 6),
-        "no blank row between rows"
+        Rect::new(0, 6, 42, 6),
+        "one blank row between bands"
     );
 }
 
 #[test]
 fn one_cell_short_of_two_cards_wraps_to_one_column() {
     let rects = card_rects(85, &[3, 3]);
-    assert_eq!(rects, [Rect::new(0, 0, 85, 3), Rect::new(0, 3, 85, 3)]);
+    assert_eq!(rects, [Rect::new(0, 0, 85, 3), Rect::new(0, 4, 85, 3)]);
 }
 
 #[test]
@@ -347,7 +447,7 @@ fn narrow_screen_compresses_card_to_available_width() {
 
 #[test]
 fn content_height_is_the_lowest_card_bottom() {
-    assert_eq!(content_height(&card_rects(86, &[5, 4, 6])), 11);
+    assert_eq!(content_height(&card_rects(86, &[5, 4, 6])), 12);
     assert_eq!(content_height(&[]), 0);
 }
 
