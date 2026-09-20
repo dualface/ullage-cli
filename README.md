@@ -450,8 +450,9 @@ The countdown has three forms: under a day the exact wait is spelled out
 dots (`◦◦◦◦◦••`); beyond a week the day count sits centered between two
 diamonds (`◆ 23d ◆`), still seven cells wide.
 
-Boxes flow from left to right and wrap onto new rows. `v` switches to one box
-per row and back, and the choice is remembered for the next run; `--vertical`
+Boxes are ordered by provider, then by account, ignoring case. They flow from
+left to right and wrap onto new rows. `v` switches to one box per row and
+back, and the choice is remembered for the next run; `--vertical`
 forces one box per row for a single run without changing what is saved. The
 setting lives in `tui.json` beside the state file, and losing that file only
 costs the remembered layout.

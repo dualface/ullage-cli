@@ -509,10 +509,27 @@ pub(crate) struct CardRow {
 }
 
 pub(crate) fn cards(snapshots: &[SnapshotPayload], now: DateTime<Utc>) -> Vec<Card> {
-    snapshots
+    let mut cards = snapshots
         .iter()
         .map(|snapshot| card(snapshot, now))
-        .collect()
+        .collect::<Vec<_>>();
+    // The daemon hands the snapshots over in its own order, which changes as
+    // accounts are added; the view reads better when a subscription sits
+    // where it sat last time.
+    cards.sort_by_key(|card| sort_key(&card.title));
+    cards
+}
+
+/// Provider first, then account, neither case deciding the order. The
+/// original spelling breaks a tie so two accounts differing only in case
+/// keep a stable order.
+fn sort_key(title: &CardTitle) -> (String, String, String, String) {
+    (
+        title.provider.to_lowercase(),
+        title.account.to_lowercase(),
+        title.provider.clone(),
+        title.account.clone(),
+    )
 }
 
 fn card(snapshot: &SnapshotPayload, now: DateTime<Utc>) -> Card {

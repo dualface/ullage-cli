@@ -5,6 +5,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::backend::TestBackend;
 use ullage_core::summary::{SummaryRow, SummaryValue, UsageSummary};
+use ullage_protocol::{ProviderId, SubscriptionUsage};
 
 use super::cards::*;
 use super::*;
@@ -196,6 +197,56 @@ fn rows_with_nothing_in_common_are_left_alone() {
         .map(|row| row.identity.as_str())
         .collect::<Vec<_>>();
     assert_eq!(identities, ["5h", "weekly"]);
+}
+
+fn snapshot(provider: &str, account_id: &str) -> SnapshotPayload {
+    SnapshotPayload {
+        account_id: account_id.into(),
+        usage: QueryOutcome::Complete {
+            data: SubscriptionUsage {
+                provider: ProviderId::new(provider),
+                account_label: None,
+                plan: None,
+                subscription_expires_at: None,
+                observed_at: now(),
+                windows: Vec::new(),
+            },
+        },
+        last_success_at: now(),
+        stale: false,
+        last_error: None,
+        last_error_at: None,
+        metrics: Vec::new(),
+    }
+}
+
+#[test]
+fn cards_are_ordered_by_provider_then_account() {
+    let cards = load_cards(
+        &[
+            snapshot("cursor", "work"),
+            snapshot("claude", "personal"),
+            snapshot("Claude", "Backup"),
+            snapshot("claude", "alpha"),
+        ],
+        now(),
+    );
+
+    // Case decides nothing: `Backup` sorts before `alpha`, and `Claude`
+    // stays with `claude`.
+    let order = cards
+        .iter()
+        .map(|card| (card.title.provider.as_str(), card.title.account.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        [
+            ("claude", "alpha"),
+            ("Claude", "Backup"),
+            ("claude", "personal"),
+            ("cursor", "work")
+        ]
+    );
 }
 
 #[test]
