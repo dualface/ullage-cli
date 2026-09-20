@@ -68,12 +68,12 @@ ullage auth login
 ```console
 $ ullage show --all
 ==== claude - max_20x ====
-5h             remains 91%      resets in 3h37m   [-#########]
-weekly         used up          resets in 41h07m  [----------]
-fable          remains 25%      resets in 41h07m  [-------###]
+5h             remains 91%      -  3h -  [-#########]
+weekly         used up          ------*  [----------]
+fable          remains 25%      ------*  [-------###]
 
 ==== chatgpt - pro ====
-weekly-Codex   used up          resets in 3d05h   [----------]
+weekly-Codex   used up          ----***  [----------]
 Reset          credits 0
 Balance        credits 0
 ```
@@ -332,7 +332,7 @@ ullage show --all --no-metric-filter
 
 当过滤器导致没有可显示的行，但该账户仍有可摘要的度量时，账户标题会保留，一行 `! no rows match the metric filter: <names>` 会列出过滤器中的名字，过期、上限和部分失败提示仍会打印；不会回退到原始表。没有可摘要测量的账户仍和以前一样回退到原始输出。
 
-表格输出默认是可读摘要：每个可用测量一行，包含窗口、度量、剩余配额、窗口重置时间，以及作为最后一列的十格进度条。用尽的行显示 `used up` 而不是 `remains 0%`，后者看起来像空测量；不足百分之零点五的行显示 `remains <1%`，而不是向下取整成同一个零。重置时间在两天内用小时和分钟（`resets in 33h30m`），因为 `in 1d` 看不出等待是 25 小时还是 47 小时；超过两天后改用天。
+表格输出默认是可读摘要：每个可用测量一行，包含窗口、度量、剩余配额、窗口重置时间，以及作为最后一列的十格进度条。用尽的行显示 `used up` 而不是 `remains 0%`，后者看起来像空测量；不足百分之零点五的行显示 `remains <1%`，而不是向下取整成同一个零。重置列固定为 7 个字符：不足一天用短横夹住整天小时数（`-  3h -`），一周以内用短横补位、每天一个星号（`-******`），超过一周把天数居中放在星号之间（`* 23d *`），列宽不变，等待时间一眼可读。
 
 两类提供方簿记永远不会变成摘要行。状态布尔值 `allowed`、`limit_reached`、`has_credits`、`unlimited`、`on_demand_enabled` 和 `enabled` 作为行被隐藏，但作为状态不会丢：已达上限变成 `! limit reached` 行，不计量的额度变成 `credits unlimited` 行，关闭的功能在它所作用的数量上标 `(off)`，若提供方没有报告该数量则给出单独的 `disabled` 行。Cursor 的 `included_spend` 和 `bonus_spend` 无条件排除在映射之外，即使没有 `total_spend` 也一样——它们不是状态，只是 `total_spend` 已经报告的金额的第二套拆分。
 
@@ -340,9 +340,9 @@ ullage show --all --no-metric-filter
 
 ```text
 ==== claude - pro ====
-5h           usage  remains 97%  resets in 3h56m  [##########]
-weekly       usage  remains 89%  resets in 5d15h  [-#########]
-Weekly Opus  usage  remains 89%  resets in 5d15h  [-#########]
+5h           usage  remains 97%  -  3h -  [##########]
+weekly       usage  remains 89%  --*****  [-#########]
+Weekly Opus  usage  remains 89%  --*****  [-#########]
 ```
 
 全局输出标志：`--output table|json|pretty-json`、`--color auto|always|never`、`--raw` 和 `--reveal`。`--color` 默认为 `auto`：当 stdout 是终端且 `NO_COLOR` 未设置或为空时给表格上色。JSON 和 pretty-json 输出从不上色。`--raw` 用未翻译的提供方表（`WINDOW`、`MEASUREMENT`、`USED`、`LIMIT`、`UNIT`、`RESETS_AT`）替换摘要；它只影响表格输出，对 `--output json` 和 `--output pretty-json` 是空操作。不给 `--reveal` 时，账户标签、授权 URI、流程 ID 以及类似个人值会替换成 `[redacted]`。`--raw` 不改变哪些内容被脱敏。即使给了 `--reveal`，错误细节仍保持脱敏。

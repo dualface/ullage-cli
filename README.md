@@ -88,12 +88,12 @@ After login, `ullage show --all` looks like this:
 ```console
 $ ullage show --all
 ==== claude - max_20x ====
-5h             remains 91%      resets in 3h37m   [-#########]
-weekly         used up          resets in 41h07m  [----------]
-fable          remains 25%      resets in 41h07m  [-------###]
+5h             remains 91%      -  3h -  [-#########]
+weekly         used up          ------*  [----------]
+fable          remains 25%      ------*  [-------###]
 
 ==== chatgpt - pro ====
-weekly-Codex   used up          resets in 3d05h   [----------]
+weekly-Codex   used up          ----***  [----------]
 Reset          credits 0
 Balance        credits 0
 ```
@@ -443,9 +443,11 @@ with the window, the metric, how much quota is left, when the window resets,
 and a ten-cell progress bar as the last column. A row with nothing left reads
 `used up` rather than `remains 0%`, which looks like a measurement that came
 back empty, and a row under half a percent reads `remains <1%` rather than
-rounding down to that same zero. Resets stay in hours and minutes for up to two
-days (`resets in 33h30m`), since `in 1d` hides whether the wait is 25 hours or
-47; past that they are given in days.
+rounding down to that same zero. The reset column always occupies seven
+characters: under a day it shows whole hours between dashes (`-  3h -`), up to
+a week it counts the remaining days as stars after dash padding (`-******`),
+and beyond a week it puts the day count between stars (`* 23d *`), so the
+column never shifts and the wait is readable at a glance.
 
 Two kinds of provider bookkeeping never become summary rows. The status booleans
 `allowed`, `limit_reached`, `has_credits`, `unlimited`, `on_demand_enabled`, and
@@ -464,9 +466,9 @@ and partial notices.
 
 ```text
 ==== claude - pro ====
-5h           usage  remains 97%  resets in 3h56m  [##########]
-weekly       usage  remains 89%  resets in 5d15h  [-#########]
-Weekly Opus  usage  remains 89%  resets in 5d15h  [-#########]
+5h           usage  remains 97%  -  3h -  [##########]
+weekly       usage  remains 89%  --*****  [-#########]
+Weekly Opus  usage  remains 89%  --*****  [-#########]
 ```
 
 Global output flags: `--output table|json|pretty-json`, `--color auto|always|never`,

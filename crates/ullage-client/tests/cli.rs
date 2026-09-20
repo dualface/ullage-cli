@@ -3199,12 +3199,12 @@ fn show_defaults_to_a_readable_summary_with_a_trailing_progress_bar() {
 
     let five_hours = line_starting_with(stdout, "5h ");
     assert!(five_hours.contains("remains 97%"), "{stdout}");
-    assert!(five_hours.contains("resets in 3h5"), "{stdout}");
+    assert!(five_hours.contains("-  3h -"), "{stdout}");
     assert!(five_hours.ends_with("[##########]"), "{stdout}");
 
     let opus = line_starting_with(stdout, "Weekly Opus");
     assert!(opus.contains("remains 89%"), "{stdout}");
-    assert!(opus.contains("resets in 5d1"), "{stdout}");
+    assert!(opus.contains("--*****"), "{stdout}");
     assert!(opus.ends_with("[-#########]"), "{stdout}");
 
     assert!(!stdout.contains('\u{1b}'), "{stdout}");

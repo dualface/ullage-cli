@@ -26,8 +26,10 @@ const BAR_FILLED: char = '#';
 const BAR_EMPTY: char = '-';
 /// Rendered width of `[` + bar + `]`.
 const BAR_RENDER_WIDTH: usize = BAR_WIDTH + 2;
-/// Where a reset stops being told in hours and starts being told in days.
-const TWO_DAYS_IN_SECONDS: i64 = 2 * 24 * 60 * 60;
+/// Width of the reset countdown field, in characters.
+const RESET_BAR_WIDTH: usize = 7;
+const SECONDS_PER_HOUR: i64 = 60 * 60;
+const SECONDS_PER_DAY: i64 = 24 * SECONDS_PER_HOUR;
 /// Remaining quota at or below which the bar turns red, then yellow.
 const CRITICAL_REMAINING: f64 = 0.10;
 const LOW_REMAINING: f64 = 0.25;
@@ -451,7 +453,7 @@ fn summary_cells(
         suffix: if row.disabled { "(off)" } else { "" },
         resets: row
             .resets_at
-            .map(|resets_at| format!("resets {}", relative_future(resets_at, now)))
+            .map(|resets_at| reset_bar((resets_at - now).num_seconds()))
             .unwrap_or_default(),
         remaining_ratio: row.remaining_ratio,
     }
@@ -585,41 +587,43 @@ fn currency_symbol(code: &str) -> Option<&'static str> {
     }
 }
 
-/// Describes how far `moment` is ahead of `now`, e.g. `in 3h57m`.
-pub fn relative_future(moment: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let seconds = (moment - now).num_seconds();
-    if seconds <= 0 {
-        return "now".into();
-    }
-    format!("in {}", reset_duration_text(seconds))
-}
-
 /// Describes how far `moment` is behind `now`, e.g. `2m ago`.
 pub fn relative_past(moment: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let seconds = (now - moment).num_seconds().max(0);
     format!("{} ago", duration_text(seconds))
 }
 
-/// How long until a window resets. Days only take over past two of them:
-/// `in 1d15h` is readable, but a reset the table rounds to `1d` hides whether
-/// the wait is 25 hours or 47, and that decides whether a limit is worth
-/// waiting out. Under an hour this falls back to the shared shape, since
-/// minutes are all that is left to say.
-fn reset_duration_text(seconds: i64) -> String {
-    if seconds >= TWO_DAYS_IN_SECONDS {
-        return duration_text(seconds);
+/// Draws the wait until a reset as a field of exactly [`RESET_BAR_WIDTH`]
+/// characters.
+///
+/// More than a week away the day count sits between stars (`* 23d *`); up to
+/// a week each remaining day is one star after dash padding (`-******`), so the
+/// field still reads as a countdown; under a day the exact hour count sits
+/// between dashes (`-  3h -`). A past reset reads as zero hours. The width
+/// never changes, so the reset column stays aligned.
+fn reset_bar(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    let days = seconds / SECONDS_PER_DAY;
+    if days > RESET_BAR_WIDTH as i64 {
+        return bordered_field(&format!("{days}d"), '*');
     }
-    // Round to the nearest minute, so 59.7 minutes carries into the hour
-    // rather than printing as `0h60m`.
-    let minutes = (seconds + 30) / 60;
-    let hours = minutes / 60;
-    if hours == 0 {
-        return duration_text(seconds);
+    if days >= 1 {
+        let days = days as usize;
+        return format!("{}{}", "-".repeat(RESET_BAR_WIDTH - days), "*".repeat(days));
     }
-    match minutes % 60 {
-        0 => format!("{hours}h"),
-        rest => format!("{hours}h{rest:02}m"),
-    }
+    bordered_field(&format!("{}h", seconds / SECONDS_PER_HOUR), '-')
+}
+
+/// Pads `text` to [`RESET_BAR_WIDTH`] with a border character on each side,
+/// giving the left side the extra cell when the remainder is odd.
+fn bordered_field(text: &str, border: char) -> String {
+    let pad = RESET_BAR_WIDTH.saturating_sub(text.chars().count() + 2);
+    let left = pad.div_ceil(2);
+    format!(
+        "{border}{}{text}{}{border}",
+        " ".repeat(left),
+        " ".repeat(pad - left)
+    )
 }
 
 fn duration_text(seconds: i64) -> String {
@@ -965,38 +969,34 @@ mod tests {
     }
 
     #[test]
-    fn resets_stay_in_hours_and_minutes_until_two_days() {
+    fn relative_past_keeps_days_and_hours() {
         let now = at(12, 0);
-        let ahead = |minutes: i64| relative_future(now + chrono::Duration::minutes(minutes), now);
-        // Whole hours drop the minutes rather than printing `3h00m`.
-        assert_eq!(ahead(180), "in 3h");
-        assert_eq!(ahead(210), "in 3h30m");
-        // Past a day, still hours: `in 1d` would hide 25 hours against 47.
-        assert_eq!(ahead(25 * 60 + 1), "in 25h01m");
-        assert_eq!(ahead(47 * 60 + 59), "in 47h59m");
-        // Two days and beyond, days again.
-        assert_eq!(ahead(48 * 60), "in 2d00h");
-        assert_eq!(ahead(8130), "in 5d15h");
-        // Under an hour is unchanged.
-        assert_eq!(ahead(12), "in 12m");
-        assert_eq!(
-            relative_future(now + chrono::Duration::seconds(30), now),
-            "in <1m"
-        );
-        // Seconds round into the minute, and a full minute into the hour.
-        assert_eq!(
-            relative_future(now + chrono::Duration::seconds(3_600 + 31), now),
-            "in 1h01m"
-        );
-        assert_eq!(
-            relative_future(now + chrono::Duration::seconds(3_600 + 59 * 60 + 45), now),
-            "in 2h"
-        );
-        // "updated 30h ago" is a different question and keeps the old shape.
+        // "updated 30h ago" is a different question from a reset countdown.
         assert_eq!(
             relative_past(now - chrono::Duration::minutes(30 * 60), now),
             "1d06h ago"
         );
+    }
+
+    #[test]
+    fn reset_bar_stays_seven_characters_wide() {
+        // More than a week: days between stars, extra space on the left.
+        assert_eq!(reset_bar(23 * 86_400), "* 23d *");
+        assert_eq!(reset_bar(9 * 86_400), "*  9d *");
+        assert_eq!(reset_bar(8 * 86_400), "*  8d *");
+        // A full week counts down in stars after dash padding.
+        assert_eq!(reset_bar(7 * 86_400), "*******");
+        assert_eq!(reset_bar(6 * 86_400), "-******");
+        assert_eq!(reset_bar(86_400), "------*");
+        // Under a day: whole hours between dashes.
+        assert_eq!(reset_bar(12 * 3_600), "- 12h -");
+        assert_eq!(reset_bar(3_600), "-  1h -");
+        assert_eq!(reset_bar(59 * 60), "-  0h -");
+        assert_eq!(reset_bar(0), "-  0h -");
+        assert_eq!(reset_bar(-60), "-  0h -");
+        for seconds in [23 * 86_400, 7 * 86_400, 86_400, 12 * 3_600, -60] {
+            assert_eq!(display_width(&reset_bar(seconds)), RESET_BAR_WIDTH);
+        }
     }
 
     #[test]
@@ -1055,10 +1055,10 @@ mod tests {
         assert_eq!(
             block,
             concat!(
-                "5h            remains 97%   resets in 3h57m  [##########]\n",
-                "weekly-5.3    remains 100%  resets in 8h30m  [##########]\n",
-                "weekly-Codex  remains 50%   resets in 8h30m  [-----#####]\n",
-                "GrokBuild     remains 40%                    [------####]\n",
+                "5h            remains 97%   -  3h -  [##########]\n",
+                "weekly-5.3    remains 100%  -  8h -  [##########]\n",
+                "weekly-Codex  remains 50%   -  8h -  [-----#####]\n",
+                "GrokBuild     remains 40%            [------####]\n",
             ),
             "{block}"
         );
@@ -1111,7 +1111,7 @@ mod tests {
         assert_eq!(lines.len(), 3, "{block}");
         let resets: Vec<usize> = lines
             .iter()
-            .filter_map(|line| line.find("resets"))
+            .filter_map(|line| line.find("-  4h -"))
             .collect();
         assert_eq!(resets.len(), 2, "{block}");
         assert_eq!(resets[0], resets[1], "{block}");
@@ -1186,13 +1186,13 @@ mod tests {
             "{claude}{cursor}"
         );
         assert_eq!(
-            five_hours.find("resets"),
-            weekly.find("resets"),
+            five_hours.find("-  0h -"),
+            weekly.find("-  4h -"),
             "{claude}{cursor}"
         );
         assert_eq!(
-            five_hours.find("resets"),
-            spend.find("resets"),
+            five_hours.find("-  0h -"),
+            spend.find("- 11h -"),
             "{claude}{cursor}"
         );
         assert_eq!(five_hours.find('['), weekly.find('['), "{claude}{cursor}");
@@ -1451,29 +1451,8 @@ mod tests {
     }
 
     #[test]
-    fn relative_times_shrink_from_days_to_a_sub_minute_floor() {
+    fn relative_past_shrinks_to_a_sub_minute_floor() {
         let now = at(12, 0);
-        assert_eq!(
-            relative_future(now + chrono::Duration::minutes(8130), now),
-            "in 5d15h"
-        );
-        assert_eq!(
-            relative_future(now + chrono::Duration::minutes(237), now),
-            "in 3h57m"
-        );
-        assert_eq!(
-            relative_future(now + chrono::Duration::minutes(12), now),
-            "in 12m"
-        );
-        assert_eq!(
-            relative_future(now + chrono::Duration::seconds(30), now),
-            "in <1m"
-        );
-        assert_eq!(relative_future(now, now), "now");
-        assert_eq!(
-            relative_future(now - chrono::Duration::hours(1), now),
-            "now"
-        );
         assert_eq!(
             relative_past(now - chrono::Duration::minutes(2), now),
             "2m ago"
