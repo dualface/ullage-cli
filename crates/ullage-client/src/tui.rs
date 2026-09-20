@@ -32,7 +32,10 @@ use ullage_core::QueryOutcome;
 use ullage_protocol::{CONTROL_PROTOCOL_VERSION, ControlRequest, ControlResult, SnapshotPayload};
 use unicode_width::UnicodeWidthStr;
 
-use self::cards::{Card, card_lines, card_rects, cards as load_cards, clip, content_height};
+use self::cards::{
+    Card, RowLayout, card_lines, card_rects, cards as load_cards, clip, content_height,
+    preferred_card_width,
+};
 use self::preferences::{Layout, Preferences};
 use crate::errors::{error_output, result_exit_code, sanitize_partial_failure_controls};
 use crate::render::{MetricFilterChoice, RenderView, render_result};
@@ -314,12 +317,21 @@ fn render(
             Some(Rect::new(area.x, area.bottom() - 1, area.width, 1)),
         ),
     };
+    // One set of column widths for the whole screen, so a reading under a
+    // short window name still lines up with the one under a long name. The
+    // cards are then sized to hold those columns.
+    let columns = RowLayout::measure_all(cards);
     let heights = cards.iter().map(Card::height).collect::<Vec<_>>();
-    let rects = card_rects(area.width, &heights, layout.is_vertical());
+    let rects = card_rects(
+        area.width,
+        &heights,
+        layout.is_vertical(),
+        preferred_card_width(&columns),
+    );
     let content = content_height(&rects);
     scroll.apply(viewport.height, content);
     for (card, rect) in cards.iter().zip(rects) {
-        render_card(frame, card, rect, viewport, scroll.offset);
+        render_card(frame, card, rect, viewport, scroll.offset, &columns);
     }
     if let Some(status) = status {
         frame.render_widget(
@@ -343,11 +355,15 @@ fn render_card(
     rect: Rect,
     viewport: Rect,
     offset: u16,
+    columns: &RowLayout,
 ) {
     if rect.width == 0 {
         return;
     }
-    for (index, line) in card_lines(card, rect.width).into_iter().enumerate() {
+    for (index, line) in card_lines(card, rect.width, columns)
+        .into_iter()
+        .enumerate()
+    {
         let row = i64::from(rect.y) + index as i64 - i64::from(offset);
         if row < 0 || row >= i64::from(viewport.height) {
             continue;

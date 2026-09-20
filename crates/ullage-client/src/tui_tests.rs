@@ -377,14 +377,26 @@ fn a_card_costs_two_border_lines_beyond_its_rows_and_notices() {
     };
 
     assert_eq!(card.height(), 4);
-    assert_eq!(card_lines(&card, 42).len(), 4);
+    assert_eq!(
+        card_lines(
+            &card,
+            42,
+            &RowLayout::measure_all(std::slice::from_ref(&card))
+        )
+        .len(),
+        4
+    );
 }
 
 #[test]
 fn a_card_is_a_rounded_box_with_its_title_in_the_top_border() {
     let card = card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]);
 
-    let lines = card_lines(&card, 42);
+    let lines = card_lines(
+        &card,
+        42,
+        &RowLayout::measure_all(std::slice::from_ref(&card)),
+    );
     let top = line_text(&lines[0]);
     let bottom = line_text(lines.last().unwrap());
 
@@ -411,7 +423,11 @@ fn a_card_is_a_rounded_box_with_its_title_in_the_top_border() {
 fn a_full_row_uses_every_column_inside_the_frame() {
     let card = card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]);
 
-    let line = &card_lines(&card, 42)[1];
+    let line = &card_lines(
+        &card,
+        42,
+        &RowLayout::measure_all(std::slice::from_ref(&card)),
+    )[1];
     let text = line_text(line);
 
     // The row spans the card between the verticals, and the ten-cell block
@@ -441,7 +457,7 @@ fn a_42_column_card_still_shows_the_full_ten_cell_bar() {
 #[test]
 fn narrowing_shrinks_the_bar_then_drops_the_verb_the_bar_and_the_countdown() {
     let card = card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]);
-    let layout = RowLayout::measure(&card.rows);
+    let layout = RowLayout::measure_all(std::slice::from_ref(&card));
 
     let tiers = [
         (42, Tier::Full, "5h remains 91% 3h05m ┄━━━━━━━━━"),
@@ -472,7 +488,14 @@ fn the_narrowest_row_keeps_a_wordy_reading_when_there_is_no_amount() {
         resets: Some("6d21h".into()),
         ratio: Some(0.0),
     };
-    let layout = RowLayout::measure(std::slice::from_ref(&used_up));
+    let layout = RowLayout::measure_all(std::slice::from_ref(&card_with_rows(vec![CardRow {
+        identity: used_up.identity.clone(),
+        verb: used_up.verb,
+        amount: used_up.amount.clone(),
+        suffix: used_up.suffix,
+        resets: used_up.resets.clone(),
+        ratio: used_up.ratio,
+    }])));
 
     let text = line_text(&row_line(&used_up, &layout, Tier::Minimal, 12));
 
@@ -502,7 +525,11 @@ fn readings_and_countdowns_end_on_the_same_column() {
         row("weekly", "remains", "7%", Some("◦••••••")),
     ]);
 
-    let lines = card_lines(&card, 42);
+    let lines = card_lines(
+        &card,
+        42,
+        &RowLayout::measure_all(std::slice::from_ref(&card)),
+    );
     let first = line_text(&lines[1]);
     let second = line_text(&lines[2]);
 
@@ -550,7 +577,14 @@ fn every_card_line_is_exactly_the_card_width() {
     // a line that is shorter or wider than the card means a border slipped
     // out of alignment.
     for width in [90u16, 42, 28, 20, 12, 6, 5, 3, 2, 1] {
-        for (index, line) in card_lines(&card, width).iter().enumerate() {
+        for (index, line) in card_lines(
+            &card,
+            width,
+            &RowLayout::measure_all(std::slice::from_ref(&card)),
+        )
+        .iter()
+        .enumerate()
+        {
             let text = line_text(line);
             assert_eq!(
                 UnicodeWidthStr::width(text.as_str()),
@@ -722,12 +756,82 @@ fn v_toggles_the_layout_and_the_toggle_leaves_the_offset_alone() {
 }
 
 #[test]
+fn every_card_shares_one_set_of_columns() {
+    // A long window name on one card and a wide amount on another both
+    // widen the columns of every card, so the readings line up down the
+    // screen instead of per box.
+    let cards = vec![
+        card_with_rows(vec![row("weekly-Codex", "remains", "62%", Some("1h53m"))]),
+        card_with_rows(vec![row("5h", "remains", "$1001.39", Some("1h53m"))]),
+        card_with_rows(vec![row("api", "credits", "0", Some("1h53m"))]),
+    ];
+    let columns = RowLayout::measure_all(&cards);
+
+    let readings = cards
+        .iter()
+        .map(|card| {
+            let text = line_text(&card_lines(card, 60, &columns)[1]);
+            text.find("remains").or_else(|| text.find("credits"))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(readings[0], readings[1]);
+    assert_eq!(readings[1], readings[2]);
+    assert!(readings[0].is_some(), "{readings:?}");
+}
+
+#[test]
+fn a_card_is_as_wide_as_the_shared_columns_need() {
+    let narrow = RowLayout::measure_all(&[card_with_rows(vec![row(
+        "5h",
+        "remains",
+        "62%",
+        Some("1h53m"),
+    )])]);
+    // Short names alone never shrink a card below the width it always had.
+    assert_eq!(preferred_card_width(&narrow), 42);
+
+    let wide = RowLayout::measure_all(&[card_with_rows(vec![row(
+        "weekly-on demand-Codex",
+        "remains",
+        "$1001.39",
+        Some("1h53m"),
+    )])]);
+    assert!(
+        preferred_card_width(&wide) > 42,
+        "{}",
+        preferred_card_width(&wide)
+    );
+
+    let absurd = RowLayout::measure_all(&[card_with_rows(vec![row(
+        &"x".repeat(200),
+        "remains",
+        "62%",
+        Some("1h53m"),
+    )])]);
+    assert_eq!(preferred_card_width(&absurd), 72, "a card stops widening");
+}
+
+#[test]
+fn wider_cards_fit_fewer_to_a_row() {
+    // 86 cells hold two 42-cell cards, but only one 52-cell card.
+    assert_eq!(card_rects(86, &[3, 3], false, 42).len(), 2);
+    assert_eq!(card_rects(86, &[3, 3], false, 42)[1].y, 0);
+    assert_eq!(card_rects(86, &[3, 3], false, 52)[1].y, 4);
+    assert_eq!(
+        card_rects(86, &[3], false, 52)[0],
+        Rect::new(17, 0, 52, 3),
+        "the lone card keeps its width and centers"
+    );
+}
+
+#[test]
 fn the_vertical_layout_puts_one_card_on_each_band() {
     // The same three cards that fill two columns at this width.
     // The cards keep their own width: a card stretched across a wide
     // terminal would strand each row's reading at the far edge.
     assert_eq!(
-        card_rects(86, &[5, 4, 6], true),
+        card_rects(86, &[5, 4, 6], true, 42),
         [
             Rect::new(22, 0, 42, 5),
             Rect::new(22, 6, 42, 4),
@@ -735,7 +839,7 @@ fn the_vertical_layout_puts_one_card_on_each_band() {
         ]
     );
     // A terminal narrower than a card still gives the card everything.
-    assert_eq!(card_rects(30, &[4], true), [Rect::new(0, 0, 30, 4)]);
+    assert_eq!(card_rects(30, &[4], true, 42), [Rect::new(0, 0, 30, 4)]);
 }
 
 #[test]
@@ -766,7 +870,7 @@ fn tiny_screen_render_does_not_panic() {
 
 #[test]
 fn cards_flow_left_to_right_then_wrap() {
-    let rects = card_rects(86, &[5, 4, 6], false);
+    let rects = card_rects(86, &[5, 4, 6], false, 42);
     assert_eq!(rects[0], Rect::new(0, 0, 42, 5));
     assert_eq!(rects[1], Rect::new(44, 0, 42, 4));
     assert_eq!(
@@ -780,18 +884,18 @@ fn cards_flow_left_to_right_then_wrap() {
 fn one_cell_short_of_two_cards_wraps_to_one_column() {
     // One card per band keeps the card's width and sits centered, rather
     // than stretching across a terminal that is nearly wide enough for two.
-    let rects = card_rects(85, &[3, 3], false);
+    let rects = card_rects(85, &[3, 3], false, 42);
     assert_eq!(rects, [Rect::new(21, 0, 42, 3), Rect::new(21, 4, 42, 3)]);
 }
 
 #[test]
 fn narrow_screen_compresses_card_to_available_width() {
-    assert_eq!(card_rects(12, &[4], false), [Rect::new(0, 0, 12, 4)]);
+    assert_eq!(card_rects(12, &[4], false, 42), [Rect::new(0, 0, 12, 4)]);
 }
 
 #[test]
 fn content_height_is_the_lowest_card_bottom() {
-    assert_eq!(content_height(&card_rects(86, &[5, 4, 6], false)), 12);
+    assert_eq!(content_height(&card_rects(86, &[5, 4, 6], false, 42)), 12);
     assert_eq!(content_height(&[]), 0);
 }
 

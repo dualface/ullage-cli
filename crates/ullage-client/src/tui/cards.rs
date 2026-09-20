@@ -23,6 +23,9 @@ use crate::table::{
 };
 
 const PREFERRED_CARD_WIDTH: u16 = 42;
+/// However long the names grow, a card stops widening here: past this the
+/// eye has to travel too far from a window's name to its reading.
+const MAX_CARD_WIDTH: u16 = 72;
 const HORIZONTAL_GAP: u16 = 2;
 /// A blank row separates one band of cards from the next.
 const VERTICAL_GAP: u16 = 1;
@@ -42,15 +45,28 @@ const RESET_FIELD_WIDTH: usize = 7;
 const DAY_LEFT: char = '•';
 const DAY_EMPTY: char = '◦';
 
+/// How wide a card wants to be: enough for every column the screen shares,
+/// and never narrower than the width a card had before those columns had to
+/// agree. A terminal narrower than this gives what it has, and the rows give
+/// up their widest fields in turn.
+pub(crate) fn preferred_card_width(columns: &RowLayout) -> u16 {
+    let content = u16::try_from(columns.width_of(Tier::Full)).unwrap_or(u16::MAX);
+    // Two verticals and a cell of margin inside each of them.
+    content
+        .saturating_add(4)
+        .clamp(PREFERRED_CARD_WIDTH, MAX_CARD_WIDTH)
+}
+
 /// Renders a card as a rounded box: the title sits in the top border, the
 /// rows and the notices are framed by dim verticals, and a bottom border
 /// closes the box.
-pub(crate) fn card_lines(card: &Card, width: u16) -> Vec<Line<'static>> {
+pub(crate) fn card_lines(card: &Card, width: u16, measured: &RowLayout) -> Vec<Line<'static>> {
     // One cell of margin inside each vertical, when the card is wide enough
     // to afford it.
     let margin = usize::from(width >= 4);
     let content_width = width.saturating_sub(2 + 2 * margin as u16);
-    let measured = RowLayout::measure(&card.rows);
+    // The columns are measured across every card, so a reading sits under
+    // the reading above it even when the card before it had shorter names.
     let tier = measured.tier_for(content_width);
     let layout = measured.stretched(tier, content_width);
     let mut lines = vec![title_border(&card.title, width)];
@@ -215,12 +231,22 @@ pub(crate) enum Tier {
 }
 
 impl RowLayout {
-    pub(crate) fn measure(rows: &[CardRow]) -> Self {
+    /// The columns every card shares: each one as wide as the widest cell in
+    /// that column anywhere on screen.
+    pub(crate) fn measure_all(cards: &[Card]) -> Self {
+        let rows = cards
+            .iter()
+            .flat_map(|card| card.rows.iter())
+            .collect::<Vec<_>>();
+        Self::measure(&rows)
+    }
+
+    fn measure(rows: &[&CardRow]) -> Self {
         Self {
             identity: max_width(rows.iter().map(|row| row.identity.as_str())),
             verb: max_width(rows.iter().map(|row| row.verb)),
             amount: max_width(rows.iter().map(|row| row.amount.as_str())),
-            reading: max_width(rows.iter().map(reading)),
+            reading: max_width(rows.iter().copied().map(reading)),
             suffix: max_width(rows.iter().map(|row| row.suffix)),
             resets: max_width(rows.iter().filter_map(|row| row.resets.as_deref())),
             bar: if rows.iter().any(|row| row.ratio.is_some()) {
@@ -265,7 +291,7 @@ impl RowLayout {
         Tier::Minimal
     }
 
-    fn width_of(&self, tier: Tier) -> usize {
+    pub(crate) fn width_of(&self, tier: Tier) -> usize {
         let fields: &[usize] = match tier {
             Tier::Full => &[
                 self.identity,
@@ -681,18 +707,23 @@ fn usage_data(outcome: &QueryOutcome<SubscriptionUsage>) -> &SubscriptionUsage {
     }
 }
 
-pub(crate) fn card_rects(width: u16, heights: &[u16], vertical: bool) -> Vec<Rect> {
+pub(crate) fn card_rects(
+    width: u16,
+    heights: &[u16],
+    vertical: bool,
+    preferred_width: u16,
+) -> Vec<Rect> {
     if width == 0 || heights.is_empty() {
         return Vec::new();
     }
     let columns = ((u32::from(width) + u32::from(HORIZONTAL_GAP))
-        / u32::from(PREFERRED_CARD_WIDTH + HORIZONTAL_GAP))
+        / u32::from(preferred_width + HORIZONTAL_GAP))
     .max(1) as u16;
     // A band holding one card keeps the card's own width and centers it:
     // stretched across the terminal, the row's reading would be stranded at
     // the far edge, and pinned left it would sit under a lopsided margin.
     if vertical || columns == 1 {
-        return stacked_rects(width, heights);
+        return stacked_rects(width, heights, preferred_width);
     }
     let gaps = HORIZONTAL_GAP.saturating_mul(columns.saturating_sub(1));
     let available = width.saturating_sub(gaps);
@@ -714,8 +745,8 @@ pub(crate) fn card_rects(width: u16, heights: &[u16], vertical: bool) -> Vec<Rec
 }
 
 /// One card per band, each at the card's own width and centered.
-fn stacked_rects(width: u16, heights: &[u16]) -> Vec<Rect> {
-    let card_width = width.min(PREFERRED_CARD_WIDTH);
+fn stacked_rects(width: u16, heights: &[u16], preferred_width: u16) -> Vec<Rect> {
+    let card_width = width.min(preferred_width);
     let x = (width - card_width) / 2;
     let mut y = 0u16;
     heights

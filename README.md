@@ -450,6 +450,12 @@ The countdown has three forms: under a day the exact wait is spelled out
 dots (`◦◦◦◦◦••`); beyond a week the day count sits centered between two
 diamonds (`◆ 23d ◆`), still seven cells wide.
 
+Every box shares one set of columns, measured across the whole screen, so a
+reading under a short window name lines up with the one under a long name on
+another provider's box. The boxes are as wide as those columns need, up to
+seventy-two cells; a terminal narrower than that gives what it has, and the
+rows give up their widest fields in turn.
+
 Boxes are ordered by provider, then by account, ignoring case. They flow from
 left to right and wrap onto new rows; a row holding a single box keeps the
 box's own width and centers it rather than stretching it across the terminal.
