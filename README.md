@@ -475,13 +475,15 @@ dots, `◉` and `◦`, are neutral width and stay one cell in either locale.
 The view reads the snapshots again every two minutes, which catches each of
 the daemon's five-minute probe rounds without polling it for nothing. The
 status line counts down the wait to that next read: a ten-cell bar that
-starts full and empties cell by cell, in eighths within the cell it is in, so
-it moves every second, beside the wait in whole seconds (`2m00s`, `0m45s`).
-It sits in the middle of the terminal whatever the boxes do — a centered band
-and a full-width row put it in the same place — with a blank row between it
-and the boxes, and a blank row above the boxes at the top of the screen. A
-refresh the daemon cannot answer shows as a bar that empties and stays there:
-the readings stay put and the next interval tries again.
+starts full and empties cell by cell, in eighths within the cell it is in,
+beside the wait in whole seconds (`2m00s`, `0m45s`). The seconds move every
+second and the cell being emptied takes about a second and a half to fill,
+which is as fine as the countdown is useful. The line sits in the middle of
+the terminal whatever the boxes do — a centered band and a full-width row put
+it in the same place — with a blank row between it and the boxes, and a blank
+row above the boxes at the top of the screen. A refresh the daemon cannot
+answer shows as a bar that empties and stays there: the readings stay put and
+the next interval tries again.
 
 The view also scrolls: the mouse wheel moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`
 and `j`) move one row, and `Home`/`End` jump to the ends. The status line

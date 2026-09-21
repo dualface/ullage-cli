@@ -243,8 +243,8 @@ fn the_refresh_bar_empties_over_the_interval() {
     assert_eq!(bar(300), "██████████");
     assert_eq!(bar(0), "░░░░░░░░░░");
     // Ten cells over two minutes: one cell every twelve seconds, and the cell
-    // the countdown is inside moves in eighths, so the bar is never still for
-    // more than a second.
+    // the countdown is inside moves in eighths, so it takes about a second
+    // and a half for the bar to change again.
     assert_eq!(bar(119), "██████████");
     assert_eq!(bar(118), "█████████▉");
     assert_eq!(bar(114), "█████████▌");
@@ -399,22 +399,42 @@ fn the_status_line_shortens_with_the_terminal() {
             0,
             10,
             4,
-            10,
-            Layout::Columns,
-            Duration::from_secs(120)
-        )),
-        "q  ████"
-    );
-    assert_eq!(
-        line_text(&status_line(
-            0,
-            10,
-            4,
             1,
             Layout::Columns,
             Duration::from_secs(120)
         )),
         "q"
+    );
+    // Each step only ever drops a piece: a narrow terminal never shows
+    // something a wider one had already given up, so every piece is present
+    // on a run of widths that ends at the widest.
+    type Present = fn(&str) -> bool;
+    let features: [(&str, Present); 4] = [
+        ("the wait in words", |text| text.contains("2m00s")),
+        ("the ten-cell bar", |text| text.contains("██████████")),
+        ("the four-cell bar", |text| {
+            !text.contains("██████████") && text.contains("████")
+        }),
+        ("the position", |text| text.contains("12/40")),
+    ];
+    for (name, present) in features {
+        let widths: Vec<u16> = (1..=90).filter(|width| present(&line(*width))).collect();
+        let contiguous = widths.windows(2).all(|pair| pair[1] == pair[0] + 1);
+        assert!(!widths.is_empty(), "{name} never appears");
+        assert!(
+            contiguous,
+            "{name} comes and goes across widths: {widths:?}"
+        );
+    }
+    // And the order they go in is the order they are dropped: the wait in
+    // words first, then the position, the ten-cell bar, and the four-cell one
+    // in place of it.
+    assert!(
+        line(90).contains("2m00s")
+            && line(60).contains("██████████")
+            && !line(30).contains("2m00s"),
+        "{}",
+        line(30)
     );
 }
 

@@ -198,19 +198,28 @@ fn run_terminal(
     terminal.clear()?;
     let mut scroll = Scroll::default();
     let mut next_refresh = Instant::now() + REFRESH_INTERVAL;
+    let mut stalled = false;
     loop {
         // The countdowns are rebuilt on every draw so a view left open does
         // not keep showing the wait measured when it was opened.
         let now = Utc::now();
         let cards = load_cards(&snapshots, now);
-        let remaining = next_refresh.saturating_duration_since(Instant::now());
-        terminal.draw(|frame| render(frame, &cards, &mut scroll, layout, remaining))?;
+        let wait = next_refresh.saturating_duration_since(Instant::now());
+        // A refresh the daemon could not answer leaves the countdown empty
+        // instead of starting it over: the readings have not moved, and a
+        // full bar would say they had. The retry still happens on schedule.
+        let shown = if stalled { Duration::ZERO } else { wait };
+        terminal.draw(|frame| render(frame, &cards, &mut scroll, layout, shown))?;
         // The wait doubles as the refresh timer, and the tick keeps the
         // countdown moving between two refreshes.
-        if !event::poll(remaining.min(TICK))? {
+        if !event::poll(wait.min(TICK))? {
             if Instant::now() >= next_refresh {
-                if let Some(fresh) = fetch_snapshots(client) {
-                    snapshots = fresh;
+                match fetch_snapshots(client) {
+                    Some(fresh) => {
+                        snapshots = fresh;
+                        stalled = false;
+                    }
+                    None => stalled = true,
                 }
                 next_refresh = Instant::now() + REFRESH_INTERVAL;
             }
@@ -444,8 +453,9 @@ fn status_line(
     } else {
         "v one per row"
     };
-    // Each candidate drops something the one above it kept: first the wait in
-    // words, then the ten-cell bar for a four-cell one, then the position.
+    // Each candidate drops something the one above it kept, so a narrower
+    // terminal never shows more than a wider one: first the wait in words,
+    // then the ten-cell bar for a four-cell one, then the position.
     let candidates = if scrollable {
         vec![
             format!(
@@ -471,7 +481,6 @@ fn status_line(
             ),
             format!("q quit  {layout_hint}  {short_bar}"),
             format!("q quit  {layout_hint}"),
-            format!("q  {short_bar}"),
             "q".to_owned(),
         ]
     };
@@ -489,8 +498,8 @@ fn status_line(
 /// A bar of `cells` cells that empties as the wait to the next refresh runs
 /// out: the whole interval is a full bar, the moment the refresh is due is an
 /// empty one, and each cell stands for one `cells`-th of the interval. The
-/// cell the countdown is inside is drawn in eighths, so the bar moves every
-/// second rather than once per cell.
+/// cell the countdown is inside is drawn in eighths, so the bar moves several
+/// times inside a cell rather than only when one empties.
 fn refresh_bar(remaining: Duration, cells: usize) -> String {
     let interval = REFRESH_INTERVAL.as_secs();
     let left = remaining.as_secs().min(interval);
