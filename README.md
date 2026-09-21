@@ -468,21 +468,26 @@ small bar, then the countdown, leaving the window and its reading. The
 countdown outlives the bar on purpose, so a phone-sized terminal still says
 when the quota comes back. The frame, rules, and diamonds are East Asian
 ambiguous glyphs — one cell wide to this program, but a terminal set to a CJK
-locale may render them two cells wide and misalign the box. The countdown
+locale may render them two cells wide and misalign the box; the blocks of the
+card bars and of the status line's countdown are ambiguous too. The countdown
 dots, `◉` and `◦`, are neutral width and stay one cell in either locale.
 
 The view reads the snapshots again every two minutes, which catches each of
 the daemon's five-minute probe rounds without polling it for nothing. The
-status line dates what is on screen (`updated 1m ago`), so a refresh the
-daemon cannot answer shows as an age that keeps growing; the readings stay
-put and the next interval tries again. The status line sits under the boxes:
-centered beneath a centered box, and at the left edge when the boxes fill the
-width.
+status line counts down the wait to that next read: a ten-cell bar that
+starts full and empties cell by cell, in eighths within the cell it is in, so
+it moves every second, beside the wait in whole seconds (`2m00s`, `0m45s`).
+It sits in the middle of the terminal whatever the boxes do — a centered band
+and a full-width row put it in the same place — with a blank row between it
+and the boxes, and a blank row above the boxes at the top of the screen. A
+refresh the daemon cannot answer shows as a bar that empties and stays there:
+the readings stay put and the next interval tries again.
 
 The view also scrolls: the mouse wheel moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`
-and `j`) move one row, and `Home`/`End` jump to the ends. The last row shows
-the keys and the position. Press `q`, `Q`, `Esc`, or `Ctrl+C` to exit; the
-terminal, including mouse capture, is restored on the way out.
+and `j`) move one row, and `Home`/`End` jump to the ends. The status line
+also carries the keys and the position, dropping them last. Press `q`, `Q`,
+`Esc`, or `Ctrl+C` to exit; the terminal, including mouse capture, is restored
+on the way out.
 
 `--metric <display-name>` keeps only the summary rows whose display name matches
 exactly, ignoring case and the window a row belongs to; repeat the flag to keep

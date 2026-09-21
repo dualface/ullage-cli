@@ -48,8 +48,27 @@ use crate::{
 const WHEEL_LINES: u16 = 3;
 /// How often the view asks the daemon for the snapshots again. The daemon
 /// probes each account every five minutes, so this catches every round
-/// without polling it for nothing.
+/// without polling it for nothing. The whole wait is what the refresh bar
+/// in the status line counts down.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2 * 60);
+/// Rows kept blank above the cards, so the view does not start against the
+/// first row of the terminal.
+const TOP_MARGIN: u16 = 1;
+/// Rows kept blank between the cards and the status line.
+const STATUS_GAP: u16 = 1;
+/// How often the view redraws while it waits for the next refresh, so the
+/// countdown moves on its own between refreshes.
+const TICK: Duration = Duration::from_secs(1);
+/// Cells of the refresh bar, and of the short one that survives on a narrow
+/// terminal.
+const REFRESH_BAR_CELLS: usize = 10;
+const MINI_REFRESH_BAR_CELLS: usize = 4;
+/// The refresh bar in eighths: the cell the countdown is filling, then the
+/// cell it has already emptied. Like the card bar, these are East Asian
+/// ambiguous glyphs: one cell wide here, possibly two in a CJK locale.
+const EIGHTH_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+const FULL_BLOCK: char = '█';
+const EMPTY_BLOCK: char = '░';
 
 /// Loads all snapshots, then owns the terminal until the user exits.
 pub fn run_tui(client: &dyn ControlClient, args: &TuiArgs) -> RunOutput {
@@ -178,23 +197,23 @@ fn run_terminal(
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let mut scroll = Scroll::default();
-    let mut loaded_at = Utc::now();
     let mut next_refresh = Instant::now() + REFRESH_INTERVAL;
     loop {
         // The countdowns are rebuilt on every draw so a view left open does
         // not keep showing the wait measured when it was opened.
         let now = Utc::now();
         let cards = load_cards(&snapshots, now);
-        let age = (now - loaded_at).to_std().unwrap_or_default();
-        terminal.draw(|frame| render(frame, &cards, &mut scroll, layout, age))?;
-        // The wait doubles as the refresh timer: an idle view still redraws
-        // every interval, so the countdowns keep moving on their own.
-        if !event::poll(next_refresh.saturating_duration_since(Instant::now()))? {
-            if let Some(fresh) = fetch_snapshots(client) {
-                snapshots = fresh;
-                loaded_at = Utc::now();
+        let remaining = next_refresh.saturating_duration_since(Instant::now());
+        terminal.draw(|frame| render(frame, &cards, &mut scroll, layout, remaining))?;
+        // The wait doubles as the refresh timer, and the tick keeps the
+        // countdown moving between two refreshes.
+        if !event::poll(remaining.min(TICK))? {
+            if Instant::now() >= next_refresh {
+                if let Some(fresh) = fetch_snapshots(client) {
+                    snapshots = fresh;
+                }
+                next_refresh = Instant::now() + REFRESH_INTERVAL;
             }
-            next_refresh = Instant::now() + REFRESH_INTERVAL;
             continue;
         }
         let action = match event::read()? {
@@ -296,7 +315,7 @@ fn render(
     cards: &[Card],
     scroll: &mut Scroll,
     layout: Layout,
-    age: Duration,
+    remaining: Duration,
 ) {
     let area = frame.area();
     if area.height == 0 || area.width == 0 {
@@ -309,13 +328,25 @@ fn render(
         );
         return;
     }
-    // The status line only earns its row once there are two.
-    let (viewport, status) = match area.height {
-        1 => (area, None),
-        _ => (
-            Rect::new(area.x, area.y, area.width, area.height - 1),
+    // The last row is the status line, the row above it stays blank, and the
+    // first row of the terminal stays blank too; the cards own what is left.
+    // The blank rows are outside the viewport, so a scrolled card never
+    // reaches the status line. A view too short for a card and the status
+    // line both gives its rows to the cards alone: the hints are chrome, and
+    // a card squeezed out of the screen is worse than a missing hint.
+    let (viewport, status) = if area.height > TOP_MARGIN + STATUS_GAP + 1 {
+        let top = area.y + TOP_MARGIN;
+        let bottom = area.bottom() - (STATUS_GAP + 1);
+        (
+            Rect::new(area.x, top, area.width, bottom - top),
             Some(Rect::new(area.x, area.bottom() - 1, area.width, 1)),
-        ),
+        )
+    } else {
+        let top = area.y + TOP_MARGIN.min(area.height - 1);
+        (
+            Rect::new(area.x, top, area.width, area.height - (top - area.y)),
+            None,
+        )
     };
     // One set of column widths for the whole screen, so a reading under a
     // short window name still lines up with the one under a long name. The
@@ -329,40 +360,30 @@ fn render(
         preferred_card_width(&columns),
     );
     let content = content_height(&rects);
-    let span = occupied_span(&rects);
     scroll.apply(viewport.height, content);
     for (card, rect) in cards.iter().zip(rects) {
         render_card(frame, card, rect, viewport, scroll.offset, &columns);
     }
+    // The hints sit under the cards, centered on the terminal whatever the
+    // cards do: a centered band and a full-width row put them in the same
+    // place, which is what makes the line stop jumping as the layout
+    // changes.
     if let Some(status) = status {
-        // The hints sit under the cards: centered under a centered card,
-        // and at the left edge when the cards fill the width.
         let line = status_line(
             scroll.offset,
             viewport.height,
             content,
-            span.width,
+            area.width,
             layout,
-            age,
+            remaining,
         );
-        let text_width = u16::try_from(line_width(&line)).unwrap_or(span.width);
-        let x = match span.x {
-            0 => 0,
-            left => left + (span.width.saturating_sub(text_width)) / 2,
-        };
+        let text_width = u16::try_from(line_width(&line)).unwrap_or(area.width);
+        let x = area.x + area.width.saturating_sub(text_width) / 2;
         frame.render_widget(
             Paragraph::new(line),
             Rect::new(x, status.y, status.right().saturating_sub(x), 1),
         );
     }
-}
-
-/// The columns the cards actually occupy, which is the whole width when they
-/// fill it and the centered band when a single card holds each row.
-fn occupied_span(rects: &[Rect]) -> Rect {
-    let left = rects.iter().map(|rect| rect.x).min().unwrap_or(0);
-    let right = rects.iter().map(|rect| rect.right()).max().unwrap_or(0);
-    Rect::new(left, 0, right.saturating_sub(left), 1)
 }
 
 fn line_width(line: &Line<'_>) -> usize {
@@ -397,43 +418,60 @@ fn render_card(
     }
 }
 
-/// The hints and the position, shortened as the terminal narrows.
+/// The hints, the countdown to the next refresh, and the position,
+/// shortened as the terminal narrows.
 fn status_line(
     offset: u16,
     viewport_height: u16,
     content_height: u16,
     width: u16,
     layout: Layout,
-    age: Duration,
+    remaining: Duration,
 ) -> Line<'static> {
     let scrollable = content_height > viewport_height;
     let position = format!("{}/{}", offset.saturating_add(1), content_height);
-    // How old the readings are, which is also how a failed refresh shows:
-    // the age keeps growing past the interval.
-    let updated = updated_text(age);
+    // How long until the view reads the snapshots again, which is also how a
+    // refresh in progress shows: the bar empties and waits there.
+    let countdown = format!(
+        "{} {}",
+        refresh_bar(remaining, REFRESH_BAR_CELLS),
+        remaining_text(remaining)
+    );
+    let short_bar = refresh_bar(remaining, MINI_REFRESH_BAR_CELLS);
     // The key says what pressing it gives you, not what you are looking at.
     let layout_hint = if layout.is_vertical() {
         "v columns"
     } else {
         "v one per row"
     };
+    // Each candidate drops something the one above it kept: first the wait in
+    // words, then the ten-cell bar for a four-cell one, then the position.
     let candidates = if scrollable {
         vec![
             format!(
-                "q quit  wheel/jk scroll  PgUp/PgDn half page  {layout_hint}  {updated}  {position}"
+                "q quit  wheel/jk scroll  PgUp/PgDn half page  {layout_hint}  {countdown}  {position}"
             ),
-            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {updated}  {position}"),
-            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {position}"),
-            format!("q  jk  PgUp/Dn  v  {position}"),
-            format!("q  v  {position}"),
+            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {countdown}  {position}"),
+            format!(
+                "q quit  jk  PgUp/PgDn  {layout_hint}  {}  {position}",
+                refresh_bar(remaining, REFRESH_BAR_CELLS)
+            ),
+            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {short_bar}  {position}"),
+            format!("q  jk  PgUp/Dn  v  {short_bar}  {position}"),
+            format!("q  v  {short_bar}  {position}"),
             format!("q  {position}"),
             "q".to_owned(),
         ]
     } else {
         vec![
-            format!("q quit  {layout_hint}  {updated}"),
+            format!("q quit  {layout_hint}  {countdown}"),
+            format!(
+                "q quit  {layout_hint}  {}",
+                refresh_bar(remaining, REFRESH_BAR_CELLS)
+            ),
+            format!("q quit  {layout_hint}  {short_bar}"),
             format!("q quit  {layout_hint}"),
-            "q  v".to_owned(),
+            format!("q  {short_bar}"),
             "q".to_owned(),
         ]
     };
@@ -448,17 +486,34 @@ fn status_line(
     ))
 }
 
-/// `updated 2m ago`, in the same words the table uses for a snapshot's age.
-fn updated_text(age: Duration) -> String {
-    let seconds = age.as_secs();
-    if seconds < 60 {
-        return "updated just now".to_owned();
+/// A bar of `cells` cells that empties as the wait to the next refresh runs
+/// out: the whole interval is a full bar, the moment the refresh is due is an
+/// empty one, and each cell stands for one `cells`-th of the interval. The
+/// cell the countdown is inside is drawn in eighths, so the bar moves every
+/// second rather than once per cell.
+fn refresh_bar(remaining: Duration, cells: usize) -> String {
+    let interval = REFRESH_INTERVAL.as_secs();
+    let left = remaining.as_secs().min(interval);
+    // Rounded up, so any wait at all still shows: the bar empties exactly
+    // when the refresh is due.
+    let eighths = cells as u64 * 8;
+    let filled = (left * eighths).div_ceil(interval);
+    let whole = filled / 8;
+    let mut bar = FULL_BLOCK.to_string().repeat(whole as usize);
+    let partial = filled % 8;
+    if partial > 0 {
+        bar.push(EIGHTH_BLOCKS[partial as usize - 1]);
     }
-    let minutes = seconds / 60;
-    if minutes < 60 {
-        return format!("updated {minutes}m ago");
-    }
-    format!("updated {}h{:02}m ago", minutes / 60, minutes % 60)
+    let empty = cells.saturating_sub(bar.chars().count());
+    bar.push_str(&EMPTY_BLOCK.to_string().repeat(empty));
+    bar
+}
+
+/// `2m00s`: the wait until the next refresh, in whole seconds. The minutes
+/// are always there so the line keeps its width as the countdown runs.
+fn remaining_text(remaining: Duration) -> String {
+    let seconds = remaining.as_secs();
+    format!("{}m{:02}s", seconds / 60, seconds % 60)
 }
 
 trait TerminalControl {

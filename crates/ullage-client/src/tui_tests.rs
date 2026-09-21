@@ -233,18 +233,49 @@ fn a_shrinking_viewport_pulls_the_offset_back() {
 }
 
 #[test]
-fn the_status_line_dates_the_readings() {
-    // A refresh that fails changes nothing on screen, so the growing age is
-    // how a stalled refresh shows itself.
-    let updated = |age| updated_text(Duration::from_secs(age));
+fn the_refresh_bar_empties_over_the_interval() {
+    let bar = |seconds| refresh_bar(Duration::from_secs(seconds), REFRESH_BAR_CELLS);
 
-    assert_eq!(updated(0), "updated just now");
-    assert_eq!(updated(59), "updated just now");
-    assert_eq!(updated(60), "updated 1m ago");
-    assert_eq!(updated(120), "updated 2m ago");
-    assert_eq!(updated(59 * 60), "updated 59m ago");
-    assert_eq!(updated(60 * 60), "updated 1h00m ago");
-    assert_eq!(updated(150 * 60), "updated 2h30m ago");
+    // A fresh load starts full and the refresh is due at an empty bar; a wait
+    // longer than the interval (which the caller never produces) is clamped
+    // to full rather than overflowing.
+    assert_eq!(bar(120), "██████████");
+    assert_eq!(bar(300), "██████████");
+    assert_eq!(bar(0), "░░░░░░░░░░");
+    // Ten cells over two minutes: one cell every twelve seconds, and the cell
+    // the countdown is inside moves in eighths, so the bar is never still for
+    // more than a second.
+    assert_eq!(bar(119), "██████████");
+    assert_eq!(bar(118), "█████████▉");
+    assert_eq!(bar(114), "█████████▌");
+    assert_eq!(bar(108), "█████████░");
+    assert_eq!(bar(12), "█░░░░░░░░░");
+    assert_eq!(bar(6), "▌░░░░░░░░░");
+    assert_eq!(bar(1), "▏░░░░░░░░░");
+}
+
+#[test]
+fn the_refresh_bar_keeps_its_width_and_shrinks_on_a_narrow_terminal() {
+    for seconds in [0u64, 1, 7, 12, 60, 119, 120] {
+        for cells in [REFRESH_BAR_CELLS, MINI_REFRESH_BAR_CELLS] {
+            let bar = refresh_bar(Duration::from_secs(seconds), cells);
+            assert_eq!(
+                UnicodeWidthStr::width(bar.as_str()),
+                cells,
+                "{seconds}s, {cells} cells: {bar}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_countdown_reads_as_whole_seconds() {
+    let text = |seconds| remaining_text(Duration::from_secs(seconds));
+
+    assert_eq!(text(120), "2m00s");
+    assert_eq!(text(119), "1m59s");
+    assert_eq!(text(45), "0m45s");
+    assert_eq!(text(0), "0m00s");
 }
 
 #[test]
@@ -295,29 +326,95 @@ fn the_status_line_shortens_with_the_terminal() {
             40,
             width,
             Layout::Columns,
-            Duration::ZERO,
+            Duration::from_secs(120),
         ))
     };
 
     assert_eq!(
         line(90),
-        "q quit  wheel/jk scroll  PgUp/PgDn half page  v one per row  updated just now  12/40"
+        "q quit  wheel/jk scroll  PgUp/PgDn half page  v one per row  ██████████ 2m00s  12/40"
     );
     assert_eq!(
-        line(62),
-        "q quit  jk  PgUp/PgDn  v one per row  updated just now  12/40"
+        line(61),
+        "q quit  jk  PgUp/PgDn  v one per row  ██████████ 2m00s  12/40"
     );
-    assert_eq!(line(45), "q quit  jk  PgUp/PgDn  v one per row  12/40");
-    assert_eq!(line(24), "q  jk  PgUp/Dn  v  12/40");
-    assert_eq!(line(12), "q  v  12/40");
+    assert_eq!(
+        line(55),
+        "q quit  jk  PgUp/PgDn  v one per row  ██████████  12/40"
+    );
+    assert_eq!(
+        line(49),
+        "q quit  jk  PgUp/PgDn  v one per row  ████  12/40"
+    );
+    assert_eq!(line(30), "q  jk  PgUp/Dn  v  ████  12/40");
+    assert_eq!(line(17), "q  v  ████  12/40");
     assert_eq!(line(8), "q  12/40");
+    assert_eq!(line(1), "q");
     assert_eq!(
-        line_text(&status_line(0, 10, 4, 60, Layout::Columns, Duration::ZERO)),
-        "q quit  v one per row  updated just now"
+        line_text(&status_line(
+            0,
+            10,
+            4,
+            60,
+            Layout::Columns,
+            Duration::from_secs(120)
+        )),
+        "q quit  v one per row  ██████████ 2m00s"
     );
     assert_eq!(
-        line_text(&status_line(0, 10, 4, 30, Layout::Columns, Duration::ZERO)),
+        line_text(&status_line(
+            0,
+            10,
+            4,
+            38,
+            Layout::Columns,
+            Duration::from_secs(120)
+        )),
+        "q quit  v one per row  ██████████"
+    );
+    assert_eq!(
+        line_text(&status_line(
+            0,
+            10,
+            4,
+            30,
+            Layout::Columns,
+            Duration::from_secs(120)
+        )),
+        "q quit  v one per row  ████"
+    );
+    assert_eq!(
+        line_text(&status_line(
+            0,
+            10,
+            4,
+            22,
+            Layout::Columns,
+            Duration::from_secs(120)
+        )),
         "q quit  v one per row"
+    );
+    assert_eq!(
+        line_text(&status_line(
+            0,
+            10,
+            4,
+            10,
+            Layout::Columns,
+            Duration::from_secs(120)
+        )),
+        "q  ████"
+    );
+    assert_eq!(
+        line_text(&status_line(
+            0,
+            10,
+            4,
+            1,
+            Layout::Columns,
+            Duration::from_secs(120)
+        )),
+        "q"
     );
 }
 
@@ -353,7 +450,7 @@ fn v_toggles_the_layout_and_the_toggle_leaves_the_offset_alone() {
     assert_eq!(scroll.offset, 7);
 }
 
-/// The column the last row's text starts in, and the text itself.
+/// The column the status line's text starts in, and the text itself.
 fn status_row(width: u16, layout: Layout, cards: &[Card]) -> (u16, String) {
     let backend = TestBackend::new(width, 9);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -369,8 +466,26 @@ fn status_row(width: u16, layout: Layout, cards: &[Card]) -> (u16, String) {
     (start as u16, row.trim().to_owned())
 }
 
+/// Every row of the rendered view, with the trailing blanks kept.
+fn rendered_rows(width: u16, height: u16, cards: &[Card]) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut scroll = Scroll::default();
+    terminal
+        .draw(|frame| render(frame, cards, &mut scroll, Layout::Columns, Duration::ZERO))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_owned())
+                .collect::<String>()
+        })
+        .collect()
+}
+
 #[test]
-fn the_hints_sit_under_the_cards() {
+fn the_view_keeps_a_blank_row_above_the_cards() {
     let cards = vec![card_with_rows(vec![row(
         "5h",
         "remains",
@@ -378,18 +493,80 @@ fn the_hints_sit_under_the_cards() {
         Some("3h05m"),
     )])];
 
-    // A centered card centers them: the margins on either side of the text
-    // match within a cell.
-    let (start, text) = status_row(60, Layout::Columns, &cards);
-    let end = 60 - start - text.chars().count() as u16;
-    assert!(start.abs_diff(end) <= 1, "{start} vs {end}: {text}");
+    let rows = rendered_rows(42, 6, &cards);
 
-    // Cards that fill the width keep the hints at the left edge.
+    assert_eq!(rows[0].trim(), "", "the first row is blank: {rows:?}");
+    assert!(
+        rows[1].contains('╭'),
+        "the card starts on the second: {rows:?}"
+    );
+}
+
+#[test]
+fn a_blank_row_separates_the_cards_from_the_status_line() {
+    let cards = vec![card_with_rows(vec![row(
+        "5h",
+        "remains",
+        "91%",
+        Some("3h05m"),
+    )])];
+
+    // The card is three rows tall and the view is six: the last row is the
+    // status line and the row above it stays empty.
+    let rows = rendered_rows(42, 6, &cards);
+
+    assert!(rows[3].contains('╰'), "the card ends here: {rows:?}");
+    assert_eq!(rows[4].trim(), "", "the gap row: {rows:?}");
+    assert!(rows[5].contains('q'), "the status line: {rows:?}");
+}
+
+#[test]
+fn a_scrolled_card_stops_at_the_gap_row() {
+    // Content taller than the viewport: the rows left over are dropped, never
+    // drawn over the gap row or the status line.
+    let cards = vec![card_with_rows(vec![
+        row("5h", "remains", "91%", Some("3h05m")),
+        row("weekly", "remains", "40%", Some("3h05m")),
+    ])];
+
+    let rows = rendered_rows(42, 6, &cards);
+
+    assert_eq!(rows[4].trim(), "", "the gap row: {rows:?}");
+    assert!(rows[5].contains('q'), "the status line: {rows:?}");
+    assert!(
+        !rows[4].contains('│') && !rows[5].contains('│'),
+        "no card row reaches the last two: {rows:?}"
+    );
+}
+
+#[test]
+fn the_hints_sit_in_the_middle_however_wide_the_cards_are() {
+    let cards = vec![card_with_rows(vec![row(
+        "5h",
+        "remains",
+        "91%",
+        Some("3h05m"),
+    )])];
+
+    // A centered card, and cards that fill the width: both leave the same
+    // margins, so the line does not jump as the layout changes.
+    let (centered_start, centered_text) = status_row(60, Layout::Columns, &cards);
+    let centered_end = 60 - centered_start - centered_text.chars().count() as u16;
+    assert!(
+        centered_start.abs_diff(centered_end) <= 1,
+        "{centered_start} vs {centered_end}: {centered_text}"
+    );
+
     let wide = vec![
         card_with_rows(vec![row("5h", "remains", "91%", Some("3h05m"))]),
         card_with_rows(vec![row("weekly", "remains", "40%", Some("3h05m"))]),
     ];
-    assert_eq!(status_row(120, Layout::Columns, &wide).0, 0);
+    let (full_start, full_text) = status_row(120, Layout::Columns, &wide);
+    let full_end = 120 - full_start - full_text.chars().count() as u16;
+    assert!(
+        full_start.abs_diff(full_end) <= 1,
+        "{full_start} vs {full_end}: {full_text}"
+    );
 
     // One card per row is a centered card too, however wide the terminal.
     let (start, text) = status_row(120, Layout::Vertical, &cards);
@@ -406,9 +583,32 @@ fn the_view_reserves_its_last_row_for_the_status_line() {
         Some("3h05m"),
     )])];
 
-    let content = rendered(42, 4, &cards);
+    // Four rows is the smallest view that still has a status line: one blank
+    // row, one row of card, the gap row, and the status line. Narrow enough
+    // that only the shortest hint fits, so the row is the hints and nothing
+    // else.
+    let rows = rendered_rows(42, 4, &cards);
 
-    assert!(content.contains("q quit"), "{content}");
+    assert!(rows[3].contains("q  jk"), "the status line: {rows:?}");
+    assert!(rows[3].contains("1/3"), "the position: {rows:?}");
+    assert_eq!(rows[2].trim(), "", "the gap row: {rows:?}");
+}
+
+#[test]
+fn a_view_too_short_for_the_status_line_shows_the_card_instead() {
+    let cards = vec![card_with_rows(vec![row(
+        "5h",
+        "remains",
+        "91%",
+        Some("3h05m"),
+    )])];
+
+    // Two rows have room for the top margin and one row of card, and no room
+    // for the gap row or the status line.
+    let rows = rendered_rows(42, 2, &cards);
+
+    assert_eq!(rows[0].trim(), "", "the first row is blank: {rows:?}");
+    assert!(rows[1].contains('╭'), "the card keeps this row: {rows:?}");
 }
 
 #[test]
