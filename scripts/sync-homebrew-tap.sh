@@ -184,18 +184,15 @@ class Ullage < Formula
     bin.install "ullage"
   end
 
-  def post_install
+  post_install_steps do
     # Stop first so an upgrade bootstraps the new Cellar keg. kickstart of a
     # still-loaded job would keep the previous ProgramArguments.
-    ohai "Installing and starting the Ullage user daemon"
-    quiet_system bin/"ullage", "daemon", "stop"
-    unless quiet_system bin/"ullage", "daemon", "install"
-      opoo "Could not install the user daemon. Run: ullage daemon install"
-      return
-    end
-    return if quiet_system bin/"ullage", "daemon", "start"
-
-    opoo "Could not start the user daemon. Run: ullage daemon start"
+    # must_succeed: false is the declarative quiet_system: a missing GUI
+    # session or systemd user bus must not fail brew install. The steps DSL
+    # has no ohai/conditional opoo, so caveats carry the recovery hint.
+    run "ullage", args: ["daemon", "stop"], base: :bin, must_succeed: false
+    run "ullage", args: ["daemon", "install"], base: :bin, must_succeed: false
+    run "ullage", args: ["daemon", "start"], base: :bin, must_succeed: false
   end
 
   def caveats

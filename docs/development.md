@@ -134,18 +134,22 @@ scripts/sync-homebrew-tap.sh v0.1.1
 must include `on_linux` / `on_arm` and `on_linux` / `on_intel` blocks; a
 Linux-only Intel URL leaves ARM Linuxbrew users without an install.
 
-`post_install` runs `ullage daemon stop`, `install`, and `start` against the
-Cellar keg binary. Stop comes first so an upgrade bootstraps the new keg
-instead of kickstarting the previously loaded LaunchAgent. Those commands
-use `quiet_system`: a missing GUI session or systemd user bus must not fail
-`brew install`. Do not add a Homebrew `service do` block; the daemon's own
-user-level unit has the path and permission rules.
+`post_install_steps` runs `ullage daemon stop`, `install`, and `start`
+against the Cellar keg binary. Stop comes first so an upgrade bootstraps the
+new keg instead of kickstarting the previously loaded LaunchAgent. Each
+`run` step carries `must_succeed: false`, the declarative equivalent of
+`quiet_system`: a missing GUI session or systemd user bus must not fail
+`brew install`. The steps DSL has no `ohai` or conditional `opoo`
+equivalent, so a failed step no longer prints an active hint; the caveats
+text carries the `ullage daemon install` fallback. Do not add a Homebrew
+`service do` block; the daemon's own user-level unit has the path and
+permission rules.
 
 ## WinGet
 
 `winget install Dualface.Ullage` installs the user-scope Inno Setup package
 `ullage-x86_64-pc-windows-setup.exe`. WinGet has no Homebrew-style
-`post_install` on a portable zip, so the installer is the hook:
+post-install step on a portable zip, so the installer is the hook:
 `packaging/windows/ullage.iss` `[Run]` entries call `ullage daemon stop`,
 `install`, and `start`. Those flags omit `postinstall` / `skipifsilent` so
 winget's silent Inno switches still execute them.
