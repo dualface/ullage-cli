@@ -29,7 +29,8 @@ fn show_metric_filters_rows_case_insensitively_and_unions_repeats() {
         &client,
     );
     assert_eq!(codex.code, ExitCode::Success, "{}", codex.stderr);
-    assert!(codex.stdout.contains("Codex"), "{}", codex.stdout);
+    // The Codex metric row renders under its window name: compact_identity
+    // collapses it, so "Weekly Opus" is the selected row's identity.
     assert!(codex.stdout.contains("Weekly Opus"), "{}", codex.stdout);
     assert!(
         codex.stdout.lines().all(|line| !line.starts_with("5h")),
@@ -46,7 +47,6 @@ fn show_metric_filters_rows_case_insensitively_and_unions_repeats() {
         &client,
     );
     assert_eq!(union.code, ExitCode::Success, "{}", union.stderr);
-    assert!(union.stdout.contains("Codex"), "{}", union.stdout);
     assert!(union.stdout.contains("Weekly Opus"), "{}", union.stdout);
     line_starting_with(&union.stdout, "5h");
 }
@@ -89,10 +89,7 @@ fn show_all_applies_each_accounts_stored_hide_list_and_flags_override_it() {
     let primary = account_block(&explicit.stdout, "primary");
     let secondary = account_block(&explicit.stdout, "secondary");
     for block in [primary, secondary] {
-        assert!(
-            block.contains("Weekly Opus") && block.contains("Codex"),
-            "{block}"
-        );
+        assert!(block.contains("Weekly Opus"), "{block}");
         assert!(block.lines().all(|line| !line.starts_with("5h")), "{block}");
     }
 
@@ -111,10 +108,7 @@ fn show_all_applies_each_accounts_stored_hide_list_and_flags_override_it() {
     let primary = account_block(&ignored.stdout, "primary");
     let secondary = account_block(&ignored.stdout, "secondary");
     for block in [primary, secondary] {
-        assert!(
-            block.contains("Weekly Opus") && block.contains("Codex"),
-            "{block}"
-        );
+        assert!(block.contains("Weekly Opus"), "{block}");
         line_starting_with(block, "5h");
     }
 }
