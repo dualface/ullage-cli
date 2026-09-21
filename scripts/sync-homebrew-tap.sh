@@ -3,9 +3,10 @@
 #
 #   scripts/sync-homebrew-tap.sh v0.1.1
 #
-# The Release workflow runs this after publishing archives. TAP_TOKEN must be
-# a PAT with contents:write on dualface/homebrew-tap; GITHUB_TOKEN cannot push
-# to another repository. Without that secret, repair the formula by hand:
+# The Release workflow runs this after publishing archives. HOMEBREW_TAP_TOKEN
+# must be a PAT with contents:write on dualface/homebrew-tap; GITHUB_TOKEN
+# cannot push to another repository. Without that secret, repair the formula
+# by hand:
 #
 #   scripts/sync-homebrew-tap.sh v0.1.1
 

@@ -121,7 +121,7 @@ ARM64) so they stay on glibc 2.39, Homebrew's Linux Tier 1 floor.
 
 After a `v*` tag, the Release workflow rewrites
 `Formula/ullage.rb` in [dualface/homebrew-tap](https://github.com/dualface/homebrew-tap)
-when the `TAP_TOKEN` secret is set (a PAT with `contents:write` on that
+when the `HOMEBREW_TAP_TOKEN` secret is set (a PAT with `contents:write` on that
 repository). `GITHUB_TOKEN` cannot push to another repository.
 
 To repair the formula from a published tag:
