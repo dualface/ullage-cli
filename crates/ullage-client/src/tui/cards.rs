@@ -2,10 +2,10 @@
 //! like, how its rows keep their columns as the card narrows, and where the
 //! boxes land on screen.
 //!
-//! The box drawing and block bar glyphs are East Asian ambiguous: one cell
-//! wide to `unicode-width`, possibly two in a terminal set to a CJK locale,
-//! where a card can render wider than its allotted rect. The countdown dots,
-//! `◉` and `◦`, are neutral width and measure one cell in either locale.
+//! The box drawing, block bar, and diamond glyphs are East Asian ambiguous:
+//! one cell wide to `unicode-width`, possibly two in a terminal set to a CJK
+//! locale, where a card can render wider than its allotted rect. The countdown
+//! dots, `◉` and `◦`, are neutral width and measure one cell in either locale.
 
 use chrono::{DateTime, Utc};
 use ratatui::layout::Rect;
