@@ -2485,7 +2485,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-auth"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "base64",
  "cap-fs-ext",
@@ -2508,7 +2508,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-cli"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-client"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "chrono",
  "clap",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-core"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-daemon"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-http"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-protocol"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "chrono",
  "serde",
@@ -2620,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-provider-chatgpt"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "base64",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-provider-claude"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2652,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-provider-codex2api"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2667,7 +2667,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-provider-cursor"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "base64",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-provider-devin"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2700,7 +2700,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-provider-grok"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "base64",
@@ -2715,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-provider-opencode"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "ullage-provider-sub2api"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "chrono",
