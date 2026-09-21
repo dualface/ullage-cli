@@ -59,16 +59,11 @@ const STATUS_GAP: u16 = 1;
 /// How often the view redraws while it waits for the next refresh, so the
 /// countdown moves on its own between refreshes.
 const TICK: Duration = Duration::from_secs(1);
-/// Cells of the refresh bar, and of the short one that survives on a narrow
-/// terminal.
-const REFRESH_BAR_CELLS: usize = 10;
-const MINI_REFRESH_BAR_CELLS: usize = 4;
-/// The refresh bar in eighths: the cell the countdown is filling, then the
-/// cell it has already emptied. Like the card bar, these are East Asian
-/// ambiguous glyphs: one cell wide here, possibly two in a CJK locale.
-const EIGHTH_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-const FULL_BLOCK: char = '█';
-const EMPTY_BLOCK: char = '░';
+/// The countdown as one circle, filled by quarter: an empty circle is the
+/// moment the refresh is due, a full one the whole interval. Two of them are
+/// East Asian ambiguous, so a CJK locale may draw them wider, as it may the
+/// box drawing around them.
+const REFRESH_MARKERS: [char; 5] = ['○', '◔', '◑', '◕', '●'];
 
 /// Loads all snapshots, then owns the terminal until the user exits.
 pub fn run_tui(client: &dyn ControlClient, args: &TuiArgs) -> RunOutput {
@@ -340,23 +335,17 @@ fn render(
     // The last row is the status line, the row above it stays blank, and the
     // first row of the terminal stays blank too; the cards own what is left.
     // The blank rows are outside the viewport, so a scrolled card never
-    // reaches the status line. A view too short for a card and the status
-    // line both gives its rows to the cards alone: the hints are chrome, and
-    // a card squeezed out of the screen is worse than a missing hint.
-    let (viewport, status) = if area.height > TOP_MARGIN + STATUS_GAP + 1 {
-        let top = area.y + TOP_MARGIN;
-        let bottom = area.bottom() - (STATUS_GAP + 1);
-        (
-            Rect::new(area.x, top, area.width, bottom - top),
-            Some(Rect::new(area.x, area.bottom() - 1, area.width, 1)),
-        )
-    } else {
-        let top = area.y + TOP_MARGIN.min(area.height - 1);
-        (
-            Rect::new(area.x, top, area.width, area.height - (top - area.y)),
-            None,
-        )
-    };
+    // reaches the status line, and `chrome` decides how many of them a short
+    // view can still afford.
+    let (margin, gap, status) = chrome(area);
+    let top = area.y + margin;
+    let reserved = gap + u16::from(status);
+    let viewport = Rect::new(
+        area.x,
+        top,
+        area.width,
+        area.height.saturating_sub(margin + reserved),
+    );
     // One set of column widths for the whole screen, so a reading under a
     // short window name still lines up with the one under a long name. The
     // cards are then sized to hold those columns.
@@ -377,7 +366,8 @@ fn render(
     // cards do: a centered band and a full-width row put them in the same
     // place, which is what makes the line stop jumping as the layout
     // changes.
-    if let Some(status) = status {
+    if status {
+        let status = Rect::new(area.x, area.bottom() - 1, area.width, 1);
         let line = status_line(
             scroll.offset,
             viewport.height,
@@ -393,6 +383,31 @@ fn render(
             Rect::new(x, status.y, status.right().saturating_sub(x), 1),
         );
     }
+}
+
+/// The blank rows above the cards and between them and the status line, plus
+/// whether the status line fits at all, for a terminal `area.height` rows
+/// tall. Each blank row and the status line cost a row, and the cards keep at
+/// least one: a short view spends its rows on the cards and the hints before
+/// it spends them on padding, giving up the top margin, then the gap, and the
+/// status line last.
+fn chrome(area: Rect) -> (u16, u16, bool) {
+    let mut margin = TOP_MARGIN.min(area.height.saturating_sub(1));
+    let mut gap = STATUS_GAP;
+    let mut status = area.height >= 2;
+    while status && area.height < margin + gap + 2 {
+        if margin > 0 {
+            margin -= 1;
+        } else if gap > 0 {
+            gap -= 1;
+        } else {
+            status = false;
+        }
+    }
+    if !status {
+        gap = 0;
+    }
+    (margin, gap, status)
 }
 
 fn line_width(line: &Line<'_>) -> usize {
@@ -440,13 +455,9 @@ fn status_line(
     let scrollable = content_height > viewport_height;
     let position = format!("{}/{}", offset.saturating_add(1), content_height);
     // How long until the view reads the snapshots again, which is also how a
-    // refresh in progress shows: the bar empties and waits there.
-    let countdown = format!(
-        "{} {}",
-        refresh_bar(remaining, REFRESH_BAR_CELLS),
-        remaining_text(remaining)
-    );
-    let short_bar = refresh_bar(remaining, MINI_REFRESH_BAR_CELLS);
+    // refresh in progress shows: the circle empties and waits there.
+    let marker = refresh_marker(remaining);
+    let countdown = format!("{marker} {}", remaining_text(remaining));
     // The key says what pressing it gives you, not what you are looking at.
     let layout_hint = if layout.is_vertical() {
         "v columns"
@@ -455,32 +466,26 @@ fn status_line(
     };
     // Each candidate drops something the one above it kept, so a narrower
     // terminal never shows more than a wider one: first the wait in words,
-    // then the ten-cell bar for a four-cell one, then the position.
+    // then the position, then the layout hint, and the circle last.
     let candidates = if scrollable {
         vec![
             format!(
                 "q quit  wheel/jk scroll  PgUp/PgDn half page  {layout_hint}  {countdown}  {position}"
             ),
             format!("q quit  jk  PgUp/PgDn  {layout_hint}  {countdown}  {position}"),
-            format!(
-                "q quit  jk  PgUp/PgDn  {layout_hint}  {}  {position}",
-                refresh_bar(remaining, REFRESH_BAR_CELLS)
-            ),
-            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {short_bar}  {position}"),
-            format!("q  jk  PgUp/Dn  v  {short_bar}  {position}"),
-            format!("q  v  {short_bar}  {position}"),
-            format!("q  {position}"),
+            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {marker}  {position}"),
+            format!("q quit  jk  PgUp/PgDn  {layout_hint}  {marker}"),
+            format!("q  jk  PgUp/Dn  v  {marker}"),
+            format!("q  v  {marker}"),
+            format!("q  {marker}"),
             "q".to_owned(),
         ]
     } else {
         vec![
             format!("q quit  {layout_hint}  {countdown}"),
-            format!(
-                "q quit  {layout_hint}  {}",
-                refresh_bar(remaining, REFRESH_BAR_CELLS)
-            ),
-            format!("q quit  {layout_hint}  {short_bar}"),
-            format!("q quit  {layout_hint}"),
+            format!("q quit  {layout_hint}  {marker}"),
+            format!("q quit  {marker}"),
+            format!("q  {marker}"),
             "q".to_owned(),
         ]
     };
@@ -495,27 +500,15 @@ fn status_line(
     ))
 }
 
-/// A bar of `cells` cells that empties as the wait to the next refresh runs
-/// out: the whole interval is a full bar, the moment the refresh is due is an
-/// empty one, and each cell stands for one `cells`-th of the interval. The
-/// cell the countdown is inside is drawn in eighths, so the bar moves several
-/// times inside a cell rather than only when one empties.
-fn refresh_bar(remaining: Duration, cells: usize) -> String {
+/// The wait to the next refresh as one circle filled by quarter: the whole
+/// interval is a full circle, the moment the refresh is due is an empty one,
+/// and each quarter is a quarter of the wait. Rounded up, so any wait at all
+/// still shows and the circle empties exactly when the refresh is due.
+fn refresh_marker(remaining: Duration) -> char {
     let interval = REFRESH_INTERVAL.as_secs();
     let left = remaining.as_secs().min(interval);
-    // Rounded up, so any wait at all still shows: the bar empties exactly
-    // when the refresh is due.
-    let eighths = cells as u64 * 8;
-    let filled = (left * eighths).div_ceil(interval);
-    let whole = filled / 8;
-    let mut bar = FULL_BLOCK.to_string().repeat(whole as usize);
-    let partial = filled % 8;
-    if partial > 0 {
-        bar.push(EIGHTH_BLOCKS[partial as usize - 1]);
-    }
-    let empty = cells.saturating_sub(bar.chars().count());
-    bar.push_str(&EMPTY_BLOCK.to_string().repeat(empty));
-    bar
+    let quarters = (left * 4).div_ceil(interval);
+    REFRESH_MARKERS[quarters as usize]
 }
 
 /// `2m00s`: the wait until the next refresh, in whole seconds. The minutes

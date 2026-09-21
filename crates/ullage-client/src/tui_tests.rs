@@ -233,38 +233,41 @@ fn a_shrinking_viewport_pulls_the_offset_back() {
 }
 
 #[test]
-fn the_refresh_bar_empties_over_the_interval() {
-    let bar = |seconds| refresh_bar(Duration::from_secs(seconds), REFRESH_BAR_CELLS);
+fn the_refresh_circle_fills_over_the_interval() {
+    let marker = |seconds| refresh_marker(Duration::from_secs(seconds));
 
-    // A fresh load starts full and the refresh is due at an empty bar; a wait
-    // longer than the interval (which the caller never produces) is clamped
-    // to full rather than overflowing.
-    assert_eq!(bar(120), "██████████");
-    assert_eq!(bar(300), "██████████");
-    assert_eq!(bar(0), "░░░░░░░░░░");
-    // Ten cells over two minutes: one cell every twelve seconds, and the cell
-    // the countdown is inside moves in eighths, so it takes about a second
-    // and a half for the bar to change again.
-    assert_eq!(bar(119), "██████████");
-    assert_eq!(bar(118), "█████████▉");
-    assert_eq!(bar(114), "█████████▌");
-    assert_eq!(bar(108), "█████████░");
-    assert_eq!(bar(12), "█░░░░░░░░░");
-    assert_eq!(bar(6), "▌░░░░░░░░░");
-    assert_eq!(bar(1), "▏░░░░░░░░░");
+    // A fresh load starts full and the refresh is due at an empty circle; a
+    // wait longer than the interval (which the caller never produces) is
+    // clamped to full rather than indexing past the last marker.
+    assert_eq!(marker(120), '●');
+    assert_eq!(marker(300), '●');
+    assert_eq!(marker(0), '○');
+    // Four quarters over two minutes: a quarter every thirty seconds, so the
+    // circle is the coarse shape of the wait while the seconds carry it.
+    // A quarter every thirty seconds, rounded up: the circle reaches the next
+    // quarter the moment the wait enters it.
+    for seconds in 91..=120 {
+        assert_eq!(marker(seconds), '●', "{seconds}s");
+    }
+    assert_eq!(marker(90), '◕');
+    for seconds in 61..=90 {
+        assert_eq!(marker(seconds), '◕', "{seconds}s");
+    }
+    assert_eq!(marker(60), '◑');
+    for seconds in 31..=60 {
+        assert_eq!(marker(seconds), '◑', "{seconds}s");
+    }
+    assert_eq!(marker(30), '◔');
+    for seconds in 1..=30 {
+        assert_eq!(marker(seconds), '◔', "{seconds}s");
+    }
+    assert_eq!(marker(0), '○');
 }
 
 #[test]
-fn the_refresh_bar_keeps_its_width_and_shrinks_on_a_narrow_terminal() {
-    for seconds in [0u64, 1, 7, 12, 60, 119, 120] {
-        for cells in [REFRESH_BAR_CELLS, MINI_REFRESH_BAR_CELLS] {
-            let bar = refresh_bar(Duration::from_secs(seconds), cells);
-            assert_eq!(
-                UnicodeWidthStr::width(bar.as_str()),
-                cells,
-                "{seconds}s, {cells} cells: {bar}"
-            );
-        }
+fn every_refresh_marker_is_one_cell_wide() {
+    for marker in REFRESH_MARKERS {
+        assert_eq!(UnicodeWidthStr::width(marker.to_string().as_str()), 1);
     }
 }
 
@@ -332,23 +335,17 @@ fn the_status_line_shortens_with_the_terminal() {
 
     assert_eq!(
         line(90),
-        "q quit  wheel/jk scroll  PgUp/PgDn half page  v one per row  ██████████ 2m00s  12/40"
+        "q quit  wheel/jk scroll  PgUp/PgDn half page  v one per row  ● 2m00s  12/40"
     );
     assert_eq!(
         line(61),
-        "q quit  jk  PgUp/PgDn  v one per row  ██████████ 2m00s  12/40"
+        "q quit  jk  PgUp/PgDn  v one per row  ● 2m00s  12/40"
     );
-    assert_eq!(
-        line(55),
-        "q quit  jk  PgUp/PgDn  v one per row  ██████████  12/40"
-    );
-    assert_eq!(
-        line(49),
-        "q quit  jk  PgUp/PgDn  v one per row  ████  12/40"
-    );
-    assert_eq!(line(30), "q  jk  PgUp/Dn  v  ████  12/40");
-    assert_eq!(line(17), "q  v  ████  12/40");
-    assert_eq!(line(8), "q  12/40");
+    assert_eq!(line(46), "q quit  jk  PgUp/PgDn  v one per row  ●  12/40");
+    assert_eq!(line(39), "q quit  jk  PgUp/PgDn  v one per row  ●");
+    assert_eq!(line(38), "q  jk  PgUp/Dn  v  ●");
+    assert_eq!(line(9), "q  v  ●");
+    assert_eq!(line(4), "q  ●");
     assert_eq!(line(1), "q");
     assert_eq!(
         line_text(&status_line(
@@ -359,40 +356,40 @@ fn the_status_line_shortens_with_the_terminal() {
             Layout::Columns,
             Duration::from_secs(120)
         )),
-        "q quit  v one per row  ██████████ 2m00s"
+        "q quit  v one per row  ● 2m00s"
     );
     assert_eq!(
         line_text(&status_line(
             0,
             10,
             4,
-            38,
+            25,
             Layout::Columns,
             Duration::from_secs(120)
         )),
-        "q quit  v one per row  ██████████"
+        "q quit  v one per row  ●"
     );
     assert_eq!(
         line_text(&status_line(
             0,
             10,
             4,
-            30,
+            14,
             Layout::Columns,
             Duration::from_secs(120)
         )),
-        "q quit  v one per row  ████"
+        "q quit  ●"
     );
     assert_eq!(
         line_text(&status_line(
             0,
             10,
             4,
-            22,
+            4,
             Layout::Columns,
             Duration::from_secs(120)
         )),
-        "q quit  v one per row"
+        "q  ●"
     );
     assert_eq!(
         line_text(&status_line(
@@ -409,13 +406,12 @@ fn the_status_line_shortens_with_the_terminal() {
     // something a wider one had already given up, so every piece is present
     // on a run of widths that ends at the widest.
     type Present = fn(&str) -> bool;
-    let features: [(&str, Present); 4] = [
+    let features: [(&str, Present); 5] = [
         ("the wait in words", |text| text.contains("2m00s")),
-        ("the ten-cell bar", |text| text.contains("██████████")),
-        ("the four-cell bar", |text| {
-            !text.contains("██████████") && text.contains("████")
-        }),
         ("the position", |text| text.contains("12/40")),
+        ("the layout hint", |text| text.contains("v one per row")),
+        ("the scroll keys", |text| text.contains("PgUp/Dn")),
+        ("the circle", |text| text.contains('●')),
     ];
     for (name, present) in features {
         let widths: Vec<u16> = (1..=90).filter(|width| present(&line(*width))).collect();
@@ -427,12 +423,13 @@ fn the_status_line_shortens_with_the_terminal() {
         );
     }
     // And the order they go in is the order they are dropped: the wait in
-    // words first, then the position, the ten-cell bar, and the four-cell one
-    // in place of it.
+    // words first, then the position, the layout hint and the scroll keys,
+    // and the circle last.
     assert!(
         line(90).contains("2m00s")
-            && line(60).contains("██████████")
-            && !line(30).contains("2m00s"),
+            && line(60).contains('●')
+            && !line(30).contains("2m00s")
+            && line(1) == "q",
         "{}",
         line(30)
     );
@@ -603,19 +600,17 @@ fn the_view_reserves_its_last_row_for_the_status_line() {
         Some("3h05m"),
     )])];
 
-    // Four rows is the smallest view that still has a status line: one blank
-    // row, one row of card, the gap row, and the status line. Narrow enough
-    // that only the shortest hint fits, so the row is the hints and nothing
-    // else.
+    // Four rows is the smallest view that fits the padding and a row of card:
+    // the top margin, one row of card, the gap row, and the status line.
     let rows = rendered_rows(42, 4, &cards);
 
-    assert!(rows[3].contains("q  jk"), "the status line: {rows:?}");
-    assert!(rows[3].contains("1/3"), "the position: {rows:?}");
+    assert!(rows[3].contains("q quit"), "the status line: {rows:?}");
+    assert!(rows[3].contains('○'), "the countdown: {rows:?}");
     assert_eq!(rows[2].trim(), "", "the gap row: {rows:?}");
 }
 
 #[test]
-fn a_view_too_short_for_the_status_line_shows_the_card_instead() {
+fn a_short_view_spends_its_rows_on_the_cards_before_the_padding() {
     let cards = vec![card_with_rows(vec![row(
         "5h",
         "remains",
@@ -623,12 +618,45 @@ fn a_view_too_short_for_the_status_line_shows_the_card_instead() {
         Some("3h05m"),
     )])];
 
-    // Two rows have room for the top margin and one row of card, and no room
-    // for the gap row or the status line.
+    // Two rows: the top margin goes, and the card takes the first row.
     let rows = rendered_rows(42, 2, &cards);
+    assert!(rows[0].contains('╭'), "the card starts on top: {rows:?}");
+    assert!(rows[1].contains('q'), "the status line: {rows:?}");
 
+    // Three rows: the gap stays, the top margin is still gone.
+    let rows = rendered_rows(42, 3, &cards);
+    assert!(rows[0].contains('╭'), "the card starts on top: {rows:?}");
+    assert_eq!(rows[1].trim(), "", "the gap row: {rows:?}");
+    assert!(rows[2].contains('q'), "the status line: {rows:?}");
+
+    // Four rows: both blank rows fit, the way a tall terminal draws them.
+    let rows = rendered_rows(42, 4, &cards);
     assert_eq!(rows[0].trim(), "", "the first row is blank: {rows:?}");
     assert!(rows[1].contains('╭'), "the card keeps this row: {rows:?}");
+    assert_eq!(rows[2].trim(), "", "the gap row: {rows:?}");
+    assert!(rows[3].contains('q'), "the status line: {rows:?}");
+
+    // One row has room for nothing but the cards.
+    let rows = rendered_rows(42, 1, &cards);
+    assert!(
+        rows[0].contains('╭'),
+        "the card takes the only row: {rows:?}"
+    );
+}
+
+#[test]
+fn the_chrome_gives_up_its_rows_in_order() {
+    let shape = |height| {
+        let (margin, gap, status) = chrome(Rect::new(0, 0, 42, height));
+        (margin, gap, status)
+    };
+
+    // The top margin goes first, then the gap, and the status line last.
+    assert_eq!(shape(1), (0, 0, false));
+    assert_eq!(shape(2), (0, 0, true));
+    assert_eq!(shape(3), (0, 1, true));
+    assert_eq!(shape(4), (1, 1, true));
+    assert_eq!(shape(20), (1, 1, true));
 }
 
 #[test]

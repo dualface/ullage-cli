@@ -469,27 +469,29 @@ countdown outlives the bar on purpose, so a phone-sized terminal still says
 when the quota comes back. The frame, rules, and diamonds are East Asian
 ambiguous glyphs — one cell wide to this program, but a terminal set to a CJK
 locale may render them two cells wide and misalign the box; the blocks of the
-card bars and of the status line's countdown are ambiguous too. The countdown
-dots, `◉` and `◦`, are neutral width and stay one cell in either locale.
+card bars are ambiguous too. The countdown dots, `◉` and `◦`, are neutral
+width and stay one cell in either locale.
 
 The view reads the snapshots again every two minutes, which catches each of
 the daemon's five-minute probe rounds without polling it for nothing. The
-status line counts down the wait to that next read: a ten-cell bar that
-starts full and empties cell by cell, in eighths within the cell it is in,
-beside the wait in whole seconds (`2m00s`, `0m45s`). The seconds move every
-second and the cell being emptied takes about a second and a half to fill,
-which is as fine as the countdown is useful. The line sits in the middle of
-the terminal whatever the boxes do — a centered band and a full-width row put
-it in the same place — with a blank row between it and the boxes, and a blank
-row above the boxes at the top of the screen. A refresh the daemon cannot
-answer shows as a bar that empties and stays there: the readings stay put and
-the next interval tries again.
+status line counts down the wait to that next read: one circle filled by
+quarter, `○ ◔ ◑ ◕ ●`, beside the wait in whole seconds (`2m00s`, `0m45s`).
+The circle is the coarse shape of the wait — a quarter every thirty seconds —
+and the seconds carry the rest. The line sits in the middle of the terminal
+whatever the boxes do — a centered band and a full-width row put it in the
+same place — with a blank row between it and the boxes, and a blank row above
+the boxes at the top of the screen; a terminal too short for both blank rows
+spends its rows on the cards and the hints first, giving up the top margin,
+then the gap, and the status line last. A refresh the daemon cannot answer
+shows as a circle that empties and stays there: the readings stay put and the
+next interval tries again.
 
 The view also scrolls: the mouse wheel moves three rows, `PgUp` and `PgDn` move half a screen, `Up`/`Down` (or `k`
 and `j`) move one row, and `Home`/`End` jump to the ends. The status line
-also carries the keys and the position, dropping them last. Press `q`, `Q`,
-`Esc`, or `Ctrl+C` to exit; the terminal, including mouse capture, is restored
-on the way out.
+also carries the keys and the position, giving up the wait in words first,
+then the position, the layout hint and the scroll keys, and the circle last.
+Press `q`, `Q`, `Esc`, or `Ctrl+C` to exit; the terminal, including mouse
+capture, is restored on the way out.
 
 `--metric <display-name>` keeps only the summary rows whose display name matches
 exactly, ignoring case and the window a row belongs to; repeat the flag to keep
