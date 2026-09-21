@@ -468,9 +468,10 @@ As the terminal narrows, every row of a box gives up its widest field first:
 the ten-cell bar shrinks to four cells (`┄┄━━`), then the verb goes, then the
 small bar, then the countdown, leaving the window and its reading. The
 countdown outlives the bar on purpose, so a phone-sized terminal still says
-when the quota comes back. The frame, rules, dots, and diamonds are East Asian
+when the quota comes back. The frame, rules, and diamonds are East Asian
 ambiguous glyphs — one cell wide to this program, but a terminal set to a CJK
-locale may render them two cells wide and misalign the box.
+locale may render them two cells wide and misalign the box. The countdown
+dots, `◉` and `◦`, are neutral width and stay one cell in either locale.
 
 The view reads the snapshots again every two minutes, which catches each of
 the daemon's five-minute probe rounds without polling it for nothing. The
