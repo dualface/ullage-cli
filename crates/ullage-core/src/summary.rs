@@ -27,16 +27,17 @@ pub use filter::{
 /// hidden boolean never hides the state it reports, because every abnormal
 /// value re-appears as [`UsageSummary::limit_reached`], a
 /// [`SummaryValue::CreditsUnlimited`] row, or the `(off)` marker and its
-/// [`SummaryValue::Disabled`] stand-in. The last two are Cursor's component
-/// spends, which are hidden unconditionally: they are not a state, only a
-/// second breakdown of money `total_spend` already reports.
-const HIDDEN_MEASUREMENTS: [&str; 8] = [
+/// [`SummaryValue::Disabled`] stand-in. The last three are Cursor's spend
+/// amounts: the summary keeps the quota percentages and drops the dollar
+/// ledger, which is noise next to `auto` / `api` / `usage`.
+const HIDDEN_MEASUREMENTS: [&str; 9] = [
     "allowed",
     "limit_reached",
     "has_credits",
     "unlimited",
     "on_demand_enabled",
     "enabled",
+    "total_spend",
     "included_spend",
     "bonus_spend",
 ];
@@ -477,7 +478,7 @@ pub(crate) mod tests {
     fn spent_amounts_do_not_report_remaining_ratio() {
         let summary = summarize(&usage(vec![window(
             UsageWindowKind::Monthly,
-            vec![money("total_spend", 925.11, Some(400.0))],
+            vec![money("spent", 925.11, Some(400.0))],
         )]));
 
         assert_eq!(
@@ -579,7 +580,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cursor_keeps_total_spend_and_drops_its_two_components() {
+    fn cursor_drops_every_spend_amount_and_keeps_quota_rows() {
         let summary = summarize(&usage(vec![window(
             UsageWindowKind::Monthly,
             vec![
@@ -593,30 +594,20 @@ pub(crate) mod tests {
         )]));
 
         let metrics: Vec<&str> = summary.rows.iter().map(|row| row.metric.as_str()).collect();
-        assert_eq!(
-            metrics,
-            vec!["total spend", "usage", "on demand spend"],
-            "{summary:?}"
-        );
-        assert_eq!(
-            summary.rows[0].value,
-            SummaryValue::Spent {
-                amount: 3.0,
-                limit: 20.0,
-                currency: Currency { code: "USD".into() },
-            }
-        );
-        assert_eq!(summary.rows[0].remaining_ratio, None);
+        assert_eq!(metrics, vec!["usage", "on demand spend"], "{summary:?}");
+        assert_eq!(summary.rows[0].value, SummaryValue::Remains(85.0));
+        assert_eq!(summary.rows[0].remaining_ratio, Some(0.85));
         assert!(!summary.rows[0].disabled);
-        assert_eq!(summary.rows[2].remaining_ratio, None);
-        assert!(summary.rows[2].disabled, "on-demand is switched off");
+        assert_eq!(summary.rows[1].remaining_ratio, None);
+        assert!(summary.rows[1].disabled, "on-demand is switched off");
     }
 
     #[test]
-    fn cursor_components_stay_hidden_even_without_total_spend() {
+    fn cursor_spend_amounts_stay_hidden_even_alone() {
         let summary = summarize(&usage(vec![window(
             UsageWindowKind::Monthly,
             vec![
+                money("total_spend", 3.0, Some(20.0)),
                 money("included_spend", 2.0, None),
                 money("bonus_spend", 1.0, None),
             ],
@@ -663,13 +654,13 @@ pub(crate) mod tests {
         let summary = summarize(&usage(vec![window(
             UsageWindowKind::Monthly,
             vec![
-                money("total_spend", 3.0, Some(20.0)),
+                percent("total", 15.0),
                 boolean("on_demand_enabled", false),
             ],
         )]));
 
         assert_eq!(summary.rows.len(), 2, "{summary:?}");
-        assert_eq!(summary.rows[0].metric, "total spend");
+        assert_eq!(summary.rows[0].metric, "usage");
         assert!(!summary.rows[0].disabled, "only on-demand is switched off");
         assert_eq!(summary.rows[1].metric, "on demand");
         assert_eq!(summary.rows[1].value, SummaryValue::Disabled);

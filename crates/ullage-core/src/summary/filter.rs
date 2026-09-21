@@ -222,7 +222,7 @@ mod tests {
             window(
                 UsageWindowKind::Monthly,
                 vec![
-                    money("total_spend", 3.0, Some(20.0)),
+                    percent("auto", 20.0),
                     money("on_demand_spend", 0.0, Some(50.0)),
                     boolean("on_demand_enabled", false),
                 ],
@@ -330,7 +330,7 @@ mod tests {
             [
                 "usage",
                 "credit balance",
-                "total spend",
+                "auto",
                 "on demand spend",
                 "on demand",
                 "status",
@@ -345,7 +345,7 @@ mod tests {
                 &[
                     "usage",
                     "credit balance",
-                    "total spend",
+                    "auto",
                     "on demand spend",
                     "on demand",
                     "status",
@@ -412,7 +412,7 @@ mod tests {
             row_metrics(&hidden),
             [
                 "credit balance",
-                "total spend",
+                "auto",
                 "on demand spend",
                 "on demand",
                 "spent",
@@ -438,7 +438,7 @@ mod tests {
         let everything = [
             "usage",
             "credit balance",
-            "total spend",
+            "auto",
             "on demand spend",
             "on demand",
             "status",
@@ -462,7 +462,7 @@ mod tests {
             &["status"],
             &["on demand"],
             &["on demand spend"],
-            &["total spend"],
+            &["auto"],
             &["allowed"],
         ];
         for names in filters {
@@ -547,7 +547,7 @@ mod tests {
             row_metrics(&summary),
             [
                 "credit balance",
-                "total spend",
+                "auto",
                 "on demand spend",
                 "on demand",
                 "status",

@@ -73,9 +73,7 @@ weekly         used up          ------*  [----------]
 fable          remains 25%      ------*  [-------###]
 
 ==== chatgpt - pro ====
-weekly-Codex   used up          ----***  [----------]
-Reset          credits 0
-Balance        credits 0
+weekly         used up          ----***  [----------]
 ```
 
 ## 数据路径
@@ -360,7 +358,7 @@ ullage tui --vertical
 
 表格输出默认是可读摘要：每个可用测量一行，包含窗口、度量、剩余配额、窗口重置时间，以及作为最后一列的十格进度条。用尽的行显示 `used up` 而不是 `remains 0%`，后者看起来像空测量；不足百分之零点五的行显示 `remains <1%`，而不是向下取整成同一个零。重置列固定为 7 个字符：不足一天用短横夹住整天小时数（`-  3h -`），一周以内用短横补位、每天一个星号（`-******`），超过一周把天数居中放在星号之间（`* 23d *`），列宽不变，等待时间一眼可读。
 
-两类提供方簿记永远不会变成摘要行。状态布尔值 `allowed`、`limit_reached`、`has_credits`、`unlimited`、`on_demand_enabled` 和 `enabled` 作为行被隐藏，但作为状态不会丢：已达上限变成 `! limit reached` 行，不计量的额度变成 `credits unlimited` 行，关闭的功能在它所作用的数量上标 `(off)`，若提供方没有报告该数量则给出单独的 `disabled` 行。Cursor 的 `included_spend` 和 `bonus_spend` 无条件排除在映射之外，即使没有 `total_spend` 也一样——它们不是状态，只是 `total_spend` 已经报告的金额的第二套拆分。
+两类提供方簿记永远不会变成摘要行。状态布尔值 `allowed`、`limit_reached`、`has_credits`、`unlimited`、`on_demand_enabled` 和 `enabled` 作为行被隐藏，但作为状态不会丢：已达上限变成 `! limit reached` 行，不计量的额度变成 `credits unlimited` 行，关闭的功能在它所作用的数量上标 `(off)`，若提供方没有报告该数量则给出单独的 `disabled` 行。Cursor 的 `total_spend`、`included_spend` 和 `bonus_spend` 无条件排除在映射之外——它们是配额行旁边的美元流水，不是剩余配额。
 
 这两类仍出现在原始表中。用 `--raw` 可看到；不给该标志时，若映射后没有任何测量存活，账户块会带说明回退到原始表，并仍带过期、上限和部分失败提示。
 

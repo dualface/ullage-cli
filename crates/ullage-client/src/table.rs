@@ -493,7 +493,12 @@ fn compact_identity(window: &str, metric: &str, keep_usage: bool) -> String {
     if let Some(rest) = strip_gpt_prefix(metric) {
         return format!("{window}-{rest}");
     }
-    if matches!(metric, "Codex" | "auto" | "api") {
+    // Codex is the account's main weekly pool; the product name adds no
+    // information once the row is alone under the ChatGPT heading.
+    if metric == "Codex" {
+        return window.to_string();
+    }
+    if matches!(metric, "auto" | "api") {
         return format!("{window}-{metric}");
     }
     format!("{window}{}{metric}", " ".repeat(COLUMN_GAP))
@@ -501,7 +506,24 @@ fn compact_identity(window: &str, metric: &str, keep_usage: bool) -> String {
 
 fn hidden_in_table(row: &SummaryRow) -> bool {
     let on_demand = row.metric == "on demand" || row.metric.starts_with("on demand ");
-    on_demand && (row.disabled || matches!(row.value, SummaryValue::Disabled))
+    if on_demand && (row.disabled || matches!(row.value, SummaryValue::Disabled)) {
+        return true;
+    }
+    // ChatGPT's credit balance and rate-limit reset credits are only worth a
+    // line when the count is non-zero; a bare zero is noise next to the pool.
+    if matches!(
+        &row.value,
+        SummaryValue::Credits {
+            used,
+            limit: None
+        } if *used == 0.0
+    ) {
+        let window = row.window.as_str();
+        return window.eq_ignore_ascii_case("credits")
+            || window.eq_ignore_ascii_case("resets")
+            || window.eq_ignore_ascii_case("reset");
+    }
+    false
 }
 
 fn strip_gpt_prefix(metric: &str) -> Option<&str> {
@@ -931,7 +953,7 @@ mod tests {
         assert_eq!(compact_identity("fable", "usage", false), "fable");
         assert_eq!(compact_identity("5h", "GPT-5.3", false), "5h-5.3");
         assert_eq!(compact_identity("weekly", "GPT-5.3", false), "weekly-5.3");
-        assert_eq!(compact_identity("weekly", "Codex", false), "weekly-Codex");
+        assert_eq!(compact_identity("weekly", "Codex", false), "weekly");
         assert_eq!(compact_identity("weekly", "GrokBuild", false), "GrokBuild");
         assert_eq!(compact_identity("monthly", "usage", true), "monthly-usage");
         assert_eq!(compact_identity("monthly", "auto", false), "monthly-auto");
@@ -1087,10 +1109,10 @@ mod tests {
         assert_eq!(
             block,
             concat!(
-                "5h            remains 97%   -  3h -  [##########]\n",
-                "weekly-5.3    remains 100%  -  8h -  [##########]\n",
-                "weekly-Codex  remains 50%   -  8h -  [-----#####]\n",
-                "GrokBuild     remains 40%            [------####]\n",
+                "5h          remains 97%   -  3h -  [##########]\n",
+                "weekly-5.3  remains 100%  -  8h -  [##########]\n",
+                "weekly      remains 50%   -  8h -  [-----#####]\n",
+                "GrokBuild   remains 40%            [------####]\n",
             ),
             "{block}"
         );
@@ -1309,15 +1331,48 @@ mod tests {
                 "Credits",
                 "credit balance",
                 SummaryValue::Credits {
-                    used: 0.0,
+                    used: 4.0,
                     limit: None,
                 },
             )],
             at(12, 0),
             &Palette::off(),
         );
-        assert_eq!(block, "Balance  credits 0\n", "{block}");
+        assert_eq!(block, "Balance  credits 4\n", "{block}");
         assert!(!block.contains(']'), "{block}");
+    }
+
+    #[test]
+    fn zero_credit_balance_and_reset_rows_are_hidden() {
+        let block = render_summary_rows(
+            &[
+                SummaryRow {
+                    remaining_ratio: Some(0.5),
+                    ..summary_row("weekly", "Codex", SummaryValue::Remains(50.0))
+                },
+                summary_row(
+                    "Credits",
+                    "credit balance",
+                    SummaryValue::Credits {
+                        used: 0.0,
+                        limit: None,
+                    },
+                ),
+                summary_row(
+                    "Resets",
+                    "available count",
+                    SummaryValue::Credits {
+                        used: 0.0,
+                        limit: None,
+                    },
+                ),
+            ],
+            at(12, 0),
+            &Palette::off(),
+        );
+        assert_eq!(block, "weekly  remains 50%  [-----#####]\n", "{block}");
+        assert!(!block.contains("Balance"), "{block}");
+        assert!(!block.contains("Reset"), "{block}");
     }
 
     #[test]

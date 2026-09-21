@@ -481,7 +481,7 @@ fn every_card_shares_one_set_of_columns() {
     // widen the columns of every card, so the readings line up down the
     // screen instead of per box.
     let cards = vec![
-        card_with_rows(vec![row("weekly-Codex", "remains", "62%", Some("1h53m"))]),
+        card_with_rows(vec![row("weekly", "remains", "62%", Some("1h53m"))]),
         card_with_rows(vec![row("5h", "remains", "$1001.39", Some("1h53m"))]),
         card_with_rows(vec![row("api", "credits", "0", Some("1h53m"))]),
     ];

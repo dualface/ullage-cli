@@ -622,6 +622,13 @@ pub fn normalize(value: ClaudeUsage) -> ProviderResult<SubscriptionUsage> {
         }
         let mut limit_window_ids = std::collections::HashSet::new();
         for limit in &usage.limits {
+            // `session` and `weekly_all` restate five_hour / seven_day; keep
+            // the typed windows and drop these duplicates from the summary.
+            if limit.kind.eq_ignore_ascii_case("session")
+                || limit.kind.eq_ignore_ascii_case("weekly_all")
+            {
+                continue;
+            }
             validate_measurement(limit.percent, "model usage utilization")?;
             // A limit scoped to something other than a model still counts, so
             // it is keyed by its kind and group rather than dropped silently.
@@ -1530,6 +1537,66 @@ mod tests {
                 UsageWindowKind::Other { id, .. } if id == "model_seven_day_model_future_model"
             )
         }));
+    }
+
+    #[test]
+    fn session_and_weekly_all_limits_are_dropped_as_duplicates() {
+        let snapshot = normalize(ClaudeUsage {
+            profile: None,
+            usage: Some(ClaudeUsageResponse {
+                five_hour: Some(ClaudeUsageWindow {
+                    utilization: Some(2.0),
+                    resets_at: None,
+                }),
+                seven_day: Some(ClaudeUsageWindow {
+                    utilization: Some(47.0),
+                    resets_at: None,
+                }),
+                limits: vec![
+                    ClaudeLimit {
+                        kind: "session".into(),
+                        group: "default".into(),
+                        percent: 2.0,
+                        resets_at: None,
+                        scope: None,
+                    },
+                    ClaudeLimit {
+                        kind: "weekly_all".into(),
+                        group: "default".into(),
+                        percent: 47.0,
+                        resets_at: None,
+                        scope: None,
+                    },
+                    ClaudeLimit {
+                        kind: "weekly_scoped".into(),
+                        group: "model".into(),
+                        percent: 62.0,
+                        resets_at: None,
+                        scope: Some(ClaudeLimitScope {
+                            model: Some(ClaudeScopeLabel {
+                                display_name: "Fable".into(),
+                            }),
+                            surface: None,
+                        }),
+                    },
+                ],
+                ..ClaudeUsageResponse::default()
+            }),
+            observed_at: Utc::now(),
+        })
+        .unwrap();
+
+        let labels: Vec<String> = snapshot
+            .windows
+            .iter()
+            .map(|window| match &window.window {
+                UsageWindowKind::FiveHours => "5h".into(),
+                UsageWindowKind::Weekly => "weekly".into(),
+                UsageWindowKind::Other { label, .. } => label.clone(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(labels, ["5h", "weekly", "Fable (weekly_scoped)"]);
     }
 
     #[test]

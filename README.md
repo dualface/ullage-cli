@@ -93,9 +93,7 @@ weekly         used up          ------*  [----------]
 fable          remains 25%      ------*  [-------###]
 
 ==== chatgpt - pro ====
-weekly-Codex   used up          ----***  [----------]
-Reset          credits 0
-Balance        credits 0
+weekly         used up          ----***  [----------]
 ```
 
 ## Data paths
@@ -520,9 +518,9 @@ Two kinds of provider bookkeeping never become summary rows. The status booleans
 `! limit reached` line, unmetered credits become a `credits unlimited` row, and
 a switched-off feature is marked `(off)` on the amount it applies to, or given
 its own `disabled` row when the provider reported no such amount. Cursor's
-`included_spend` and `bonus_spend` are excluded from the mapping
-unconditionally, including when `total_spend` is absent — they are not a state,
-only a second breakdown of the money `total_spend` already reports.
+`total_spend`, `included_spend`, and `bonus_spend` are excluded from the
+mapping unconditionally — they are a dollar ledger next to the quota rows,
+not remaining quota.
 
 Both kinds still appear in the raw table, which you reach with `--raw` or,
 without it, when no measurement survives the mapping: the account block then
