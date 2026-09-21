@@ -42,7 +42,7 @@ const MINI_BAR_WIDTH: usize = 4;
 /// Cells of the reset countdown's dot and diamond fields.
 const RESET_FIELD_WIDTH: usize = 7;
 /// The dot of a day still to wait, and of a day already counted off.
-const DAY_LEFT: char = '•';
+const DAY_LEFT: char = '◉';
 const DAY_EMPTY: char = '◦';
 
 /// How wide a card wants to be: enough for every column the screen shares,
@@ -670,7 +670,7 @@ fn shared_prefix(rows: &[CardRow]) -> Option<usize> {
 
 /// How long until the window resets. Under a day the exact wait is worth
 /// more than the scale, so it is spelled out (`3h05m`, `12m`, `<1m`); within
-/// a week each remaining day lights one of seven dots (`◦◦◦◦◦••`); beyond a
+/// a week each remaining day lights one of seven dots (`◦◦◦◦◦◉◉`); beyond a
 /// week the day count sits centered between two diamonds (`◆ 23d ◆`).
 fn reset_text(seconds: i64) -> String {
     let seconds = seconds.max(0);

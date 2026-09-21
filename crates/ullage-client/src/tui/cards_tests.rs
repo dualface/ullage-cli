@@ -251,9 +251,9 @@ fn countdowns_cover_days_hours_minutes_and_expiry() {
     let cases = [
         (23 * 86_400, "◆ 23d ◆"),
         (8 * 86_400, "◆  8d ◆"),
-        (7 * 86_400, "•••••••"),
-        (2 * 86_400, "◦◦◦◦◦••"),
-        (86_400, "◦◦◦◦◦◦•"),
+        (7 * 86_400, "◉◉◉◉◉◉◉"),
+        (2 * 86_400, "◦◦◦◦◦◉◉"),
+        (86_400, "◦◦◦◦◦◦◉"),
         (86_400 - 1, "23h59m"),
         (3 * 3_600 + 300, "3h05m"),
         (12 * 60, "12m"),
@@ -350,7 +350,7 @@ fn a_42_column_card_still_shows_the_full_ten_cell_bar() {
         row("5h", "remains", "91%", Some("3h05m")),
         CardRow {
             ratio: Some(0.07),
-            ..row("weekly", "remains", "7%", Some("◦••••••"))
+            ..row("weekly", "remains", "7%", Some("◦◉◉◉◉◉◉"))
         },
     ]);
 
@@ -435,7 +435,7 @@ fn the_title_names_the_provider_first_and_keeps_the_rest_quiet() {
 fn readings_and_countdowns_end_on_the_same_column() {
     let card = card_with_rows(vec![
         row("5h", "remains", "91%", Some("3h05m")),
-        row("weekly", "remains", "7%", Some("◦••••••")),
+        row("weekly", "remains", "7%", Some("◦◉◉◉◉◉◉")),
     ]);
 
     let lines = card_lines(
@@ -454,7 +454,7 @@ fn readings_and_countdowns_end_on_the_same_column() {
     );
     assert_eq!(
         first.find("3h05m").unwrap() + 5,
-        second.find("◦••••••").unwrap() + 7
+        second.find("◦◉◉◉◉◉◉").unwrap() + 7
     );
 }
 

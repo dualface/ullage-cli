@@ -434,7 +434,7 @@ does plus the wait until each window resets:
 ```console
 ╭─ claude  max_20x  personal ────────────╮
 │ 5h      remains 91%   3h05m ┄━━━━━━━━━ │
-│ weekly  used up     ◦•••••• ┄┄┄┄┄┄┄┄┄┄ │
+│ weekly  used up     ◦◉◉◉◉◉◉ ┄┄┄┄┄┄┄┄┄┄ │
 │ fable   remains 25% ◆ 12d ◆ ┄┄┄┄┄┄┄━━━ │
 ╰────────────────────────────────────────╯
 ```
@@ -447,7 +447,7 @@ The bar is ten cells (`━` left, `┄` spent) with no brackets, colored by how
 much is left: red at or under 10%, yellow at or under 25%, green otherwise.
 The countdown has three forms: under a day the exact wait is spelled out
 (`3h05m`, `12m`, `<1m`); within a week each remaining day lights one of seven
-dots (`◦◦◦◦◦••`); beyond a week the day count sits centered between two
+dots (`◦◦◦◦◦◉◉`); beyond a week the day count sits centered between two
 diamonds (`◆ 23d ◆`), still seven cells wide.
 
 Every box shares one set of columns, measured across the whole screen, so a
