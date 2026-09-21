@@ -187,12 +187,13 @@ class Ullage < Formula
   post_install_steps do
     # Stop first so an upgrade bootstraps the new Cellar keg. kickstart of a
     # still-loaded job would keep the previous ProgramArguments.
-    # must_succeed: false is the declarative quiet_system: a missing GUI
-    # session or systemd user bus must not fail brew install. The steps DSL
-    # has no ohai/conditional opoo, so caveats carry the recovery hint.
-    run "ullage", args: ["daemon", "stop"], base: :bin, must_succeed: false
-    run "ullage", args: ["daemon", "install"], base: :bin, must_succeed: false
-    run "ullage", args: ["daemon", "start"], base: :bin, must_succeed: false
+    # must_succeed: false and print_stderr: false together are the declarative
+    # quiet_system: a missing GUI session or systemd user bus must not fail
+    # brew install nor spam the daemon's stderr. The steps DSL has no
+    # ohai/conditional opoo, so caveats carry the recovery hint.
+    run "ullage", args: ["daemon", "stop"], base: :bin, must_succeed: false, print_stderr: false
+    run "ullage", args: ["daemon", "install"], base: :bin, must_succeed: false, print_stderr: false
+    run "ullage", args: ["daemon", "start"], base: :bin, must_succeed: false, print_stderr: false
   end
 
   def caveats

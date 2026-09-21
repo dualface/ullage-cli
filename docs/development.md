@@ -137,9 +137,9 @@ Linux-only Intel URL leaves ARM Linuxbrew users without an install.
 `post_install_steps` runs `ullage daemon stop`, `install`, and `start`
 against the Cellar keg binary. Stop comes first so an upgrade bootstraps the
 new keg instead of kickstarting the previously loaded LaunchAgent. Each
-`run` step carries `must_succeed: false`, the declarative equivalent of
-`quiet_system`: a missing GUI session or systemd user bus must not fail
-`brew install`. The steps DSL has no `ohai` or conditional `opoo`
+`run` step carries `must_succeed: false` and `print_stderr: false`, the
+declarative equivalent of `quiet_system`: a missing GUI session or systemd
+user bus must not fail `brew install` or leak the daemon's stderr. The steps DSL has no `ohai` or conditional `opoo`
 equivalent, so a failed step no longer prints an active hint; the caveats
 text carries the `ullage daemon install` fallback. Do not add a Homebrew
 `service do` block; the daemon's own user-level unit has the path and
