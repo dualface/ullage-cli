@@ -85,6 +85,9 @@ jobs:
           test -x "$brew"
           eval "$("$brew" shellenv)"
           export HOMEBREW_NO_AUTO_UPDATE=1
+          # Homebrew 6 loads a third-party tap only after it is trusted, and
+          # this job installs one formula, so trust just that formula.
+          brew trust --formula dualface/tap/ullage
           brew install dualface/tap/ullage
           ullage --version
           command -v ullage
