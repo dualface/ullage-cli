@@ -103,10 +103,12 @@ fn named_row(window: &str, metric: &str, percent: f64) -> SummaryRow {
 
 #[test]
 fn a_prefix_every_row_repeats_is_dropped_with_its_separator() {
+    // "api" survives compaction as `<window>-api`; "Codex" would collapse
+    // to the bare window name and leave nothing to strip the prefix from.
     let rows = rows(
         &summary(vec![
             named_row("monthly", "auto", 91.0),
-            named_row("monthly", "Codex", 40.0),
+            named_row("monthly", "api", 40.0),
         ]),
         now(),
     );
@@ -115,7 +117,7 @@ fn a_prefix_every_row_repeats_is_dropped_with_its_separator() {
         .iter()
         .map(|row| row.identity.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(identities, ["auto", "Codex"]);
+    assert_eq!(identities, ["auto", "api"]);
 }
 
 #[test]

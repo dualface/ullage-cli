@@ -653,10 +653,7 @@ pub(crate) mod tests {
     fn a_disabled_on_demand_feature_is_reported_beside_the_windows_other_rows() {
         let summary = summarize(&usage(vec![window(
             UsageWindowKind::Monthly,
-            vec![
-                percent("total", 15.0),
-                boolean("on_demand_enabled", false),
-            ],
+            vec![percent("total", 15.0), boolean("on_demand_enabled", false)],
         )]));
 
         assert_eq!(summary.rows.len(), 2, "{summary:?}");
