@@ -670,24 +670,28 @@ fn shared_prefix(rows: &[CardRow]) -> Option<usize> {
 }
 
 /// How long until the window resets. Under a day the exact wait is worth
-/// more than the scale, so it is spelled out (`3h05m`, `12m`, `<1m`); within
-/// a week each remaining day lights one of seven dots (`◦◦◦◦◦◉◉`); beyond a
+/// more than the scale, so it is spelled out (`3h05m`, `12m`, `<1m`). From a
+/// full day on, the wait rounds up to whole days, so any part of a day counts
+/// as one: within a week each such day lights one of seven dots
+/// (`◦◦◦◦◦◉◉`), and a freshly reset weekly window fills all seven; beyond a
 /// week the day count sits centered between two diamonds (`◆ 23d ◆`).
 fn reset_text(seconds: i64) -> String {
     let seconds = seconds.max(0);
-    let days = seconds / SECONDS_PER_DAY;
+    if seconds < SECONDS_PER_DAY {
+        return countdown_text(seconds);
+    }
+    // Spelled out rather than `seconds + SECONDS_PER_DAY - 1` so a reset
+    // near `i64::MAX` cannot overflow.
+    let days = seconds / SECONDS_PER_DAY + i64::from(seconds % SECONDS_PER_DAY != 0);
     if days > RESET_FIELD_WIDTH as i64 {
         return diamond_field(&format!("{days}d"));
     }
-    if days >= 1 {
-        let days = days as usize;
-        return format!(
-            "{}{}",
-            DAY_EMPTY.to_string().repeat(RESET_FIELD_WIDTH - days),
-            DAY_LEFT.to_string().repeat(days)
-        );
-    }
-    countdown_text(seconds)
+    let days = days as usize;
+    format!(
+        "{}{}",
+        DAY_EMPTY.to_string().repeat(RESET_FIELD_WIDTH - days),
+        DAY_LEFT.to_string().repeat(days)
+    )
 }
 
 /// `◆ 23d ◆`: the day count centered in a [`RESET_FIELD_WIDTH`]-cell field

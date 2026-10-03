@@ -247,14 +247,18 @@ fn disabled_rows_keep_the_off_suffix() {
 
 #[test]
 fn countdowns_cover_days_hours_minutes_and_expiry() {
-    // Under a day the exact wait is spelled out; within a week each
-    // remaining day lights one of seven dots; beyond a week the day count
-    // sits centered between diamonds, still seven cells wide.
+    // Under a day the exact wait is spelled out; from a full day on the
+    // wait rounds up to whole days, so a partial day lights a dot of its
+    // own; beyond a week the rounded-up day count sits centered between
+    // diamonds, still seven cells wide.
     let cases = [
         (23 * 86_400, "◆ 23d ◆"),
         (8 * 86_400, "◆  8d ◆"),
+        (7 * 86_400 + 1, "◆  8d ◆"),
         (7 * 86_400, "◉◉◉◉◉◉◉"),
+        (7 * 86_400 - 1, "◉◉◉◉◉◉◉"),
         (2 * 86_400, "◦◦◦◦◦◉◉"),
+        (86_400 + 1, "◦◦◦◦◦◉◉"),
         (86_400, "◦◦◦◦◦◦◉"),
         (86_400 - 1, "23h59m"),
         (3 * 3_600 + 300, "3h05m"),
