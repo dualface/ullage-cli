@@ -1,8 +1,48 @@
-# Ullage
+# Ullage：一屏看清所有 AI 订阅的剩余额度
 
 语言: [English](README.md) · [简体中文](README-CN.md)
 
-Ullage 是本地守护进程和 CLI，用来查看 Claude、ChatGPT、Grok、Cursor、OpenCode Go、Devin、codex2api 和 sub2api 的订阅用量。单个 `ullage` 二进制同时托管守护进程，并通过本机私有控制套接字或命名管道与之通信。凭据默认放在平台凭据库中；配置文件不含密钥。
+一个本地守护进程与 CLI。它定时查询 Claude、ChatGPT、Grok、Cursor、OpenCode Go、Devin、codex2api 和 sub2api 的订阅用量，把每个窗口的剩余额度和重置时间汇总到同一个终端视图里。
+
+同时订阅多家 AI 编码工具时，每家的用量都在各自的网页后台，窗口（5 小时、每周、每月）和单位（百分比、token、美元）各不相同。开启 Ullage 后，一条命令就能看清：**还剩多少、什么时候恢复、哪个账户快用完了**。
+
+> 💡 凭据默认存放在平台凭据库，配置文件不含密钥。守护进程默认只通过本机私有控制通道通信，不监听任何 TCP 端口。
+
+---
+
+## 为什么需要 Ullage？
+
+**常见做法：**
+
+> 逐个登录各家网页后台查看用量。Claude 看 5 小时和每周额度，ChatGPT 看每周额度，Cursor 看月度额度和美元消耗。有几个账户，就要重复几遍。
+
+**用 Ullage：**
+
+```console
+
+$ ullage tui
+
+╭─ claude  max_20x  personal ────────────╮
+│ 5h      remains 91%   3h05m ┄━━━━━━━━━ │
+│ weekly  used up     ◦◉◉◉◉◉◉ ┄┄┄┄┄┄┄┄┄┄ │
+│ fable   remains 25% ◆ 12d ◆ ┄┄┄┄┄┄┄━━━ │
+╰────────────────────────────────────────╯
+
+```
+
+每个订阅一个方框。每一行是一个窗口：剩余比例、距离重置的时间、十格进度条。用尽的窗口显示 `used up`。
+
+---
+
+## 核心特性
+
+- **八家提供方，多账户**：同一提供方可以添加多个账户，凭据和快照按账户隔离。
+- **后台定时探测**：守护进程按账户定时查询提供方（默认每 300 秒一次）。`show` 和 `tui` 只读已保存的快照，不打扰提供方。
+- **终端看板**：`ullage tui` 显示进度条和重置倒计时。终端变窄时逐级省略字段，手机大小的终端仍能看到额度什么时候恢复。
+- **凭据安全**：凭据存放在 macOS Keychain、Windows Credential Manager 或 Linux Secret Service。账户标签、授权 URL 等个人信息默认脱敏输出。
+- **可编程**：支持 JSON 输出。可选开启 HTTP API，客户端经一次性配对码配对后，按设备令牌访问。
+
+---
 
 ## 安装
 
@@ -14,13 +54,15 @@ Ullage 是本地守护进程和 CLI，用来查看 Claude、ChatGPT、Grok、Cur
 brew install dualface/tap/ullage
 ```
 
-Linux 需要先安装 [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux)。公式会按当前系统和 CPU 安装 GitHub Release 里的预编译二进制，然后执行 `ullage daemon install` 和 `ullage daemon start`。
+Linux 需要先安装 [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux)。命令会按当前系统和 CPU 安装 GitHub Release 里的预编译二进制，然后执行 `ullage daemon install` 和 `ullage daemon start`。
 
 **WinGet**（Windows）
 
 ```powershell
 winget install Dualface.Ullage
 ```
+
+> 目前还在等待审核，winget 审核极其缓慢，建议直接下载二进制使用。
 
 安装包把 `ullage.exe` 放到 `%LOCALAPPDATA%\Ullage`，把该目录加入用户 `PATH`，然后执行 `ullage daemon install` 和 `ullage daemon start`。安装后请开一个新终端，以便 `PATH` 生效。GitHub Release 里的 zip 仍是便携版，不会注册计划任务。
 
@@ -41,6 +83,42 @@ cargo build --release -p ullage-cli
 ```
 
 二进制位于 `target/release/ullage`。若希望用户级服务命令能在固定位置找到它，把它放到 `PATH` 上。
+
+## 快速上手
+
+1. 登录一个账户。命令会引导你选择提供方并完成授权（详见下文「认证」）：
+
+   ```sh
+   ullage auth login
+   ```
+
+2. 查看全部账户的用量：
+
+   ```sh
+   ullage show --all
+   ```
+
+3. 打开终端看板。按 `v` 切换排列方式，按 `q` 退出：
+
+   ```sh
+   ullage tui
+   ```
+
+通过 Homebrew 或 WinGet 安装时，守护进程已自动安装并启动。用其他方式安装时，先执行 `ullage daemon install`（详见下文「守护进程生命周期」）。
+
+---
+
+## 实战配合：与 Kander 协同
+
+[Kander](https://github.com/dualface/kander) 是多 Agent 看板调度工具。它调度的执行与审核 Agent（Claude Code、Codex、Cursor、Grok、Devin、OpenCode 等）分别消耗不同的订阅额度。
+
+- **派卡前看额度**：用 `ullage tui` 看一眼各订阅的剩余额度，把大卡派给额度充足的 Agent。
+- **避开窗口上限**：5 小时窗口快用完时，看重置倒计时，决定先等还是换一个 Agent。
+- **多账户一屏看完**：同一提供方的多个账户分开显示，不用逐个登录后台。
+
+---
+
+以下是完整参考。
 
 ## 认证
 
@@ -338,41 +416,6 @@ ullage tui --vertical
 ╰────────────────────────────────────────╯
 ```
 
-一个方框里所有行都重复的窗口名会被去掉：Cursor 把每个窗口都报成 `monthly-…`，框里就只显示 `auto`、`Codex`。若去掉后某一行什么都不剩，则整框保留原名。
-
-进度条是十格线条（`━` 为剩余、`┄` 为已用），没有方括号，颜色按剩余比例：不足 10% 红、不足 25% 黄、其余绿。倒计时分三档：一天以内写出精确等待时间（`3h05m`、`12m`、`<1m`）；一周以内每剩一天点亮七格点阵中的一点（`◦◦◦◦◦◉◉`）；超过一周把天数居中放在菱形之间（`◆ 23d ◆`），同样是七格宽。
-
-所有方框共用同一套列宽，按整屏测量，所以窗口名短的那一行的读数，和另一个提供方框里名字长的那一行是对齐的。方框宽度按这套列宽需要多少给多少，最多七十二格；终端比这窄就给多少用多少，行按最宽的字段依次让位。
-
-方框先按提供方、再按账户排序，忽略大小写；从左到右排列，空间不足时换行；一行里只放得下一个方框时，方框保持自身宽度并水平居中，而不是拉满终端。按 `v` 切换成每行只放一个方框，再按一次换回来，这个选择会记住供下次启动使用；`--vertical` 只强制本次运行每行一个方框，不改变已保存的设置。设置存在状态文件旁边的 `tui.json`，丢了也只是丢掉记住的排列方式。
-
-终端变窄时，框里的每一行按最宽的字段先让位：十格进度条先缩成四格（`┄┄━━`），再丢动词，再丢小进度条，最后才丢重置倒计时，留下窗口与它的读数。倒计时比进度条活得久是刻意的，这样手机大小的终端仍能看到配额什么时候回来。框线、线条和菱形都是东亚歧义宽度字符——本程序里算一列，但设为 CJK locale 的终端可能按两列渲染，导致方框错位；卡片进度条的方块同属这一类。倒计时的圆点（`◉`、`◦`）是中性宽度，两种 locale 下都只占一列。
-
-该视图每两分钟重新读取一次快照——守护进程每五分钟探测一次，这个间隔能接住每一轮而不会空跑。状态行倒计时到下一次读取：一个按四分之一填充的圆（`○ ◔ ◑ ◕ ●`），旁边是整秒的等待时间（`2m00s`、`0m45s`）。圆给出等待的粗略形状——每三十秒进一格——精确读数交给秒数。无论方框怎么排，状态行都居中显示——方框居中一行与铺满宽度的一行，它都落在同一个位置——它与方框之间空一行，屏幕最上方也留一个空行；终端高度不足以同时放下这两个空行时，先保卡片与按键提示，让位顺序是顶部空行、中间空行，状态行最后才丢。守护进程答不上来时，表现就是圆走空后停在那里：屏幕上的读数保持不变，下一个间隔再试。
-
-该视图也可以滚动：鼠标滚轮每次三行，`PgUp` 与 `PgDn` 各翻半屏，`Up`/`Down`（或 `k`、`j`）一行，`Home`/`End` 跳到两端。状态行同时也给出按键与当前位置；终端变窄时先丢等待时间文字，再丢位置、布局提示与滚动按键，圆最后才丢。按 `q`、`Q`、`Esc` 或 `Ctrl+C` 退出；退出时会还原终端，包括鼠标捕获。
-
-`--metric <display-name>` 只保留显示名精确匹配的摘要行，忽略大小写和该行所属窗口；重复该标志则保留多个名字的并集。`--no-metric-filter` 本次调用忽略账户已存储的过滤器。两个标志都不给时，可读摘要会隐藏各账户已存储 `account.metrics` 列表点名的行：`show --all` 遵循每个账户自己的列表，`probe` 应用它所查询账户的已存储列表。非法度量名以退出码 `64` 结束，且不联系守护进程。两个标志只影响可读摘要：`--raw` 和 JSON 输出保留全部测量。
-
-当过滤器导致没有可显示的行，但该账户仍有可摘要的度量时，账户标题会保留，一行 `! no rows match the metric filter: <names>` 会列出过滤器中的名字，过期、上限和部分失败提示仍会打印；不会回退到原始表。没有可摘要测量的账户仍和以前一样回退到原始输出。
-
-表格输出默认是可读摘要：每个可用测量一行，包含窗口、度量、剩余配额、窗口重置时间，以及作为最后一列的十格进度条。用尽的行显示 `used up` 而不是 `remains 0%`，后者看起来像空测量；不足百分之零点五的行显示 `remains <1%`，而不是向下取整成同一个零。重置列固定为 7 个字符：不足一天用短横夹住整天小时数（`-  3h -`），一周以内用短横补位、每天一个星号（`-******`），超过一周把天数居中放在星号之间（`* 23d *`），列宽不变，等待时间一眼可读。
-
-两类提供方簿记永远不会变成摘要行。状态布尔值 `allowed`、`limit_reached`、`has_credits`、`unlimited`、`on_demand_enabled` 和 `enabled` 作为行被隐藏，但作为状态不会丢：已达上限变成 `! limit reached` 行，不计量的额度变成 `credits unlimited` 行，关闭的功能在它所作用的数量上标 `(off)`，若提供方没有报告该数量则给出单独的 `disabled` 行。Cursor 的 `total_spend`、`included_spend` 和 `bonus_spend` 无条件排除在映射之外——它们是配额行旁边的美元流水，不是剩余配额。
-
-这两类仍出现在原始表中。用 `--raw` 可看到；不给该标志时，若映射后没有任何测量存活，账户块会带说明回退到原始表，并仍带过期、上限和部分失败提示。
-
-```text
-==== claude - pro ====
-5h           usage  remains 97%  -  3h -  [##########]
-weekly       usage  remains 89%  --*****  [-#########]
-Weekly Opus  usage  remains 89%  --*****  [-#########]
-```
-
-全局输出标志：`--output table|json|pretty-json`、`--color auto|always|never`、`--raw` 和 `--reveal`。`--color` 默认为 `auto`：当 stdout 是终端且 `NO_COLOR` 未设置或为空时给表格上色。JSON 和 pretty-json 输出从不上色。`--raw` 用未翻译的提供方表（`WINDOW`、`MEASUREMENT`、`USED`、`LIMIT`、`UNIT`、`RESETS_AT`）替换摘要；它只影响表格输出，对 `--output json` 和 `--output pretty-json` 是空操作。不给 `--reveal` 时，账户标签、授权 URI、流程 ID 以及类似个人值会替换成 `[redacted]`。`--raw` 不改变哪些内容被脱敏。即使给了 `--reveal`，错误细节仍保持脱敏。
-
-`--diagnose`（或 `ULLAGE_DIAGNOSE=1`）会在 `show` 和 `probe` 上显示已脱敏的部分失败范围和类别。认证和探测命令失败时，还会让守护进程附带提供方自己的错误文本。默认错误输出仍是稳定的 kind。未显式开启时，守护进程响应上的诊断信息会被视为无效并拒绝。
-
 ## JSON 结构
 
 成功的 JSON 是带标签的 `ControlResult`。紧凑的
@@ -489,9 +532,12 @@ JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改�
 
 MIT。见 [`LICENSE`](LICENSE)。
 
-## 作者
+---
 
-[dualface](https://x.com/dualface)
+## 作者的其他项目
 
-- [QuickTUI](https://quicktui.ai/) — 面向 iPhone、iPad 和浏览器的 tmux/herdr 远程终端，让你在手机上操控 Mac 上的 Agent。
-- [Kander](https://github.com/dualface/kander/) — 用看板调度多个 AI Agent 的任务编排工具。
+以下是 Ullage 作者 [dualface](https://github.com/dualface) 的其他项目：
+
+- [Kander](https://github.com/dualface/kander)：规则驱动的多 Agent 看板调度，内置独立审核与交付门禁。
+- [ste-zh](https://github.com/dualface/ste-zh)：让 Agent 按 ASD-STE100 原则用中文汇报结果，结论先行、状态词固定、写明是否验证。
+- [QuickTUI](https://quicktui.ai/)：手机上的完整终端，适用于任何编码 Agent。自托管直连，单台主机免费。

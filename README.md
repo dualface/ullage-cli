@@ -1,13 +1,45 @@
-# Ullage
+# Ullage: Every AI Subscription's Remaining Quota on One Screen
 
 Languages: [English](README.md) · [简体中文](README-CN.md)
 
-Ullage is a local daemon and CLI that inspects subscription usage for Claude,
-ChatGPT, Grok, Cursor, OpenCode Go, Devin, codex2api, and sub2api. A single
-`ullage` binary hosts the daemon and talks to it over a private local control
-socket or named pipe. Credentials stay in the platform credential store by
-default; configuration never contains secrets.
+A local daemon and CLI. It periodically checks subscription usage for Claude, ChatGPT, Grok, Cursor, OpenCode Go, Devin, codex2api, and sub2api, and gathers the remaining quota and reset time of every window into one terminal view.
 
+When you subscribe to several AI coding tools, each one shows usage in its own web dashboard, with different windows (5 hours, weekly, monthly) and units (percent, tokens, dollars). With Ullage, one command tells you **how much is left, when it comes back, and which account is about to run out**.
+
+> 💡 Credentials stay in the platform credential store by default, and the configuration never contains secrets. By default the daemon talks only over a private local control channel and listens on no TCP port.
+
+---
+
+## Why Ullage?
+
+**The usual way:**
+
+> Sign in to each provider's dashboard one by one. Check the 5-hour and weekly quota for Claude, the weekly quota for ChatGPT, the monthly quota and dollar spend for Cursor. Repeat for every account.
+
+**With Ullage:**
+
+```console
+$ ullage tui
+╭─ claude  max_20x  personal ────────────╮
+│ 5h      remains 91%   3h05m ┄━━━━━━━━━ │
+│ weekly  used up     ◦◉◉◉◉◉◉ ┄┄┄┄┄┄┄┄┄┄ │
+│ fable   remains 25% ◆ 12d ◆ ┄┄┄┄┄┄┄━━━ │
+╰────────────────────────────────────────╯
+```
+
+One box per subscription. Each row is one window: the remaining share, the time until reset, and a ten-cell bar. An exhausted window shows `used up`.
+
+---
+
+## Key Features
+
+- **Eight providers, multiple accounts**: add several accounts for the same provider; credentials and snapshots are isolated per account.
+- **Background probing**: the daemon queries each account on a schedule (every 300 seconds by default). `show` and `tui` read saved snapshots and never call the provider.
+- **Terminal board**: `ullage tui` shows bars and reset countdowns. As the terminal narrows, fields drop in order, so a phone-sized terminal still shows when quota comes back.
+- **Credential safety**: credentials live in macOS Keychain, Windows Credential Manager, or Linux Secret Service. Account labels, authorization URLs, and similar personal values are redacted by default.
+- **Scriptable**: JSON output, plus an optional HTTP API that clients reach with a device token after a one-time pairing code.
+
+---
 ## Install
 
 The command is `ullage`. The crates.io package name is `ullage-cli`.
@@ -53,6 +85,42 @@ cargo build --release -p ullage-cli
 
 The binary is `target/release/ullage`. Place it on your `PATH` if you want the
 user-level service commands to find it at a stable location.
+
+## Quick Start
+
+1. Sign in to an account. The command walks you through choosing a provider and authorizing (see "Authentication" below):
+
+   ```sh
+   ullage auth login
+   ```
+
+2. Show usage for all accounts:
+
+   ```sh
+   ullage show --all
+   ```
+
+3. Open the terminal board. Press `v` to switch the layout and `q` to quit:
+
+   ```sh
+   ullage tui
+   ```
+
+Homebrew and WinGet installs set up and start the daemon for you. For other install methods, run `ullage daemon install` first (see "Daemon lifecycle" below).
+
+---
+
+## Working with Kander
+
+[Kander](https://github.com/dualface/kander) is a multi-agent kanban orchestrator. The executor and reviewer agents it schedules (Claude Code, Codex, Cursor, Grok, Devin, OpenCode, and others) each draw on a different subscription.
+
+- **Check quota before dispatching**: glance at `ullage tui` and send large cards to agents with quota to spare.
+- **Stay clear of window limits**: when a 5-hour window is nearly used up, read the reset countdown and decide whether to wait or switch agents.
+- **All accounts on one screen**: multiple accounts for the same provider are shown separately, with no dashboard sign-ins.
+
+---
+
+The rest of this README is the full reference.
 
 ## Authentication
 
@@ -688,9 +756,12 @@ Report vulnerabilities to dualface@gmail.com. See [`SECURITY.md`](SECURITY.md).
 
 MIT. See [`LICENSE`](LICENSE).
 
-## Author
+---
 
-[dualface](https://x.com/dualface)
+## More Projects by the Author
 
-- [QuickTUI](https://quicktui.ai/) — a tmux/herdr-powered remote terminal for iPhone, iPad, and browsers, so you can drive agents on your Mac from your phone.
-- [Kander](https://github.com/dualface/kander/) — a kanban orchestration tool that lets one person schedule multiple AI agents.
+Other projects by [dualface](https://github.com/dualface), the author of Ullage:
+
+- [Kander](https://github.com/dualface/kander): rule-driven multi-agent kanban orchestration, with independent review and delivery gates.
+- [ste-zh](https://github.com/dualface/ste-zh): an agent skill that makes agents report results in Chinese by ASD-STE100 principles: conclusion first, fixed status words, explicit verification state.
+- [QuickTUI](https://quicktui.ai/): a full terminal for any coding agent, on your phone. Self-hosted, direct connection. Free for a single host.
