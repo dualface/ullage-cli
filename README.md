@@ -433,7 +433,7 @@ Errors use one of two body shapes. Errors raised by the HTTP layer are
 | Condition | Status |
 | --------- | ------ |
 | Missing or disallowed `Host` | `403 forbidden` |
-| Missing or invalid Bearer token | `401` with `WWW-Authenticate: Bearer` |
+| Missing or invalid Bearer token | `401 unauthorized` with `WWW-Authenticate: Bearer` |
 | Unknown route | `404 not_found` |
 | Wrong method | `405 method_not_allowed` with `Allow` |
 | Bad path encoding or query | `400 bad_request` |

@@ -339,7 +339,7 @@ weekly         used up          ----***  [----------]
 | 条件                                                        | 状态                                               |
 | ----------------------------------------------------------- | -------------------------------------------------- |
 | 缺失或不被允许的 `Host`                                     | `403 forbidden`                                    |
-| 缺失或无效的 Bearer 令牌                                    | `401` 并带 `WWW-Authenticate: Bearer`              |
+| 缺失或无效的 Bearer 令牌                                    | `401 unauthorized` 并带 `WWW-Authenticate: Bearer` |
 | 未知路由                                                    | `404 not_found`                                    |
 | 方法错误                                                    | `405 method_not_allowed` 并带 `Allow`              |
 | 路径编码或查询参数错误                                      | `400 bad_request`                                  |
