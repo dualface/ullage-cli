@@ -259,31 +259,38 @@ weekly         used up          ----***  [----------]
 | `GET`  | `/v1/providers`                                |                                                     |
 | `GET`  | `/v1/accounts`                                 |                                                     |
 | `GET`  | `/v1/accounts/{id}`                            |                                                     |
-| `GET`  | `/v1/usage?account={id}`                       | 缓存快照；不联系提供方                              |
-| `GET`  | `/v1/usage?account={id}&metric={display-name}` | 可选的保留列表过滤                                  |
-| `POST` | `/v1/accounts/{id}/probe?wait=false`           | 受 `http.probe_min_interval_seconds`（默认 60）限制 |
+| `GET`  | `/v1/usage[?account={id}]`                     | 全部账户或单个账户的缓存快照；不联系提供方          |
+| `GET`  | `/v1/usage[?account={id}]&metric={display-name}` | 可选的保留列表过滤                                |
+| `POST` | `/v1/accounts/{id}/probe[?wait=true\|false]`   | 受 `http.probe_min_interval_seconds`（默认 60）限制 |
+
+`/v1/usage` 的 `account` 可选；空值或重复的 `account` 返回 `400 bad_request`。`wait` 默认为 `true`：探测执行完毕后返回 `200` 和结果。`wait=false` 启动探测后立即返回 `202`。除 `/v1/pair` 外，每条路由还接受 `diagnose=0|1`（见[错误](#错误)）。路由不接受的查询键、重复的键或格式错误的值返回 `400 bad_request`。
 
 重复 `metric=` 会保留多个显示名的并集。这是一次性保留列表，与持久化的每账户 `metrics` 字段相反，后者点名要隐藏的行。
 
-- 匹配按显示名精确、不区分大小写，并忽略该行所属窗口。
+- 名字先去掉首尾空白，然后精确匹配，只对 ASCII 字母不区分大小写，并忽略该行所属窗口。重复的名字会合并。
 - 只有显示行会被过滤。像 `limit_reached` 这类隐藏簿记仍会到达客户端，因此已达上限仍然可见。
 - 合法但未知的名字返回 `200` 且没有可见测量。
-- 空、过长、数量过多或含控制字符的名字返回 `400 invalid_metric`。
+- 空或只含空白的名字、超过 128 个字符的名字、超过 64 个名字，或含控制字符、双向格式字符的名字返回 `400 invalid_metric`。百分号解码后不是合法 UTF-8 的值返回 `400 bad_request`。
 - `metric` 只在 `/v1/usage` 上接受；其他路由以 `400 bad_request` 拒绝。
-- 同一账户在最小间隔内的探测请求返回 `429` 和 `Retry-After`。
+- 同一账户在最小间隔内的探测请求返回 `429 rate_limited`，`Retry-After` 为剩余秒数（至少 1），两种 `wait` 模式都适用。只有已存在的账户受此限制；探测未知账户返回 `404`。
 
 ### 认证与配对
 
-除 `POST /v1/pair` 和 `OPTIONS` 外，每条路由都需要
-`Authorization: Bearer <device_token>`。
+请求按以下顺序检查：`Host`、`OPTIONS`、`/v1/pair`、Bearer 令牌、请求体，最后是路由、方法和查询参数。因此：
 
-配对请求：
+- 缺失或不被允许的 `Host` 最先得到 `403`，`OPTIONS` 和配对也不例外。
+- `OPTIONS` 不需要令牌。已知路径返回 `204`，未知路径返回 `404`。
+- `/v1/pair` 上的任何方法都跳过令牌检查；只允许 `POST`。
+- 其他请求都需要 `Authorization: Bearer <device_token>`。scheme 区分大小写。失败返回 `401` 并带 `WWW-Authenticate: Bearer`。
+- 令牌在路由匹配之前检查，所以未认证地请求未知路径或使用错误方法，得到的是 `401`，不是 `404` 或 `405`。
+
+配对请求（`Content-Type: application/json`，不带查询字符串）：
 
 ```json
 { "pair_code": "ABC-DEF", "device_name": "client-host" }
 ```
 
-响应是设备 ID、净化后的名称，以及 256 位 base64url 设备令牌。该响应是唯一一次暴露原始令牌的时机。
+响应是 `{"device_id":"...","device_token":"...","device_name":"..."}`：设备 ID、净化后的名称，以及 256 位 base64url 设备令牌（43 个字符，无填充）。该响应是唯一一次暴露原始令牌的时机。净化后为空的名称变为 `unknown`；净化后超过 64 个字符的名称返回 `400 bad_request`。
 
 配对码规则：
 
@@ -291,13 +298,13 @@ weekly         used up          ----***  [----------]
 - 输入不区分大小写
 - 连字符只允许出现在展示位置，或整段省略
 - 300 秒后过期
-- 只能成功一次；下一次生成的码会替换它
-- 五次校验失败后作废
-- 每个源 IP 每秒一次；超出返回 `429` 和 `Retry-After`
+- 只能成功一次；生成新码会替换待用的码并清零其失败计数
+- 五次校验失败后作废；无法解析的码也计为一次失败
+- 每个源 IP 每秒一次；超出返回 `429` 和 `Retry-After`。尝试在校验请求体之前计数，所以格式错误的请求同样占用这一次。限流表最多同时跟踪 4096 个地址；表满时新地址得到 `429`。
 
 ### 设备记录
 
-`devices.json` 存在状态文件旁边，仅当前用户可访问（`0600` / 受保护 DACL）。每条有效记录包含：
+`devices.json` 存在状态文件旁边，仅当前用户可访问（`0600` / 受保护 DACL）。已吊销的设备仍留在文件中，带 `revoked_at` 标记，不能再通过认证。每条记录包含：
 
 - 12 字符设备 ID
 - 净化后的名称
@@ -305,37 +312,50 @@ weekly         used up          ----***  [----------]
 - 创建时间
 - 最后见到时间
 
-从不包含原始令牌。认证会哈希出示的令牌，并与每条有效记录做恒定时间比较，不提前返回。最后见到时间的写入限制为每台设备每 60 秒一次。损坏或不安全的设备文件会拒绝守护进程启动，且从不原地修复。遗留的 `http-token` 文件会被忽略，不会自动删除。
+从不包含原始令牌。认证会哈希出示的令牌，并与每条记录做恒定时间比较，不提前返回；只有有效记录能匹配。最后见到时间的写入限制为每台设备每 60 秒一次。损坏或不安全的设备文件会拒绝守护进程启动，且从不原地修复。遗留的 `http-token` 文件会被忽略，不会自动删除。
 
 ### Host、CORS 与传输
 
-接受的 `Host` 值：`127.0.0.1:<port>`、`localhost:<port>` 以及实际监听地址。任意 IPv6 监听还会启用 `[::1]:<port>`。
+接受的 `Host` 值：`127.0.0.1:<port>`、`localhost:<port>` 以及实际监听地址。任意 IPv6 监听还会启用 `[::1]:<port>`。匹配不区分大小写；不带端口的 `Host` 会被拒绝。
 
 `http.allowed_origins` 默认为空：
 
-- 匹配的来源会回显并带 `Vary: Origin`。
+- 匹配的来源会回显并带 `Vary: Origin`，错误响应也一样。预检请求还会得到 `Access-Control-Allow-Methods: GET, POST, OPTIONS` 和 `Access-Control-Allow-Headers: Authorization, Content-Type`。
 - 不匹配的来源没有 CORS 头。
+- 配置中的 `*` 来源会被拒绝，加载配置和服务器绑定时都会检查。
 - 服务器从不返回 `Access-Control-Allow-Origin: *` 或
   `Access-Control-Allow-Credentials: true`。
+
+每个响应都带 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff` 和 `Referrer-Policy: no-referrer`。每个监听地址最多服务 256 个连接；多出的连接会被立即关闭。请求头必须在 10 秒内到达。
 
 远程访问可用直接的 Tailscale 或局域网地址，或 SSH 隧道。Ullage 不提供 TLS。Tailscale 流量由 WireGuard 加密，但局域网流量及其设备令牌是明文。
 
 ### 错误
 
-除非设置 `?diagnose=1`，响应体保持脱敏。大于 1 MiB 的请求体、大于 4 KiB 的配对体，或读超时仍未完成的请求体会被拒绝，且不影响其他连接。
+响应体保持脱敏。`?diagnose=1` 只给 `/v1/usage` 和探测的提供方错误加上 `diagnostic` 字段；其他响应不变。大于 1 MiB 的请求体、大于 4 KiB 的配对体，或 10 秒内未读完的请求体会被拒绝，且不影响其他连接。
 
-| 条件                       | 状态                     |
-| -------------------------- | ------------------------ |
-| 缺失或无效的 Bearer 令牌   | `401`                    |
-| 未知路由                   | `404`                    |
-| 非法参数                   | `400`                    |
-| `AccountNotFound`          | `404`                    |
-| `AuthenticationInvalid`    | `409`                    |
-| 提供方或探测 `RateLimited` | `429` 并带 `Retry-After` |
-| `Timeout`                  | `504`                    |
-| `Storage`                  | `500`                    |
+错误响应体有两种形状。HTTP 层产生的错误是 `{"error":"<kind>"}`。守护进程返回的错误是 `{"version":...,"request_id":"...","kind":"...","detail":...}`，请求诊断时另带 `diagnostic`。协议版本不匹配是 `{"version":...,"request_id":"...","error":"protocol_mismatch","supported_version":...}`。
 
-配对另外使用 `400 bad_request`、`401 pair_code_invalid`、`405`、`413` 和 `429`。
+| 条件                                                        | 状态                                               |
+| ----------------------------------------------------------- | -------------------------------------------------- |
+| 缺失或不被允许的 `Host`                                     | `403 forbidden`                                    |
+| 缺失或无效的 Bearer 令牌                                    | `401` 并带 `WWW-Authenticate: Bearer`              |
+| 未知路由                                                    | `404 not_found`                                    |
+| 方法错误                                                    | `405 method_not_allowed` 并带 `Allow`              |
+| 路径编码或查询参数错误                                      | `400 bad_request`                                  |
+| metric 名字错误                                             | `400 invalid_metric`                               |
+| 协议版本不匹配                                              | `400 protocol_mismatch`                            |
+| 不支持的命令                                                | `400`                                              |
+| 请求体超出大小限制                                          | `413 payload_too_large`                            |
+| 请求体读取超时                                              | `408 request_timeout`                              |
+| 探测冷却期内                                                | `429 rate_limited` 并带 `Retry-After`              |
+| `AccountNotFound`、`AccountSelectorNotFound`、未知账户或提供方 | `404`                                           |
+| `AuthenticationInvalid`                                     | `409`                                              |
+| 提供方 `RateLimited`                                        | `429` 并带 `Retry-After`（提供方给的值，否则为 `1`） |
+| `Timeout`                                                   | `504`                                              |
+| `Storage`、设备存储故障或其他守护进程错误                   | `500`                                              |
+
+配对使用 `403`、`405`、`408`、`413`、`429`、`500 storage`、`401 pair_code_invalid` 和 `400 bad_request`。带查询字符串、`Content-Type` 不是 `application/json`、请求体无法解析或名称过长时，配对返回 `400 bad_request`。
 
 ## 守护进程生命周期
 
@@ -454,7 +474,8 @@ ullage tui --vertical
       "last_success_at": "2026-08-27T12:00:00Z",
       "stale": false,
       "last_error": null,
-      "last_error_at": null
+      "last_error_at": null,
+      "metrics": []
     }
   ]
 }
@@ -462,13 +483,21 @@ ullage tui --vertical
 
 ### 用量字段
 
-| 字段                      | 规则                                                                              |
-| ------------------------- | --------------------------------------------------------------------------------- |
-| `window.kind`             | `five_hours`、`weekly`、`monthly`，或 `{"kind":"other","id":"...","label":"..."}` |
-| 缺失的 5h 或 weekly 窗口  | 省略；从不填合成零                                                                |
-| `limit`                   | 供应商未报告上限时省略或为 `null`                                                 |
-| `subscription_expires_at` | 提供方没有到期时间时为 `null`                                                     |
-| `"outcome":"partial"`     | 带 `failures`。CLI 退出码 `2` 表示部分成功                                        |
+| 字段                                 | 规则                                                                              |
+| ------------------------------------ | --------------------------------------------------------------------------------- |
+| `window.kind`                        | `five_hours`、`weekly`、`monthly`，或 `{"kind":"other","id":"...","label":"..."}` |
+| 缺失的 5h 或 weekly 窗口             | 省略；从不填合成零                                                                |
+| `unit.kind`                          | `requests`、`tokens`、`percent`、`credits`、`{"kind":"currency","code":"..."}`，或 `{"kind":"other","id":"...","label":"..."}` |
+| `limit`                              | 始终存在；供应商未报告上限时为 `null`                                             |
+| `resets_at`、`plan`、`account_label` | 未知时为 `null`。非 null 的 `account_label` 在没有 `--reveal` 时为 `[redacted]`   |
+| `subscription_expires_at`            | 提供方没有到期时间时为 `null`                                                     |
+| `"outcome":"partial"`                | 带 `failures`，即 `{"scope":"...","message":"..."}` 列表；没有 `--diagnose` 时两个值都是 `[redacted]`。CLI 退出码 `2` 表示部分成功 |
+| `last_error`                         | `null`、字符串（`network`、`authentication_invalid`、`protocol_incompatible`、`unsupported_capability`、`timeout`、`cancelled`、`provider_not_found`、`account_not_found`、`storage`），或 `{"rate_limited":{"retry_after_seconds":<数字或 null>}}` |
+| `metrics`                            | 始终存在。账户已保存的、在可读摘要中隐藏的显示名列表；它不过滤 JSON               |
+
+`probe` 返回 `{"result":"probe","payload":{"account_id":"...","usage":...,"metrics":[...]}}`，`usage` 形状相同。其他命令使用其他 `result` 标签，例如 `daemon_status`、`providers`、`accounts`、`account`、`auth_challenge`、`auth_state`、`workspaces` 和 `workspace`。
+
+只有一个命令输出的 JSON 不是 `ControlResult`：守护进程未运行时，`daemon status` 输出 `{"service":"installed","status":"stopped"}`（或 `"not_installed"`），退出码 `0`。
 
 JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改变它们的结构或字节，因此基于该 schema 的解析器无论是否传递该标志都能继续工作。
 
@@ -479,17 +508,20 @@ JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改�
 | 命令                    | 结果                                                                     |
 | ----------------------- | ------------------------------------------------------------------------ |
 | `device pair`           | `{"result":"pair_code","payload":{"code":"ABC-DEF","expires_at":"..."}}` |
-| `device list`           | `{"result":"devices","payload":[...]}`                                   |
+| `device list`           | `{"result":"devices","payload":[{"id":"...","name":"...","created_at":"...","last_seen_at":"..."}]}` |
 | `device revoke`（成功） | `{"result":"ack"}`                                                       |
 
 ### 错误
 
-错误写到 stderr。
+错误写到 stderr，只有一个例外：`auth` 命令报告凭据无效时，在 stdout 输出普通的 `{"result":"auth_state",...}` 结果，退出码 `3`。没有 `--diagnose` 时其 `reason` 为 `[redacted]`。
 
 | 输出               | 形状                                                                    |
 | ------------------ | ----------------------------------------------------------------------- |
-| 表格               | 第一行 `error: <kind>`                                                  |
+| 表格，运行时错误   | `error: <kind>`，有消息和提示时随后输出消息和 `hint:` 行                |
+| 表格，解析错误     | clap 自己的消息（见下文）                                               |
 | JSON / pretty-json | `{ "status": "error", "error": { "kind": "usage", "message": "..." } }` |
+
+正在运行的守护进程比 CLI 旧时，stderr 第一行是 `warning: the running daemon (...) is older than this CLI (...)` 提示，在错误或 JSON 信封之前。
 
 运行时错误示例：
 
@@ -498,22 +530,29 @@ JSON 和 pretty-json 始终携带这份原始 `ControlResult`。`--raw` 不改�
 ```
 
 - 有解析错误文本时由 `message` 携带。
-- `hint` 为选定的运行时 kind 提供静态说明（例如 `daemon_unavailable` 或
-  `provider_registry_error`）。CLI 能在不联系守护进程的情况下给出修复建议时，表格输出也会加一行 `hint:`。
+- `hint` 为以下 kind 提供静态说明：`daemon_unavailable`、`provider_registry_error`、`account_not_found`、`account_selector_not_found`、`invalid_account_metrics`、`invalid_control_socket`，以及因控制字符被拒的 `usage`。表格输出以 `hint:` 行打印同样的文本。
+- `detail` 只在使用 `--diagnose` 时出现，携带认证和探测失败时提供方自己的错误文本。表格输出以 `detail:` 行打印。
 - 省略的字段不序列化。
 - JSON 从不包含 ANSI 颜色序列。
 
-解析错误打印 clap 自己的消息，输出前会脱敏，从不回显终端控制字符：
+解析错误打印 clap 自己的消息，输出前会脱敏，从不回显终端控制字符。JSON 输出中它们变为 kind `usage`，文本放在 `message`。
 
 - 缺少子命令显示该层的完整帮助。
 - 未知标志、缺少参数和非法枚举值会带参数名，并在可用时给出 did-you-mean 建议或允许值。
-- 像 `--method` 或 `--account` 这类已识别选项名会出现在 hint 中。
-- 位置参数和未识别标志改用通用静态消息。
 
-| 情况                                | 退出码 | 去向   |
-| ----------------------------------- | ------ | ------ |
-| `--help`、`-h`、`help`、`--version` | `0`    | stdout |
-| 解析和用法错误                      | `64`   | stderr |
+含有不允许的控制字符的参数会以 kind `usage` 拒绝，没有 `message`，只有静态 `hint`。对于 `--method`、`--account` 这类已识别的取值选项，hint 会点出选项名；位置参数和其他标志使用通用消息。
+
+| 情况                                | 退出码 | 去向                              |
+| ----------------------------------- | ------ | --------------------------------- |
+| `--help`、`-h`、`help`、`--version` | `0`    | stdout                            |
+| 成功                                | `0`    | stdout                            |
+| 其他失败                            | `1`    | stderr                            |
+| `probe` 或 `show` 有部分快照        | `2`    | stdout                            |
+| 凭据无效                            | `3`    | stderr；`auth_state` 结果为 stdout |
+| 网络故障                            | `4`    | stderr                            |
+| 守护进程不可用                      | `5`    | stderr                            |
+| 与守护进程协议不匹配                | `6`    | stderr                            |
+| 解析和用法错误、非法 metric 名字    | `64`   | stderr                            |
 
 ## 真实凭据测试
 

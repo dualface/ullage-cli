@@ -296,38 +296,65 @@ control socket. The HTTP server is a query and pairing surface only.
 | `GET` | `/v1/providers` | |
 | `GET` | `/v1/accounts` | |
 | `GET` | `/v1/accounts/{id}` | |
-| `GET` | `/v1/usage?account={id}` | Cached snapshot; does not contact providers |
-| `GET` | `/v1/usage?account={id}&metric={display-name}` | Optional keep-list filter |
-| `POST` | `/v1/accounts/{id}/probe?wait=false` | Rate-limited by `http.probe_min_interval_seconds` (default 60) |
+| `GET` | `/v1/usage[?account={id}]` | Cached snapshots of every account, or of one; does not contact providers |
+| `GET` | `/v1/usage[?account={id}]&metric={display-name}` | Optional keep-list filter |
+| `POST` | `/v1/accounts/{id}/probe[?wait=true\|false]` | Rate-limited by `http.probe_min_interval_seconds` (default 60) |
+
+`account` is optional on `/v1/usage`; an empty or repeated `account` returns
+`400 bad_request`. `wait` defaults to `true`: the probe runs to completion and
+the response is `200` with its result. `wait=false` starts the probe and
+returns `202` at once. Every route except `/v1/pair` also accepts
+`diagnose=0|1` (see [Errors](#errors)). A query key the route does not accept,
+a repeated key, or a malformed value returns `400 bad_request`.
 
 Repeat `metric=` to keep the union of several display names. This one-shot list
 is a keep list, unlike the persisted per-account `metrics` field, which names
 rows to hide.
 
-- Matching is exact, case-insensitive, and ignores the window a row belongs to.
+- Names are trimmed. Matching is then exact, ASCII case-insensitive, and
+  ignores the window a row belongs to. Duplicate names are merged.
 - Only display rows are filtered. Hidden bookkeeping such as `limit_reached`
   still reaches the client, so a reached limit stays visible.
 - A valid but unknown name returns `200` with no visible measurements.
-- An empty, over-long, over-count, or control-character name returns
-  `400 invalid_metric`.
+- An empty or whitespace-only name, a name over 128 characters, more than 64
+  names, or a name with control or bidirectional formatting characters returns
+  `400 invalid_metric`. A value that is not valid UTF-8 after percent-decoding
+  returns `400 bad_request`.
 - `metric` is accepted on `/v1/usage` only; other routes reject it as
   `400 bad_request`.
-- Probe requests for the same account within the minimum interval return `429`
-  with `Retry-After`.
+- Probe requests for the same account within the minimum interval return
+  `429 rate_limited` with `Retry-After` set to the remaining seconds (at least
+  1), in both `wait` modes. Only existing accounts are rate-limited; a probe for
+  an unknown account returns `404`.
 
 ### Authentication and pairing
 
-Every route except `POST /v1/pair` and `OPTIONS` requires
-`Authorization: Bearer <device_token>`.
+Requests are checked in this order: `Host`, then `OPTIONS`, then
+`/v1/pair`, then the Bearer token, then the body, then the route, method, and
+query. So:
 
-Pairing request:
+- A request with a missing or disallowed `Host` gets `403` before anything
+  else, including `OPTIONS` and pairing.
+- `OPTIONS` needs no token. It returns `204` for a known path and `404` for an
+  unknown one.
+- Every method on `/v1/pair` skips the token check; only `POST` is allowed.
+- Every other request requires `Authorization: Bearer <device_token>`. The
+  scheme is case-sensitive. A failure returns `401` with
+  `WWW-Authenticate: Bearer`.
+- The token is checked before route matching, so an unauthenticated request to
+  an unknown path or with the wrong method gets `401`, not `404` or `405`.
+
+Pairing request (`Content-Type: application/json`, no query string):
 
 ```json
 {"pair_code":"ABC-DEF","device_name":"client-host"}
 ```
 
-The response is the device ID, sanitized name, and a 256-bit base64url device
-token. That response is the only time the raw token is exposed.
+The response is `{"device_id":"...","device_token":"...","device_name":"..."}`:
+the device ID, the sanitized name, and a 256-bit base64url device token (43
+characters, no padding). That response is the only time the raw token is
+exposed. A name that is empty after sanitizing becomes `unknown`; a sanitized
+name over 64 characters returns `400 bad_request`.
 
 Pairing code rules:
 
@@ -335,15 +362,20 @@ Pairing code rules:
 - Case-insensitive on input
 - Hyphen allowed only in the displayed position, or omitted entirely
 - Expires after 300 seconds
-- Succeeds once; the next generated code replaces it
-- Invalidated after five failed validations
+- Succeeds once; generating a new code replaces the pending one and resets its
+  failure count
+- Invalidated after five failed validations; a code that cannot be parsed
+  counts as a failure
 - One attempt per source IP per second; excess attempts return `429` with
-  `Retry-After`
+  `Retry-After`. The attempt is counted before the body is validated, so a
+  malformed request also uses up the slot. The limiter tracks at most 4096
+  addresses at a time; when it is full, new addresses get `429`.
 
 ### Device records
 
 `devices.json` sits beside the state file with current-user-only access
-(`0600` / protected DACL). Each active record contains:
+(`0600` / protected DACL). Revoked devices stay in the file, marked with
+`revoked_at`, and can no longer authenticate. Each record contains:
 
 - 12-character device ID
 - sanitized name
@@ -352,7 +384,8 @@ Pairing code rules:
 - last-seen time
 
 It never contains the raw token. Authentication hashes the presented token and
-compares it with every active record in constant time without returning early.
+compares it with every record in constant time without returning early; only
+an active record can match.
 Last-seen writes are limited to once per device per 60 seconds. A corrupt or
 unsafe device file refuses daemon startup and is never repaired in place. The
 legacy `http-token` file is ignored and is not deleted automatically.
@@ -361,13 +394,23 @@ legacy `http-token` file is ignored and is not deleted automatically.
 
 Accepted `Host` values: `127.0.0.1:<port>`, `localhost:<port>`, and the actual
 listener addresses. Any IPv6 listener additionally enables `[::1]:<port>`.
+Matching ignores case; a `Host` without a port is rejected.
 
 `http.allowed_origins` is empty by default:
 
-- Matching origins are echoed with `Vary: Origin`.
+- Matching origins are echoed with `Vary: Origin`, on error responses as well.
+  A preflight also gets `Access-Control-Allow-Methods: GET, POST, OPTIONS` and
+  `Access-Control-Allow-Headers: Authorization, Content-Type`.
 - Unmatched origins get no CORS headers.
+- `*` is rejected as a configured origin, both when the configuration loads and
+  when the server binds.
 - The server never returns `Access-Control-Allow-Origin: *` or
   `Access-Control-Allow-Credentials: true`.
+
+Every response carries `Cache-Control: no-store`,
+`X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`. Each
+listener serves at most 256 connections; further connections are closed at
+once. Request headers must arrive within 10 seconds.
 
 Remote access may use a direct Tailscale or LAN address, or an SSH tunnel.
 Ullage does not offer TLS. Tailscale traffic is encrypted by WireGuard, but LAN
@@ -375,23 +418,41 @@ traffic and its device token are plaintext.
 
 ### Errors
 
-Response bodies stay sanitized unless `?diagnose=1` is set. Request bodies
-larger than 1 MiB, pairing bodies larger than 4 KiB, or bodies that stall past
-the read timeout are rejected without affecting other connections.
+Response bodies stay sanitized. `?diagnose=1` adds a `diagnostic` field to
+provider errors from `/v1/usage` and probe only; every other response is
+unchanged. Request bodies larger than 1 MiB, pairing bodies larger than 4 KiB,
+or bodies that take longer than 10 seconds to read are rejected without
+affecting other connections.
+
+Errors use one of two body shapes. Errors raised by the HTTP layer are
+`{"error":"<kind>"}`. Errors returned by the daemon are
+`{"version":...,"request_id":"...","kind":"...","detail":...}`, plus
+`diagnostic` when requested. A protocol version mismatch is
+`{"version":...,"request_id":"...","error":"protocol_mismatch","supported_version":...}`.
 
 | Condition | Status |
 | --------- | ------ |
-| Missing or invalid Bearer token | `401` |
-| Unknown route | `404` |
-| Illegal parameter | `400` |
-| `AccountNotFound` | `404` |
+| Missing or disallowed `Host` | `403 forbidden` |
+| Missing or invalid Bearer token | `401` with `WWW-Authenticate: Bearer` |
+| Unknown route | `404 not_found` |
+| Wrong method | `405 method_not_allowed` with `Allow` |
+| Bad path encoding or query | `400 bad_request` |
+| Bad metric name | `400 invalid_metric` |
+| Protocol version mismatch | `400 protocol_mismatch` |
+| Unsupported command | `400` |
+| Body over the size limit | `413 payload_too_large` |
+| Body read timeout | `408 request_timeout` |
+| Probe cooldown | `429 rate_limited` with `Retry-After` |
+| `AccountNotFound`, `AccountSelectorNotFound`, unknown account or provider | `404` |
 | `AuthenticationInvalid` | `409` |
-| Provider or probe `RateLimited` | `429` with `Retry-After` |
+| Provider `RateLimited` | `429` with `Retry-After` (the provider's value, or `1`) |
 | `Timeout` | `504` |
-| `Storage` | `500` |
+| `Storage`, device store failure, or any other daemon error | `500` |
 
-Pairing additionally uses `400 bad_request`, `401 pair_code_invalid`, `405`,
-`413`, and `429`.
+Pairing uses `403`, `405`, `408`, `413`, `429`, `500 storage`,
+`401 pair_code_invalid`, and `400 bad_request`. Pairing returns
+`400 bad_request` for a query string, a `Content-Type` other than
+`application/json`, a body that does not parse, or a name that is too long.
 
 ## Daemon lifecycle
 
@@ -665,7 +726,8 @@ Successful JSON is a tagged `ControlResult`. Compact
       "last_success_at": "2026-08-27T12:00:00Z",
       "stale": false,
       "last_error": null,
-      "last_error_at": null
+      "last_error_at": null,
+      "metrics": []
     }
   ]
 }
@@ -677,9 +739,22 @@ Successful JSON is a tagged `ControlResult`. Compact
 | ----- | ---- |
 | `window.kind` | `five_hours`, `weekly`, `monthly`, or `{"kind":"other","id":"...","label":"..."}` |
 | Missing 5h or weekly window | Omitted; never filled with synthetic zeros |
-| `limit` | Omitted or `null` when the vendor reports no cap |
+| `unit.kind` | `requests`, `tokens`, `percent`, `credits`, `{"kind":"currency","code":"..."}`, or `{"kind":"other","id":"...","label":"..."}` |
+| `limit` | Always present; `null` when the vendor reports no cap |
+| `resets_at`, `plan`, `account_label` | `null` when unknown. A non-null `account_label` is `[redacted]` without `--reveal` |
 | `subscription_expires_at` | `null` when the provider has no expiry |
-| `"outcome":"partial"` | Includes `failures`. CLI exit status `2` means partial success |
+| `"outcome":"partial"` | Includes `failures`, a list of `{"scope":"...","message":"..."}`. Both values are `[redacted]` without `--diagnose`. CLI exit status `2` means partial success |
+| `last_error` | `null`, a string (`network`, `authentication_invalid`, `protocol_incompatible`, `unsupported_capability`, `timeout`, `cancelled`, `provider_not_found`, `account_not_found`, `storage`), or `{"rate_limited":{"retry_after_seconds":<n or null>}}` |
+| `metrics` | Always present. The account's stored list of display names hidden from the readable summary; it does not filter the JSON |
+
+`probe` returns `{"result":"probe","payload":{"account_id":"...","usage":...,"metrics":[...]}}`
+with the same `usage` shape. Other commands use other `result` tags, such as
+`daemon_status`, `providers`, `accounts`, `account`, `auth_challenge`,
+`auth_state`, `workspaces`, and `workspace`.
+
+One command prints JSON that is not a `ControlResult`. When the daemon is not
+running, `daemon status` prints `{"service":"installed","status":"stopped"}` (or
+`"not_installed"`) and exits `0`.
 
 JSON and pretty-json always carry this raw `ControlResult`. `--raw` does not
 change their structure or their bytes, so parsers built on this schema keep
@@ -692,17 +767,24 @@ Same tagged shape. Device list payloads contain no token or token-hash field.
 | Command | Result |
 | ------- | ------ |
 | `device pair` | `{"result":"pair_code","payload":{"code":"ABC-DEF","expires_at":"..."}}` |
-| `device list` | `{"result":"devices","payload":[...]}` |
+| `device list` | `{"result":"devices","payload":[{"id":"...","name":"...","created_at":"...","last_seen_at":"..."}]}` |
 | `device revoke` (success) | `{"result":"ack"}` |
 
 ### Errors
 
-Errors are written to stderr.
+Errors are written to stderr, with one exception: when an `auth` command reports
+the credentials invalid, it prints a normal `{"result":"auth_state",...}` result
+on stdout and exits `3`. Its `reason` is `[redacted]` without `--diagnose`.
 
 | Output | Shape |
 | ------ | ----- |
-| Table | First line `error: <kind>` |
+| Table, runtime error | `error: <kind>`, then the message and a `hint:` line when present |
+| Table, parse error | clap's own message (see below) |
 | JSON / pretty-json | `{ "status": "error", "error": { "kind": "usage", "message": "..." } }` |
+
+When the running daemon is older than the CLI, a
+`warning: the running daemon (...) is older than this CLI (...)` notice comes
+first on stderr, ahead of the error or the JSON envelope.
 
 Example runtime error:
 
@@ -711,28 +793,41 @@ Example runtime error:
 ```
 
 - `message` carries parse-error text when present.
-- `hint` carries static guidance for selected runtime kinds (for example
-  `daemon_unavailable` or `provider_registry_error`). Table output can add the
-  same text as a `hint:` line when the CLI can suggest a fix without contacting
-  the daemon.
+- `hint` carries static guidance for selected kinds: `daemon_unavailable`,
+  `provider_registry_error`, `account_not_found`,
+  `account_selector_not_found`, `invalid_account_metrics`,
+  `invalid_control_socket`, and `usage` for rejected control characters.
+  Table output prints the same text as a `hint:` line.
+- `detail` carries the provider's own error text on authentication and probe
+  failures, only with `--diagnose`. Table output prints it as a `detail:` line.
 - Omitted fields are not serialized.
 - JSON never includes ANSI color sequences.
 
 Parse mistakes print clap's own message, sanitized so they never echo terminal
-control characters:
+control characters. In JSON output they become kind `usage` with that text in
+`message`.
 
 - Missing subcommands show that layer's full help.
 - Unknown flags, missing arguments, and invalid enum values include the
   parameter name and, when available, a did-you-mean suggestion or the allowed
   values.
-- Recognized option names such as `--method` or `--account` are named in the
-  hint.
-- Positional arguments and unrecognized flags use a generic static message.
+
+Arguments that contain disallowed control characters are rejected with kind
+`usage`, no `message`, and a static `hint`. The hint names the option for
+recognized value options such as `--method` or `--account`, and uses a generic
+message for positional arguments and other flags.
 
 | Situation | Exit | Destination |
 | --------- | ---- | ----------- |
 | `--help`, `-h`, `help`, `--version` | `0` | stdout |
-| Parse and usage mistakes | `64` | stderr |
+| Success | `0` | stdout |
+| Other failure | `1` | stderr |
+| `probe` or `show` with any partial snapshot | `2` | stdout |
+| Credentials invalid | `3` | stderr, or stdout for an `auth_state` result |
+| Network failure | `4` | stderr |
+| Daemon unavailable | `5` | stderr |
+| Protocol mismatch with the daemon | `6` | stderr |
+| Parse and usage mistakes, invalid metric names | `64` | stderr |
 
 ## Live credentials
 
