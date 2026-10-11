@@ -566,9 +566,6 @@ does plus the wait until each window resets:
 ╰────────────────────────────────────────╯
 ```
 
-Windows of one box that reset at the same moment share one countdown: their
-rows sit together, and only the first of them shows the wait.
-
 A window whose name every row of a box repeats loses it: Cursor reports all
 of its windows as `monthly-…`, so the box shows `auto` and `Codex`. The name
 stays whenever dropping it would leave a row with nothing of its own.
