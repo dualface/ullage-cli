@@ -600,37 +600,12 @@ fn card_title(usage: &SubscriptionUsage, account_id: &str) -> CardTitle {
 /// Reuses the table's cells, so the view names windows, metrics, and readings
 /// exactly as `show` does, and hides the same rows.
 pub(crate) fn rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<CardRow> {
-    let mut rows = merge_shared_resets(summary_rows(summary, now));
+    let mut rows = summary_rows(summary, now);
     strip_shared_prefix(&mut rows);
     rows
 }
 
-/// Windows that reset at the same moment share one countdown: Claude's
-/// `weekly` and `fable` windows, for one, always roll over together. The rows
-/// of such a group move next to the first of them, and only that row keeps
-/// the countdown. Groups compare the exact wait in seconds rather than the
-/// rendered text, because a dot field reads the same for resets hours apart.
-fn merge_shared_resets(rows: Vec<(Option<i64>, CardRow)>) -> Vec<CardRow> {
-    let mut groups: Vec<(Option<i64>, Vec<CardRow>)> = Vec::new();
-    for (resets_in, mut row) in rows {
-        let shared = resets_in
-            .and_then(|seconds| groups.iter_mut().find(|(group, _)| *group == Some(seconds)));
-        match shared {
-            Some((_, members)) => {
-                row.resets = None;
-                members.push(row);
-            }
-            None => groups.push((resets_in, vec![row])),
-        }
-    }
-    groups
-        .into_iter()
-        .flat_map(|(_, members)| members)
-        .collect()
-}
-
-/// Each row with the exact wait its countdown was rendered from.
-fn summary_rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<(Option<i64>, CardRow)> {
+fn summary_rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<CardRow> {
     collect_summary_cells(&summary.rows, now)
         .into_iter()
         .map(|cell| {
@@ -643,15 +618,14 @@ fn summary_rows(summary: &UsageSummary, now: DateTime<Utc>) -> Vec<(Option<i64>,
                 remaining_ratio,
                 ..
             } = cell;
-            let row = CardRow {
+            CardRow {
                 identity,
                 verb,
                 amount,
                 suffix,
                 resets: resets_in.map(reset_text),
                 ratio: remaining_ratio,
-            };
-            (resets_in, row)
+            }
         })
         .collect()
 }
