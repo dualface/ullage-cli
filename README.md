@@ -574,7 +574,10 @@ The bar is ten cells (`━` left, `┄` spent) with no brackets, colored by how
 much is left: red at or under 10%, yellow at or under 25%, green otherwise.
 The countdown has three forms: under a day the exact wait is spelled out
 (`3h05m`, `12m`, `<1m`); within a week each remaining day lights one of seven
-dots (`◦◦◦◦◦◉◉`); beyond a week the day count sits centered between two
+dots (`◦◦◦◦◦◉◉`). A partial day appears before the whole-day dots: `○` for
+less than 2 hours, `◔` from 2 to less than 6 hours, `◕` from 6 through 16
+hours, and `◉` above 16 hours. For example, 26 hours appears as
+`◦◦◦◦◦◔◉`. Beyond a week the rounded-up day count sits centered between two
 diamonds (`◆ 23d ◆`), still seven cells wide.
 
 Every box shares one set of columns, measured across the whole screen, so a
@@ -598,8 +601,8 @@ countdown outlives the bar on purpose, so a phone-sized terminal still says
 when the quota comes back. The frame, rules, and diamonds are East Asian
 ambiguous glyphs — one cell wide to this program, but a terminal set to a CJK
 locale may render them two cells wide and misalign the box; the blocks of the
-card bars are ambiguous too. The countdown dots, `◉` and `◦`, are neutral
-width and stay one cell in either locale.
+card bars and the partial-day `○` are ambiguous too. The countdown dots
+`◉`, `◦`, `◔`, and `◕` are neutral width and stay one cell in either locale.
 
 The view reads the snapshots again every two minutes, which catches each of
 the daemon's five-minute probe rounds without polling it for nothing. The

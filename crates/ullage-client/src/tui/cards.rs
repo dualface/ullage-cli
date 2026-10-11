@@ -5,7 +5,8 @@
 //! The box drawing, block bar, and diamond glyphs are East Asian ambiguous:
 //! one cell wide to `unicode-width`, possibly two in a terminal set to a CJK
 //! locale, where a card can render wider than its allotted rect. The countdown
-//! dots, `◉` and `◦`, are neutral width and measure one cell in either locale.
+//! dots `◉`, `◦`, `◔`, and `◕` are neutral width; the partial-day `○` is
+//! ambiguous too.
 
 use chrono::{DateTime, Utc};
 use ratatui::layout::Rect;
@@ -671,10 +672,10 @@ fn shared_prefix(rows: &[CardRow]) -> Option<usize> {
 
 /// How long until the window resets. Under a day the exact wait is worth
 /// more than the scale, so it is spelled out (`3h05m`, `12m`, `<1m`). From a
-/// full day on, the wait rounds up to whole days, so any part of a day counts
-/// as one: within a week each such day lights one of seven dots
-/// (`◦◦◦◦◦◉◉`), and a freshly reset weekly window fills all seven; beyond a
-/// week the day count sits centered between two diamonds (`◆ 23d ◆`).
+/// full day on, each whole day lights one of seven dots. A partial day sits
+/// before the whole days: `○` below two hours, `◔` below six, `◕` through
+/// sixteen, and `◉` above sixteen (`◦◦◦◦◦◔◉` for 26 hours). Beyond a week,
+/// the rounded-up day count sits centered between two diamonds (`◆ 23d ◆`).
 fn reset_text(seconds: i64) -> String {
     let seconds = seconds.max(0);
     if seconds < SECONDS_PER_DAY {
@@ -682,16 +683,28 @@ fn reset_text(seconds: i64) -> String {
     }
     // Spelled out rather than `seconds + SECONDS_PER_DAY - 1` so a reset
     // near `i64::MAX` cannot overflow.
-    let days = seconds / SECONDS_PER_DAY + i64::from(seconds % SECONDS_PER_DAY != 0);
+    let whole_days = seconds / SECONDS_PER_DAY;
+    let remainder = seconds % SECONDS_PER_DAY;
+    let days = whole_days + i64::from(remainder != 0);
     if days > RESET_FIELD_WIDTH as i64 {
         return diamond_field(&format!("{days}d"));
     }
-    let days = days as usize;
-    format!(
-        "{}{}",
-        DAY_EMPTY.to_string().repeat(RESET_FIELD_WIDTH - days),
-        DAY_LEFT.to_string().repeat(days)
-    )
+    let mut dots = DAY_EMPTY
+        .to_string()
+        .repeat(RESET_FIELD_WIDTH - days as usize);
+    if remainder != 0 {
+        dots.push(if remainder < 2 * 3_600 {
+            '○'
+        } else if remainder < 6 * 3_600 {
+            '◔'
+        } else if remainder <= 16 * 3_600 {
+            '◕'
+        } else {
+            DAY_LEFT
+        });
+    }
+    dots.push_str(&DAY_LEFT.to_string().repeat(whole_days as usize));
+    dots
 }
 
 /// `◆ 23d ◆`: the day count centered in a [`RESET_FIELD_WIDTH`]-cell field
