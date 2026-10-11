@@ -1,5 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
 use ullage_core::summary::{SummaryRow, SummaryValue, UsageSummary};
+use ullage_core::{MeasurementUnit, UsageMeasurement, UsageWindow, UsageWindowKind};
 use ullage_protocol::{ProviderId, QueryOutcome, SnapshotPayload, SubscriptionUsage};
 
 use super::*;
@@ -288,6 +289,113 @@ fn countdowns_cover_days_hours_minutes_and_expiry() {
             );
         }
     }
+}
+
+fn identities_and_resets(rows: &[CardRow]) -> Vec<(&str, Option<&str>)> {
+    rows.iter()
+        .map(|row| (row.identity.as_str(), row.resets.as_deref()))
+        .collect()
+}
+
+#[test]
+fn windows_resetting_together_share_one_countdown_on_adjacent_rows() {
+    let week = 3 * 86_400;
+    let rows = rows(
+        &summary(vec![
+            usage_row("weekly", 62.0, week),
+            usage_row("5h", 91.0, 3 * 3_600 + 300),
+            usage_row("fable", 80.0, week),
+            usage_row("opus", 70.0, week),
+        ]),
+        now(),
+    );
+
+    // The later members of the group move up under its first row, in their
+    // original order, and leave the countdown column blank.
+    assert_eq!(
+        identities_and_resets(&rows),
+        [
+            ("weekly", Some("◦◦◦◦◉◉◉")),
+            ("fable", None),
+            ("opus", None),
+            ("5h", Some("3h05m")),
+        ]
+    );
+}
+
+#[test]
+fn resets_seconds_apart_keep_their_own_countdowns() {
+    // Both render as the same dot field, yet they are different moments.
+    let rows = rows(
+        &summary(vec![
+            usage_row("weekly", 62.0, 3 * 86_400),
+            usage_row("fable", 80.0, 3 * 86_400 - 1),
+        ]),
+        now(),
+    );
+
+    assert_eq!(
+        identities_and_resets(&rows),
+        [("weekly", Some("◦◦◦◦◉◉◉")), ("fable", Some("◦◦◦◦◉◉◉")),]
+    );
+}
+
+#[test]
+fn rows_without_a_reset_are_not_grouped_and_keep_their_place() {
+    let no_reset = |window: &str| SummaryRow {
+        resets_at: None,
+        ..usage_row(window, 50.0, 0)
+    };
+    let rows = rows(
+        &summary(vec![
+            no_reset("daily"),
+            usage_row("weekly", 62.0, 3_600),
+            no_reset("monthly"),
+            usage_row("fable", 80.0, 3_600),
+        ]),
+        now(),
+    );
+
+    assert_eq!(
+        identities_and_resets(&rows),
+        [
+            ("daily", None),
+            ("weekly", Some("1h00m")),
+            ("fable", None),
+            ("monthly", None),
+        ]
+    );
+}
+
+#[test]
+fn shared_resets_are_merged_within_a_card_never_across_cards() {
+    let snapshot_with = |account_id: &str| {
+        let mut snapshot = snapshot("claude", account_id);
+        let QueryOutcome::Complete { data } = &mut snapshot.usage else {
+            unreachable!("the fixture is a complete snapshot");
+        };
+        data.windows.push(UsageWindow {
+            window: UsageWindowKind::Weekly,
+            resets_at: Some(now() + chrono::Duration::seconds(3_600)),
+            measurements: vec![UsageMeasurement {
+                name: "usage".into(),
+                used: 38.0,
+                limit: Some(100.0),
+                unit: MeasurementUnit::Percent,
+            }],
+        });
+        snapshot
+    };
+    let cards = cards(&[snapshot_with("a"), snapshot_with("b")], now());
+
+    let resets = cards
+        .iter()
+        .map(|card| identities_and_resets(&card.rows))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        resets,
+        [[("weekly", Some("1h00m"))], [("weekly", Some("1h00m"))]]
+    );
 }
 
 #[test]
