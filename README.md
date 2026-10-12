@@ -18,14 +18,7 @@ When you subscribe to several AI coding tools, each one shows usage in its own w
 
 **With Ullage:**
 
-```console
-$ ullage tui
-╭─ claude  max_20x  personal ────────────╮
-│ 5h      remains 91%   3h05m ┄━━━━━━━━━ │
-│ weekly  used up     ◦◉◉◉◉◉◉ ┄┄┄┄┄┄┄┄┄┄ │
-│ fable   remains 25% ◆ 12d ◆ ┄┄┄┄┄┄┄━━━ │
-╰────────────────────────────────────────╯
-```
+<img src="docs/ullage-tui-screenshot.png" alt="ullage tui showing quota boxes for several subscriptions" width="400">
 
 One box per subscription. Each row is one window: the remaining share, the time until reset, and a ten-cell bar. An exhausted window shows `used up`.
 
