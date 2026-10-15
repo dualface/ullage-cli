@@ -239,6 +239,9 @@ step "preparing $WINGET_FORK"
 if ! gh repo view "$WINGET_FORK" >/dev/null 2>&1; then
 	gh repo fork "$WINGET_UPSTREAM" --clone=false --default-branch-only
 fi
+# A stale fork lacks earlier merged versions, which makes the PR title
+# claim a new package and bases the branch on an old tree.
+gh repo sync "$WINGET_FORK" --source "$WINGET_UPSTREAM"
 
 pkgs="$workdir/winget-pkgs"
 branch="${PACKAGE_ID}-${bare_version}"
