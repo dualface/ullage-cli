@@ -18,6 +18,3 @@ ullage-auth.workspace = true
 ullage-core.workspace = true
 url = "2"
 zeroize = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
