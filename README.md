@@ -136,8 +136,8 @@ You do not need the internal account ID. Each provider says what to paste:
   own. `--method api-token` keeps the older path: create a User API Key at
   cursor.com/dashboard and type it without echo
 - OpenCode: the OpenCode Go API key issued at opencode.ai/auth
-- Devin: browser sign-in; nothing to paste. `--method api-token` accepts a
-  Devin API key instead
+- Devin: the code the Devin page shows after sign-in (or `code#state`).
+  `--method api-token` accepts a Devin API key instead
 - codex2api: the gateway base URL, admin key, and the upstream account id or
   email, separated by spaces (`base_url admin_key upstream_ref`)
 - sub2api: `base_url admin_key upstream_ref` — the gateway base URL (HTTPS or

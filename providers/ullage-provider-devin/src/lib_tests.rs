@@ -8,6 +8,8 @@ struct StubApi {
     exchanges: Mutex<VecDeque<Result<ExchangeResponse, ApiFailure>>>,
     statuses: Mutex<VecDeque<Result<UserStatusResponse, ApiFailure>>>,
     last_status_url: Mutex<Option<String>>,
+    /// The code of every exchange attempt, in order.
+    exchanged_codes: Mutex<Vec<String>>,
 }
 
 impl StubApi {
@@ -19,6 +21,7 @@ impl StubApi {
             exchanges: Mutex::new(VecDeque::from_iter(exchanges)),
             statuses: Mutex::new(VecDeque::from_iter(statuses)),
             last_status_url: Mutex::new(None),
+            exchanged_codes: Mutex::new(Vec::new()),
         })
     }
 }
@@ -27,10 +30,10 @@ impl StubApi {
 impl DevinApi for StubApi {
     async fn exchange_pkce_code(
         &self,
-        _: &str,
-        _: &str,
+        code: &str,
         _: &str,
     ) -> Result<ExchangeResponse, ApiFailure> {
+        self.exchanged_codes.lock().unwrap().push(code.to_owned());
         self.exchanges.lock().unwrap().pop_front().unwrap()
     }
 
@@ -44,22 +47,41 @@ impl DevinApi for StubApi {
     }
 }
 
-/// A callback channel that never reports a redirect; the pasted path is
-/// exercised instead.
-struct SilentCallback;
+/// A stub whose one exchange succeeds, for browser flows expected to finish.
+fn exchanging_api() -> Arc<StubApi> {
+    StubApi::queue(
+        vec![Ok(ExchangeResponse {
+            api_key: "exchanged-key".into(),
+            api_server_url: Some("https://server.codeium.com".into()),
+            ..ExchangeResponse::default()
+        })],
+        vec![],
+    )
+}
 
-impl CallbackSource for SilentCallback {
-    fn redirect_uri(&self) -> String {
-        "http://127.0.0.1:1/callback".into()
-    }
-
-    fn peek(&self) -> Option<CallbackOutcome> {
-        None
+fn authenticated() -> AuthState {
+    AuthState::Authenticated {
+        account_label: None,
+        account_key: None,
+        expires_at: None,
     }
 }
 
-fn silent_callbacks() -> Arc<CallbackFactory> {
-    Arc::new(|_, _| Ok(Arc::new(SilentCallback)))
+fn start_browser(provider: &DevinProvider) -> AuthChallenge {
+    ready(provider.start_auth(AuthStartRequest::default())).unwrap()
+}
+
+fn paste(
+    provider: &DevinProvider,
+    flow_id: &str,
+    input: Option<&str>,
+    redirect_uri: Option<&str>,
+) -> ProviderResult<AuthState> {
+    ready(provider.complete_auth(AuthCompleteRequest {
+        flow_id: flow_id.to_owned(),
+        authorization_code: input.map(str::to_owned),
+        redirect_uri: redirect_uri.map(str::to_owned),
+    }))
 }
 
 fn stub_status() -> UserStatusResponse {
@@ -93,61 +115,47 @@ fn ready<F: Future>(future: F) -> F::Output {
 }
 
 #[test]
-fn browser_start_offers_the_pkce_authorization_url() {
-    let provider =
-        DevinProvider::with_api_and_callbacks(StubApi::queue(vec![], vec![]), silent_callbacks());
-    let challenge = ready(provider.start_auth(AuthStartRequest::default())).unwrap();
+fn browser_start_offers_the_paste_code_authorization_url() {
+    let provider = DevinProvider::with_api(StubApi::queue(vec![], vec![]));
+    let challenge = start_browser(&provider);
     assert_eq!(challenge.method, AuthMethod::BrowserOAuth);
-    let url = challenge.verification_uri.unwrap();
-    let parsed = Url::parse(&url).unwrap();
+    let parsed = Url::parse(&challenge.verification_uri.unwrap()).unwrap();
+    assert_eq!(parsed.scheme(), "https");
     assert_eq!(parsed.host_str(), Some("app.devin.ai"));
     assert_eq!(parsed.path(), "/auth/cli/continue");
-    let pairs: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
-    assert_eq!(pairs.get("state"), Some(&challenge.flow_id));
+    let pairs: Vec<(String, String)> = parsed.query_pairs().into_owned().collect();
+    let keys: Vec<&str> = pairs.iter().map(|(key, _)| key.as_str()).collect();
     assert_eq!(
-        pairs.get("prompt").map(String::as_str),
-        Some("select_account")
+        keys,
+        [
+            "state",
+            "prompt",
+            "code_challenge",
+            "code_challenge_method",
+            "cli_pkce_marker"
+        ]
     );
-    assert_eq!(
-        pairs.get("code_challenge_method").map(String::as_str),
-        Some("S256")
-    );
-    assert_eq!(pairs.get("cli_pkce_marker").map(String::as_str), Some("1"));
-    assert!(pairs.contains_key("code_challenge"));
-    // The provider's own listener path means nothing to paste back.
-    assert!(challenge.input.is_none());
+    assert_eq!(pairs[0].1, challenge.flow_id);
+    assert_eq!(pairs[1].1, "select_account");
+    assert!(!pairs[2].1.is_empty());
+    assert_eq!(pairs[3].1, "S256");
+    assert_eq!(pairs[4].1, "1");
+    let input = challenge.input.unwrap();
+    assert!(!input.secret);
+    assert!(input.prompt.contains("code"));
+    assert!(!input.prompt.contains("callback"));
 }
 
 #[test]
-fn a_client_supplied_redirect_asks_for_the_callback_url() {
-    let provider =
-        DevinProvider::with_api_and_callbacks(StubApi::queue(vec![], vec![]), silent_callbacks());
+fn a_client_supplied_redirect_stays_out_of_the_authorization_url() {
+    let provider = DevinProvider::with_api(StubApi::queue(vec![], vec![]));
     let challenge = ready(provider.start_auth(AuthStartRequest {
         method: Some(AuthMethod::BrowserOAuth),
         redirect_uri: Some("http://localhost:7777/callback".into()),
     }))
     .unwrap();
     let url = Url::parse(&challenge.verification_uri.unwrap()).unwrap();
-    let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
-    assert_eq!(
-        pairs.get("redirect_uri").map(String::as_str),
-        Some("http://localhost:7777/callback")
-    );
-    let input = challenge.input.unwrap();
-    assert!(!input.secret);
-}
-
-#[test]
-fn a_non_loopback_redirect_is_rejected() {
-    let provider =
-        DevinProvider::with_api_and_callbacks(StubApi::queue(vec![], vec![]), silent_callbacks());
-    assert!(matches!(
-        ready(provider.start_auth(AuthStartRequest {
-            method: Some(AuthMethod::BrowserOAuth),
-            redirect_uri: Some("https://attacker.invalid/callback".into()),
-        })),
-        Err(ProviderError::AuthenticationInvalid { .. })
-    ));
+    assert!(url.query_pairs().all(|(key, _)| key != "redirect_uri"));
 }
 
 #[test]
@@ -231,78 +239,89 @@ fn a_rejected_key_fails_sign_in_and_releases_the_flow() {
 }
 
 #[test]
-fn pasted_callback_url_completes_the_browser_flow() {
-    let provider = DevinProvider::with_api_and_callbacks(
-        StubApi::queue(
-            vec![Ok(ExchangeResponse {
-                api_key: "exchanged-key".into(),
-                api_server_url: Some("https://server.codeium.com".into()),
-                ..ExchangeResponse::default()
-            })],
-            vec![],
-        ),
-        silent_callbacks(),
-    );
-    let challenge = ready(provider.start_auth(AuthStartRequest {
-        method: Some(AuthMethod::BrowserOAuth),
-        redirect_uri: Some("http://localhost:7777/callback".into()),
-    }))
-    .unwrap();
+fn a_pasted_bare_code_completes_the_browser_flow() {
+    let api = exchanging_api();
+    let provider = DevinProvider::with_api(api.clone());
+    let challenge = start_browser(&provider);
     assert_eq!(
-        ready(provider.complete_auth(AuthCompleteRequest {
-            flow_id: challenge.flow_id.clone(),
-            authorization_code: Some(format!(
-                "http://localhost:7777/callback?code=code-1&state={}",
-                challenge.flow_id
-            )),
-            redirect_uri: None,
-        }))
+        paste(&provider, &challenge.flow_id, Some(" code-1 "), None).unwrap(),
+        authenticated()
+    );
+    assert_eq!(*api.exchanged_codes.lock().unwrap(), ["code-1"]);
+}
+
+#[test]
+fn a_redirect_uri_on_completion_is_ignored() {
+    let provider = DevinProvider::with_api(exchanging_api());
+    let challenge = start_browser(&provider);
+    assert_eq!(
+        paste(
+            &provider,
+            &challenge.flow_id,
+            Some("code-1"),
+            Some("http://localhost:7777/callback"),
+        )
         .unwrap(),
-        AuthState::Authenticated {
-            account_label: None,
-            account_key: None,
-            expires_at: None,
-        }
+        authenticated()
     );
 }
 
 #[test]
-fn a_wrong_state_in_the_pasted_callback_is_rejected() {
-    let provider =
-        DevinProvider::with_api_and_callbacks(StubApi::queue(vec![], vec![]), silent_callbacks());
-    let challenge = ready(provider.start_auth(AuthStartRequest {
-        method: Some(AuthMethod::BrowserOAuth),
-        redirect_uri: Some("http://localhost:7777/callback".into()),
-    }))
-    .unwrap();
+fn a_pasted_code_with_the_flow_state_completes_the_browser_flow() {
+    let api = exchanging_api();
+    let provider = DevinProvider::with_api(api.clone());
+    let challenge = start_browser(&provider);
+    let input = format!("code-1#{}", challenge.flow_id);
+    assert_eq!(
+        paste(&provider, &challenge.flow_id, Some(&input), None).unwrap(),
+        authenticated()
+    );
+    assert_eq!(*api.exchanged_codes.lock().unwrap(), ["code-1"]);
+}
+
+#[test]
+fn a_wrong_pasted_state_is_rejected_before_the_exchange() {
+    let api = StubApi::queue(vec![], vec![]);
+    let provider = DevinProvider::with_api(api.clone());
+    let challenge = start_browser(&provider);
     assert!(matches!(
-        ready(provider.complete_auth(AuthCompleteRequest {
-            flow_id: challenge.flow_id.clone(),
-            authorization_code: Some(
-                "http://localhost:7777/callback?code=code-1&state=wrong".into()
-            ),
-            redirect_uri: None,
-        })),
+        paste(&provider, &challenge.flow_id, Some("code-1#wrong"), None),
         Err(ProviderError::AuthenticationInvalid { .. })
     ));
+    assert!(api.exchanged_codes.lock().unwrap().is_empty());
 }
 
 #[test]
-fn a_listener_flow_polls_pending_until_the_callback_lands() {
-    let provider =
-        DevinProvider::with_api_and_callbacks(StubApi::queue(vec![], vec![]), silent_callbacks());
-    // No client redirect URI: the SilentCallback stands in for the real
-    // listener and never produces an outcome, so completion stays pending.
-    let challenge = ready(provider.start_auth(AuthStartRequest::default())).unwrap();
+fn a_pasted_url_is_rejected_before_the_exchange() {
+    let api = StubApi::queue(vec![], vec![]);
+    let provider = DevinProvider::with_api(api.clone());
+    let challenge = start_browser(&provider);
+    let input = format!(
+        "http://localhost:7777/callback?code=code-1&state={}",
+        challenge.flow_id
+    );
     assert!(matches!(
-        ready(provider.complete_auth(AuthCompleteRequest {
-            flow_id: challenge.flow_id.clone(),
-            authorization_code: None,
-            redirect_uri: None,
-        }))
-        .unwrap(),
-        AuthState::Pending { .. }
+        paste(&provider, &challenge.flow_id, Some(&input), None),
+        Err(ProviderError::AuthenticationInvalid { .. })
     ));
+    assert!(api.exchanged_codes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_empty_paste_fails_instead_of_pending() {
+    let api = StubApi::queue(vec![], vec![]);
+    let provider = DevinProvider::with_api(api.clone());
+    let challenge = start_browser(&provider);
+    for input in [None, Some(""), Some("   ")] {
+        assert!(
+            matches!(
+                paste(&provider, &challenge.flow_id, input, None),
+                Err(ProviderError::AuthenticationInvalid { .. })
+            ),
+            "{input:?}"
+        );
+    }
+    assert!(api.exchanged_codes.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -381,21 +400,4 @@ fn logout_clears_the_session() {
         ready(provider.auth_status()).unwrap(),
         AuthState::NotAuthenticated
     );
-}
-
-#[test]
-fn callback_input_parsing_accepts_url_code_state_and_bare_code() {
-    let redirect = "http://127.0.0.1:4567/callback";
-    let (code, state) =
-        parse_authorization_input("http://127.0.0.1:4567/callback?code=c&state=s", redirect)
-            .unwrap();
-    assert_eq!((code.as_str(), state.as_deref()), ("c", Some("s")));
-    let (code, state) = parse_authorization_input("c#s", redirect).unwrap();
-    assert_eq!((code.as_str(), state.as_deref()), ("c", Some("s")));
-    let (code, state) = parse_authorization_input("c", redirect).unwrap();
-    assert_eq!((code.as_str(), state), ("c", None));
-    assert!(matches!(
-        parse_authorization_input("http://127.0.0.1:4567/other?code=c&state=s", redirect),
-        Err(ProviderError::AuthenticationInvalid { .. })
-    ));
 }

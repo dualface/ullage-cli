@@ -1,16 +1,15 @@
 //! Devin (devin.ai / Cognition) subscription authentication and usage polling.
 //!
 //! Sign-in mirrors the official CLI: a PKCE S256 browser flow against
-//! `app.devin.ai/auth/cli/continue` that returns the authorization code on a
-//! loopback `/callback`, exchanged through Connect-RPC
+//! `app.devin.ai/auth/cli/continue` with no redirect URI: the page shows an
+//! authorization code the user pastes back, exchanged through Connect-RPC
 //! `ExchangeDevinCLIPKCECode` for a session token and `api_server_url`. A
-//! manual paste-the-key flow (`app.devin.ai/auth/cli/token`) covers headless
-//! setups; the pasted value is the same `api_key` `GetUserStatus` expects in
+//! manual paste-the-key flow (`app.devin.ai/auth/cli/token`) is the
+//! alternative; the pasted value is the same `api_key` `GetUserStatus` expects in
 //! its `metadata.apiKey`. There is nothing to refresh: the key stands until
 //! the server rejects it.
 
 mod api;
-mod callback;
 mod dto;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,7 +31,6 @@ use zeroize::Zeroizing;
 pub use api::{
     ApiFailure, ApiFailureKind, DEFAULT_API_SERVER_URL, DevinApi, ExchangeResponse, HttpDevinApi,
 };
-pub use callback::{CallbackOutcome, LoopbackCallback};
 pub use dto::{DevinUsage, PlanInfo, PlanStatus, UserStatus, UserStatusResponse};
 
 /// The authorization page the official Devin CLI drives for PKCE sign-in.
@@ -43,31 +41,6 @@ const MANUAL_TOKEN_PAGE: &str = "https://app.devin.ai/auth/cli/token";
 /// How long a started flow stays completable.
 const FLOW_LIFETIME_MINUTES: i64 = 10;
 static FLOW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-
-/// What a pending browser flow needs from a loopback receiver, abstracted so
-/// tests can drive `complete_auth` without a real socket.
-pub trait CallbackSource: Send + Sync {
-    /// The loopback URI this receiver answers on.
-    fn redirect_uri(&self) -> String;
-    /// The captured redirect, if one landed. It stays available so a
-    /// transient exchange failure can retry with the same code.
-    fn peek(&self) -> Option<CallbackOutcome>;
-}
-
-impl CallbackSource for LoopbackCallback {
-    fn redirect_uri(&self) -> String {
-        LoopbackCallback::redirect_uri(self).to_owned()
-    }
-
-    fn peek(&self) -> Option<CallbackOutcome> {
-        LoopbackCallback::peek(self)
-    }
-}
-
-/// Builds the loopback receiver for a browser flow. Swappable in tests;
-/// production binds a real ephemeral port.
-pub type CallbackFactory =
-    dyn Fn(&str, DateTime<Utc>) -> Result<Arc<dyn CallbackSource>, ApiFailure> + Send + Sync;
 
 #[derive(Default)]
 struct ProviderState {
@@ -94,15 +67,12 @@ struct DevinSession {
 /// A sign-in in progress. It expires so an abandoned flow cannot wedge
 /// re-authentication forever.
 enum PendingFlow {
-    /// PKCE browser flow. `flow_id` doubles as the OAuth `state`.
+    /// PKCE browser flow completed by pasting the code the authorization
+    /// page shows. `flow_id` doubles as the OAuth `state`.
     Browser {
         flow_id: String,
         verifier: Zeroizing<String>,
-        redirect_uri: String,
         expires_at: DateTime<Utc>,
-        /// The provider-owned loopback receiver, present only when no client
-        /// supplied its own `redirect_uri`.
-        callback: Option<Arc<dyn CallbackSource>>,
     },
     /// Manual paste-the-key fallback for headless environments.
     ManualToken {
@@ -145,7 +115,6 @@ impl ProviderState {
 
 pub struct DevinProvider {
     api: Arc<dyn DevinApi>,
-    callbacks: Arc<CallbackFactory>,
     state: Mutex<ProviderState>,
     credentials: Option<(Arc<CredentialStore>, CredentialKey)>,
     /// Serializes store writes and the state commits that adopt them so a
@@ -153,23 +122,11 @@ pub struct DevinProvider {
     credential_gate: tokio::sync::Mutex<()>,
 }
 
-fn bind_loopback(
-    state: &str,
-    expires_at: DateTime<Utc>,
-) -> Result<Arc<dyn CallbackSource>, ApiFailure> {
-    Ok(Arc::new(
-        LoopbackCallback::bind(state, expires_at).map_err(|_| {
-            ApiFailure::network("the Devin OAuth loopback listener could not start")
-        })?,
-    ) as Arc<dyn CallbackSource>)
-}
-
 impl DevinProvider {
     pub fn new() -> ProviderResult<Self> {
-        Ok(Self::with_api_and_callbacks(
-            Arc::new(HttpDevinApi::new().map_err(ApiFailure::into_provider_error)?),
-            Arc::new(bind_loopback),
-        ))
+        Ok(Self::with_api(Arc::new(
+            HttpDevinApi::new().map_err(ApiFailure::into_provider_error)?,
+        )))
     }
 
     pub fn new_with_store(credentials: Arc<CredentialStore>) -> ProviderResult<Self> {
@@ -185,13 +142,8 @@ impl DevinProvider {
     }
 
     pub fn with_api(api: Arc<dyn DevinApi>) -> Self {
-        Self::with_api_and_callbacks(api, Arc::new(bind_loopback))
-    }
-
-    pub fn with_api_and_callbacks(api: Arc<dyn DevinApi>, callbacks: Arc<CallbackFactory>) -> Self {
         Self {
             api,
-            callbacks,
             state: Mutex::new(ProviderState {
                 credentials_loaded: true,
                 ..ProviderState::default()
@@ -213,24 +165,9 @@ impl DevinProvider {
         credentials: Arc<CredentialStore>,
         account_id: &str,
     ) -> ProviderResult<Self> {
-        Self::with_api_callbacks_and_store_for_account(
-            api,
-            Arc::new(bind_loopback),
-            credentials,
-            account_id,
-        )
-    }
-
-    pub fn with_api_callbacks_and_store_for_account(
-        api: Arc<dyn DevinApi>,
-        callbacks: Arc<CallbackFactory>,
-        credentials: Arc<CredentialStore>,
-        account_id: &str,
-    ) -> ProviderResult<Self> {
         let key = CredentialKey::new("devin", account_id).map_err(credential_error)?;
         Ok(Self {
             api,
-            callbacks,
             state: Mutex::new(ProviderState::default()),
             credentials: Some((credentials, key)),
             credential_gate: tokio::sync::Mutex::new(()),
@@ -397,7 +334,10 @@ impl DevinProvider {
             })
     }
 
-    async fn start_browser_auth(&self, request: AuthStartRequest) -> ProviderResult<AuthChallenge> {
+    /// The authorization page never redirects back: it shows a code to paste,
+    /// so a client-supplied `redirect_uri` has nothing to bind to and is not
+    /// used.
+    async fn start_browser_auth(&self) -> ProviderResult<AuthChallenge> {
         let flow_id = new_flow_id()?;
         let verifier = Zeroizing::new(ullage_auth::random_url_token().map_err(|_| {
             ProviderError::Network {
@@ -406,34 +346,16 @@ impl DevinProvider {
         })?);
         let challenge_secret = ullage_auth::pkce_s256_challenge(&verifier);
         let expires_at = Utc::now() + Duration::minutes(FLOW_LIFETIME_MINUTES);
-        // A client that runs its own loopback receiver (the macOS app) passes
-        // the URI in; otherwise the provider listens itself and the flow
-        // completes by polling instead of a paste.
-        let (redirect_uri, callback, pasted_input) = match request.redirect_uri {
-            Some(uri) => {
-                ullage_auth::validate_loopback_http_redirect_uri(&uri).map_err(|reason| {
-                    ProviderError::AuthenticationInvalid {
-                        message: reason.into(),
-                    }
-                })?;
-                (uri, None, true)
-            }
-            None => {
-                let callback = (self.callbacks)(&flow_id, expires_at)
-                    .map_err(ApiFailure::into_provider_error)?;
-                (callback.redirect_uri(), Some(callback), false)
-            }
-        };
-        let authorization_url = authorize_url(&redirect_uri, &flow_id, &challenge_secret)?;
+        let authorization_url = authorize_url(&flow_id, &challenge_secret)?;
         let challenge = AuthChallenge {
             flow_id: flow_id.clone(),
             method: AuthMethod::BrowserOAuth,
             verification_uri: Some(authorization_url),
             user_code: None,
             expires_at: Some(expires_at),
-            input: pasted_input.then(|| {
-                AuthInputRequest::visible("the full callback URL from the browser, or code#state")
-            }),
+            input: Some(AuthInputRequest::visible(
+                "the code the Devin page shows after sign-in",
+            )),
         };
         let mut state = self.lock_state()?;
         // Starting a replacement flow deliberately supersedes any persisted
@@ -443,9 +365,7 @@ impl DevinProvider {
         state.pending_flow = Some(PendingFlow::Browser {
             flow_id,
             verifier,
-            redirect_uri,
             expires_at,
-            callback,
         });
         state.invalid_reason = None;
         Ok(challenge)
@@ -473,7 +393,7 @@ impl Provider for DevinProvider {
         match request.method {
             None | Some(AuthMethod::BrowserOAuth) => {
                 let _credential_gate = self.credential_gate.lock().await;
-                self.start_browser_auth(request).await
+                self.start_browser_auth().await
             }
             Some(AuthMethod::ApiToken) => {
                 let _credential_gate = self.credential_gate.lock().await;
@@ -507,17 +427,18 @@ impl Provider for DevinProvider {
 
     async fn complete_auth(&self, request: AuthCompleteRequest) -> ProviderResult<AuthState> {
         self.ensure_credentials_loaded().await?;
+        // Clients derive `redirect_uri` from a pasted value that looks like a
+        // callback URL; no Devin flow has a redirect to compare it with, and
+        // such a paste is rejected below anyway.
         let AuthCompleteRequest {
             flow_id,
             authorization_code,
-            redirect_uri,
+            redirect_uri: _,
         } = request;
         enum PendingSnapshot {
             Browser {
                 verifier: Zeroizing<String>,
-                redirect_uri: String,
                 expires_at: DateTime<Utc>,
-                callback: Option<Arc<dyn CallbackSource>>,
             },
             ManualToken {
                 expires_at: DateTime<Utc>,
@@ -535,15 +456,11 @@ impl Provider for DevinProvider {
             let snapshot = match pending {
                 PendingFlow::Browser {
                     verifier,
-                    redirect_uri,
                     expires_at,
-                    callback,
                     ..
                 } => PendingSnapshot::Browser {
                     verifier: verifier.clone(),
-                    redirect_uri: redirect_uri.clone(),
                     expires_at: *expires_at,
-                    callback: callback.clone(),
                 },
                 PendingFlow::ManualToken { expires_at, .. } => PendingSnapshot::ManualToken {
                     expires_at: *expires_at,
@@ -597,67 +514,9 @@ impl Provider for DevinProvider {
                 )
                 .await
             }
-            PendingSnapshot::Browser {
-                verifier,
-                redirect_uri: expected_redirect,
-                callback,
-                ..
-            } => {
-                if redirect_uri
-                    .as_deref()
-                    .is_some_and(|redirect| redirect != expected_redirect)
-                {
-                    return Err(ProviderError::AuthenticationInvalid {
-                        message: "Devin OAuth redirect URI does not match the initiated flow"
-                            .into(),
-                    });
-                }
-                let pasted = authorization_code
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty());
-                let code = match pasted {
-                    Some(input) => {
-                        let (code, supplied_state) =
-                            parse_authorization_input(input, &expected_redirect)?;
-                        if supplied_state.as_deref() != Some(flow_id.as_str()) {
-                            return Err(ProviderError::AuthenticationInvalid {
-                                message: "Devin OAuth state does not match".into(),
-                            });
-                        }
-                        code
-                    }
-                    None => {
-                        let Some(callback) = &callback else {
-                            return Err(ProviderError::AuthenticationInvalid {
-                                message: "Devin OAuth authorization code is missing".into(),
-                            });
-                        };
-                        match callback.peek() {
-                            Some(CallbackOutcome::Code(code)) => code,
-                            Some(CallbackOutcome::Denied(_)) => {
-                                return Err(self
-                                    .resolve_api_failure(
-                                        generation,
-                                        Some(&flow_id),
-                                        ApiFailure::authentication("Devin denied the sign-in"),
-                                    )
-                                    .await);
-                            }
-                            None => {
-                                return Ok(AuthState::Pending {
-                                    flow_id,
-                                    expires_at: Some(expires_at),
-                                });
-                            }
-                        }
-                    }
-                };
-                let response = match self
-                    .api
-                    .exchange_pkce_code(&code, &verifier, &expected_redirect)
-                    .await
-                {
+            PendingSnapshot::Browser { verifier, .. } => {
+                let code = parse_pasted_code(authorization_code.as_deref(), &flow_id)?;
+                let response = match self.api.exchange_pkce_code(&code, &verifier).await {
                     Ok(response) => response,
                     Err(error) => {
                         return Err(self
@@ -830,13 +689,13 @@ impl Provider for DevinProvider {
     }
 }
 
-fn authorize_url(redirect_uri: &str, state: &str, challenge: &str) -> ProviderResult<String> {
+fn authorize_url(state: &str, challenge: &str) -> ProviderResult<String> {
     let mut url = Url::parse(AUTHORIZE_URL).map_err(|_| ProviderError::ProtocolIncompatible {
         message: "built-in Devin authorization endpoint is invalid".into(),
     })?;
-    // The parameter set mirrors the official CLI's authorization URL.
+    // The parameter set and order mirror the official CLI's paste-code
+    // authorization URL, which carries no `redirect_uri`.
     url.query_pairs_mut()
-        .append_pair("redirect_uri", redirect_uri)
         .append_pair("state", state)
         .append_pair("prompt", "select_account")
         .append_pair("code_challenge", challenge)
@@ -845,60 +704,38 @@ fn authorize_url(redirect_uri: &str, state: &str, challenge: &str) -> ProviderRe
     Ok(url.into())
 }
 
-/// The authorization code a pasted callback carries, checked against the
-/// initiated redirect. Accepted shapes: the whole callback URL, whose origin
-/// and path must equal the flow's `redirect_uri`, or `code#state`, or a bare
-/// `code` (which leaves the state check to the caller).
-fn parse_authorization_input(
-    input: &str,
-    expected_redirect_uri: &str,
-) -> ProviderResult<(String, Option<String>)> {
-    let input = input.trim();
+/// The authorization code from a paste: either the bare code the Devin page
+/// shows, or `code#state`, whose state must equal the flow's. A bare code has
+/// no state to compare; the PKCE verifier still binds it to this flow. A
+/// callback URL is refused because this flow never redirects.
+fn parse_pasted_code(input: Option<&str>, flow_id: &str) -> ProviderResult<String> {
+    let input = input.map(str::trim).unwrap_or_default();
     if input.is_empty() || input.len() > 8192 {
         return Err(ProviderError::AuthenticationInvalid {
-            message: "Devin OAuth authorization input is empty or too long".into(),
+            message: "paste the code the Devin page shows after sign-in".into(),
         });
     }
     if input.contains("://") {
-        let url = Url::parse(input).map_err(|_| ProviderError::AuthenticationInvalid {
-            message: "Devin OAuth callback URL is invalid".into(),
-        })?;
-        let expected =
-            Url::parse(expected_redirect_uri).map_err(|_| ProviderError::ProtocolIncompatible {
-                message: "Devin OAuth expected redirect URI is invalid".into(),
-            })?;
-        if url.scheme() != expected.scheme()
-            || url.host_str() != expected.host_str()
-            || url.port_or_known_default() != expected.port_or_known_default()
-            || url.path() != expected.path()
-        {
-            return Err(ProviderError::AuthenticationInvalid {
-                message: "Devin OAuth callback URL has an unexpected origin or path".into(),
-            });
-        }
-        let code = url
-            .query_pairs()
-            .find(|(key, _)| key == "code")
-            .map(|(_, value)| value.into_owned())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ProviderError::AuthenticationInvalid {
-                message: "Devin OAuth callback omitted the authorization code".into(),
-            })?;
-        let state = url
-            .query_pairs()
-            .find(|(key, _)| key == "state")
-            .map(|(_, value)| value.into_owned());
-        return Ok((code, state));
+        return Err(ProviderError::AuthenticationInvalid {
+            message: "Devin sign-in expects the code the page shows, not a URL".into(),
+        });
     }
-    if let Some((code, state)) = input.split_once('#') {
-        if code.is_empty() || state.is_empty() {
-            return Err(ProviderError::AuthenticationInvalid {
-                message: "Devin OAuth code or state is empty".into(),
-            });
+    match input.split_once('#') {
+        None => Ok(input.into()),
+        Some((code, state)) => {
+            if code.is_empty() || state.is_empty() {
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "Devin OAuth code or state is empty".into(),
+                });
+            }
+            if state != flow_id {
+                return Err(ProviderError::AuthenticationInvalid {
+                    message: "Devin OAuth state does not match".into(),
+                });
+            }
+            Ok(code.into())
         }
-        return Ok((code.into(), Some(state.into())));
     }
-    Ok((input.into(), None))
 }
 
 fn new_flow_id() -> ProviderResult<String> {

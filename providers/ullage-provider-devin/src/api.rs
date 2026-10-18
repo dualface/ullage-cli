@@ -135,12 +135,11 @@ impl fmt::Debug for ExchangeResponse {
 #[async_trait]
 pub trait DevinApi: Send + Sync {
     /// `ExchangeDevinCLIPKCECode`: the PKCE exchange completing browser
-    /// sign-in. `redirect_uri` must be the exact URI the authorization used.
+    /// sign-in with the code the user pasted from the authorization page.
     async fn exchange_pkce_code(
         &self,
         code: &str,
         code_verifier: &str,
-        redirect_uri: &str,
     ) -> Result<ExchangeResponse, ApiFailure>;
 
     /// `GetUserStatus`: plan name plus daily/weekly quota state. Also the
@@ -210,13 +209,12 @@ impl DevinApi for HttpDevinApi {
         &self,
         code: &str,
         code_verifier: &str,
-        redirect_uri: &str,
     ) -> Result<ExchangeResponse, ApiFailure> {
         // A rejected grant is a client error here: the flow is dead and only
         // a fresh sign-in can produce a working code.
         self.post_connect(
             &self.exchange_url,
-            &exchange_body(code, code_verifier, redirect_uri),
+            &exchange_body(code, code_verifier),
             "Devin PKCE exchange",
             true,
         )
@@ -343,11 +341,12 @@ fn is_secure_or_loopback(url: &reqwest::Url) -> bool {
     secure || loopback
 }
 
-fn exchange_body(code: &str, code_verifier: &str, redirect_uri: &str) -> serde_json::Value {
+/// The paste-code authorization carries no redirect URI, so the request has
+/// none either; proto3 treats an absent `redirect_uri` the same as empty.
+fn exchange_body(code: &str, code_verifier: &str) -> serde_json::Value {
     json!({
         "code": code,
         "code_verifier": code_verifier,
-        "redirect_uri": redirect_uri,
     })
 }
 
@@ -377,13 +376,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exchange_request_body_carries_code_verifier_and_redirect() {
+    fn exchange_request_body_carries_only_code_and_verifier() {
         assert_eq!(
-            exchange_body("code-1", "verifier-1", "http://127.0.0.1:4567/callback"),
+            exchange_body("code-1", "verifier-1"),
             json!({
                 "code": "code-1",
                 "code_verifier": "verifier-1",
-                "redirect_uri": "http://127.0.0.1:4567/callback",
             })
         );
     }

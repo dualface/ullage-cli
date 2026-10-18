@@ -135,7 +135,7 @@ ullage auth login
 - Grok：设备码流程，没有可粘贴的内容。打开页面并自行完成
 - Cursor：浏览器登录，没有可粘贴的内容。打开页面并自行完成。`--method api-token` 保留旧路径：在 cursor.com/dashboard 创建 User API Key，然后无回显地输入
 - OpenCode：在 opencode.ai/auth 签发的 OpenCode Go API key
-- Devin：浏览器登录，没有可粘贴的内容。`--method api-token` 可改为粘贴 Devin API key
+- Devin：登录后 Devin 页面显示的 code（或 `code#state`）。`--method api-token` 可改为粘贴 Devin API key
 - codex2api：网关 base URL、admin key 与上游账号 id 或 email，空格分隔（`base_url admin_key upstream_ref`）
 - sub2api：一行 `base_url admin_key upstream_ref`——网关 base URL（HTTPS
   或环回 HTTP）、网关设置里生成的 admin API key、上游账号 id 或 name——
