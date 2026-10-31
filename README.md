@@ -851,7 +851,7 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## More Projects by the Author
 
-Other projects by [dualface](https://github.com/dualface), the author of Ullage:
+Explore other projects by [dualface](https://dualface.dev/):
 
 - [Kander](https://github.com/dualface/kander): rule-driven multi-agent kanban orchestration, with independent review and delivery gates.
 - [ste-zh](https://github.com/dualface/ste-zh): an agent skill that makes agents report results in Chinese by ASD-STE100 principles: conclusion first, fixed status words, explicit verification state.

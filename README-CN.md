@@ -575,7 +575,7 @@ MIT。见 [`LICENSE`](LICENSE)。
 
 ## 作者的其他项目
 
-以下是 Ullage 作者 [dualface](https://github.com/dualface) 的其他项目：
+欢迎体验作者 [dualface](https://dualface.dev/) 的其他项目：
 
 - [Kander](https://github.com/dualface/kander)：规则驱动的多 Agent 看板调度，内置独立审核与交付门禁。
 - [ste-zh](https://github.com/dualface/ste-zh)：让 Agent 按 ASD-STE100 原则用中文汇报结果，结论先行、状态词固定、写明是否验证。
